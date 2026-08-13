@@ -26,7 +26,6 @@ This project enables Claude Managed Agents to run code execution, bash commands,
 ```
 
 - **`cmd/substrate-anthropic`**: CLI tool to generate Kubernetes and Agent Substrate deployment manifests.
-- **`internal/deploy`**: Programmatic Kubernetes and Substrate manifest generator (`Namespace`, `Secret`, `WorkerPool`, `ActorTemplate`, `Deployment`, `Service`).
 - **`Dockerfile`**: Debian-based container image packaging Anthropic's official prebuilt `ant` CLI worker.
 - **`deployment.yaml`**: Complete Kubernetes & Substrate manifest template.
 

@@ -1,5 +1,7 @@
 # Binaries
 bin/
+substrate-anthropic
+substrate-anthropic-worker
 *.exe
 *.exe~
 *.dll

@@ -1,92 +1,69 @@
-# ==============================================================================
-# Agent Substrate - Anthropic Self-Hosted Sandbox Worker Deployment Manifest
-# ==============================================================================
-# Prerequisites:
-# 1. Kubernetes cluster with Agent Substrate (CRDs and operators) installed.
-# 2. An Anthropic Managed Agents Environment created in Anthropic Console or API:
-#    - ANTHROPIC_ENVIRONMENT_ID (e.g. env_01abc...)
-#    - ANTHROPIC_ENVIRONMENT_KEY (e.g. sk-ant-env...)
-# 3. An Object Storage bucket for actor snapshots (e.g. gs://my-bucket/snapshots/).
-# 4. Digest-pinned container images for the worker and the Substrate ateom runner.
-#
-# To apply this file:
-#   kubectl apply -f deployment.yaml
-# ==============================================================================
-
----
 apiVersion: v1
 kind: Namespace
 metadata:
   name: anthropic-worker
-
 ---
 apiVersion: v1
 kind: Secret
 metadata:
   name: anthropic-environment-creds
   namespace: anthropic-worker
-type: Opaque
 stringData:
-  # Replace with your Anthropic Managed Agents Environment ID:
-  ANTHROPIC_ENVIRONMENT_ID: "env_REPLACE_WITH_YOUR_ENVIRONMENT_ID"
-  # Replace with your Anthropic Environment API Key:
-  ANTHROPIC_ENVIRONMENT_KEY: "sk-ant-env-REPLACE_WITH_YOUR_ENVIRONMENT_KEY"
-  # (Optional) Required only if operating in webhook mode:
-  # ANTHROPIC_WEBHOOK_SIGNING_KEY: "whsec_REPLACE_WITH_WEBHOOK_SIGNING_KEY"
-
+  ANTHROPIC_ENVIRONMENT_ID: env_REPLACE_WITH_YOUR_ENVIRONMENT_ID
+  ANTHROPIC_ENVIRONMENT_KEY: sk-ant-env-REPLACE_WITH_YOUR_ENVIRONMENT_KEY
+type: Opaque
 ---
-# Substrate WorkerPool manages pre-warmed worker pods running under the
-# Substrate microVM/gVisor runtime (ateom).
 apiVersion: ate.dev/v1alpha1
 kind: WorkerPool
 metadata:
-  name: anthropic-worker-template-workerpool
-  namespace: anthropic-worker
   labels:
     workload: anthropic-worker-template
+  name: anthropic-worker-template-workerpool
+  namespace: anthropic-worker
 spec:
-  # Number of pre-warmed worker pool pods ready to host sandboxes
+  ateomImage: gcr.io/dberkov-gke-dev3/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0
   replicas: 3
-  # Digest-pinned ateom runtime image (e.g. ateom-gvisor from Substrate release)
-  ateomImage: "gcr.io/dberkov-gke-dev3/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0"
-
 ---
-# Substrate ActorTemplate defines the container environment for sandboxes.
-# When Anthropic claims a session, the worker executes tools inside this template.
 apiVersion: ate.dev/v1alpha1
 kind: ActorTemplate
 metadata:
   name: anthropic-worker-template
   namespace: anthropic-worker
 spec:
-  pauseImage: "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
+  containers:
+  - command:
+    - ant
+    - beta:worker
+    - poll
+    - --workdir
+    - /workspace
+    env:
+    - name: PORT
+      value: "8080"
+    - name: WORK_DIR
+      value: /workspace
+    - name: WORKER_MODE
+      value: poll
+    image: gcr.io/your-project/anthropic-worker:latest
+    name: worker
+    readyz:
+      httpGet:
+        path: /readyz
+        port: 8080
+  pauseImage: registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4
+  snapshotsConfig:
+    location: gs://my-substrate-snapshots-bucket/anthropic-worker/
   workerSelector:
     matchLabels:
       workload: anthropic-worker-template
-  snapshotsConfig:
-    # GCS/S3 bucket for checkpointing and fast fork recovery
-    location: "gs://my-substrate-snapshots-bucket/anthropic-worker/"
-  containers:
-    - name: worker
-      image: "gcr.io/your-project/anthropic-worker:latest"
-      command:
-        - "ant"
-        - "beta:worker"
-        - "poll"
-        - "--workdir"
-        - "/workspace"
-
 ---
-# Kubernetes Deployment for the Always-On Worker Daemon.
-# This pod continuously polls Anthropic's queue for work items and executes
-# bash, filesystem, and custom tool invocations in isolated /workspace storage.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: anthropic-worker
-  namespace: anthropic-worker
   labels:
     app: anthropic-worker
+  name: anthropic-worker
+  namespace: anthropic-worker
 spec:
   replicas: 1
   selector:
@@ -98,46 +75,50 @@ spec:
         app: anthropic-worker
     spec:
       containers:
-        - name: anthropic-worker
-          image: "gcr.io/your-project/anthropic-worker:latest"
-          imagePullPolicy: IfNotPresent
-          command:
-            - "ant"
-            - "beta:worker"
-            - "poll"
-            - "--workdir"
-            - "/workspace"
-          envFrom:
-            - secretRef:
-                name: anthropic-environment-creds
-          resources:
-            requests:
-              cpu: "500m"
-              memory: "512Mi"
-            limits:
-              cpu: "2000m"
-              memory: "2Gi"
-          volumeMounts:
-            - name: workspace
-              mountPath: /workspace
+      - env:
+        - name: PORT
+          value: "8080"
+        - name: WORK_DIR
+          value: /workspace
+        - name: WORKER_MODE
+          value: poll
+        envFrom:
+        - secretRef:
+            name: anthropic-environment-creds
+        image: gcr.io/your-project/anthropic-worker:latest
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        name: anthropic-worker
+        ports:
+        - containerPort: 8080
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8080
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        volumeMounts:
+        - mountPath: /workspace
+          name: workspace
       volumes:
-        - name: workspace
-          emptyDir: {}
-
+      - name: workspace
 ---
-# Kubernetes Service exposing health check, stats, and optional webhook endpoints.
 apiVersion: v1
 kind: Service
 metadata:
-  name: anthropic-worker
-  namespace: anthropic-worker
   labels:
     app: anthropic-worker
+  name: anthropic-worker
+  namespace: anthropic-worker
 spec:
-  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
   selector:
     app: anthropic-worker
-  ports:
-    - name: http
-      port: 8080
-      targetPort: 8080
