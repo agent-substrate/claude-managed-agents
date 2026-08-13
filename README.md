@@ -57,7 +57,7 @@ Using the CLI:
 
 ```bash
 # Install CLI tool
-go install ./cmd/substrate-anthropic
+go install github.com/agent-substrate/substrate-anthropic/cmd/substrate-anthropic@latest
 
 # Generate deployment YAML and apply to Kubernetes
 substrate-anthropic deploy \
