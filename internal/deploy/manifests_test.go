@@ -12,9 +12,9 @@ import (
 
 func testConfig() Config {
 	return Config{
-		Namespace:       "substrate-anthropic",
-		Template:        "substrate-anthropic-template",
-		WorkerPool:      "substrate-anthropic-workerpool",
+		Namespace:       "anthropic-worker",
+		Template:        "anthropic-worker-template",
+		WorkerPool:      "anthropic-worker-template-workerpool",
 		WorkerImage:     "example.com/worker@sha256:1111",
 		AteomImage:      "example.com/ateom@sha256:2222",
 		PauseImage:      DefaultPauseImage,
@@ -59,8 +59,8 @@ func TestBuildManifests(t *testing.T) {
 	}
 
 	ns := objs[0].(*corev1.Namespace)
-	if ns.Name != "substrate-anthropic" {
-		t.Errorf("namespace = %q, want substrate-anthropic", ns.Name)
+	if ns.Name != "anthropic-worker" {
+		t.Errorf("namespace = %q, want anthropic-worker", ns.Name)
 	}
 
 	secret := objs[1].(*corev1.Secret)
@@ -72,7 +72,7 @@ func TestBuildManifests(t *testing.T) {
 	}
 
 	pool := objs[2].(*atev1alpha1.WorkerPool)
-	if pool.Name != "substrate-anthropic-workerpool" || pool.Spec.Replicas != 3 {
+	if pool.Name != "anthropic-worker-template-workerpool" || pool.Spec.Replicas != 3 {
 		t.Errorf("workerpool = %+v", pool)
 	}
 

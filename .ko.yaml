@@ -1,2 +1,0 @@
-baseImageOverrides:
-  github.com/agent-substrate/substrate-anthropic/cmd/substrate-anthropic-worker: bash:latest

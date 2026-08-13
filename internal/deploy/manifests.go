@@ -18,17 +18,17 @@ import (
 // DefaultPauseImage is the digest-pinned pause image recommended for Agent Substrate.
 const DefaultPauseImage = "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
 
-// DefaultWorkerCommand is the default entrypoint for the worker container.
-const DefaultWorkerCommand = "/ko-app/substrate-anthropic-worker"
+// DefaultWorkerCommand is the default entrypoint for the prebuilt ant worker container.
+const DefaultWorkerCommand = "ant"
 
 // Default constants for names and namespaces.
 const (
-	DefaultNamespace      = "substrate-anthropic"
-	DefaultTemplate       = "substrate-anthropic-template"
-	DefaultWorkerPool     = "substrate-anthropic-workerpool"
-	DefaultDeploymentName = "substrate-anthropic-worker"
+	DefaultNamespace      = "anthropic-worker"
+	DefaultTemplate       = "anthropic-worker-template"
+	DefaultWorkerPool     = "anthropic-worker-template-workerpool"
+	DefaultDeploymentName = "anthropic-worker"
 	DefaultSecretName     = "anthropic-environment-creds"
-	DefaultServiceName    = "substrate-anthropic-worker"
+	DefaultServiceName    = "anthropic-worker"
 	DefaultPort           = 8080
 	DefaultWorkdir        = "/workspace"
 )
@@ -78,7 +78,7 @@ func (c *Config) Defaults() {
 		c.WorkerReplicas = 1
 	}
 	if len(c.WorkerCommand) == 0 {
-		c.WorkerCommand = []string{DefaultWorkerCommand}
+		c.WorkerCommand = []string{"ant", "beta:worker", "poll", "--workdir", c.Workdir}
 	}
 	if c.PoolLabels == nil {
 		c.PoolLabels = map[string]string{"workload": c.Template}

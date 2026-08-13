@@ -17,8 +17,8 @@ func TestDeployCommand(t *testing.T) {
 		"--ateom-image", "gcr.io/test/ateom@sha256:789012",
 		"--snapshots-bucket", "gs://my-bucket/snapshots/",
 		"--namespace", "test-ns",
-		"--env-id", "env_test_abc",
-		"--env-key", "key_test_xyz",
+		"--anthropic-env-id", "env_test_abc",
+		"--anthropic-env-key", "key_test_xyz",
 	})
 
 	if err := cmd.Execute(); err != nil {

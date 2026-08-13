@@ -17,19 +17,14 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: substrate-anthropic
-  labels:
-    app.kubernetes.io/name: substrate-anthropic
-    app.kubernetes.io/part-of: agent-substrate
+  name: anthropic-worker
 
 ---
 apiVersion: v1
 kind: Secret
 metadata:
   name: anthropic-environment-creds
-  namespace: substrate-anthropic
-  labels:
-    app.kubernetes.io/name: substrate-anthropic
+  namespace: anthropic-worker
 type: Opaque
 stringData:
   # Replace with your Anthropic Managed Agents Environment ID:
@@ -45,10 +40,10 @@ stringData:
 apiVersion: ate.dev/v1alpha1
 kind: WorkerPool
 metadata:
-  name: substrate-anthropic-workerpool
-  namespace: substrate-anthropic
+  name: anthropic-worker-template-workerpool
+  namespace: anthropic-worker
   labels:
-    workload: substrate-anthropic-template
+    workload: anthropic-worker-template
 spec:
   # Number of pre-warmed worker pool pods ready to host sandboxes
   replicas: 3
@@ -61,32 +56,25 @@ spec:
 apiVersion: ate.dev/v1alpha1
 kind: ActorTemplate
 metadata:
-  name: substrate-anthropic-template
-  namespace: substrate-anthropic
+  name: anthropic-worker-template
+  namespace: anthropic-worker
 spec:
   pauseImage: "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
   workerSelector:
     matchLabels:
-      workload: substrate-anthropic-template
+      workload: anthropic-worker-template
   snapshotsConfig:
     # GCS/S3 bucket for checkpointing and fast fork recovery
-    location: "gs://my-substrate-snapshots-bucket/substrate-anthropic/"
+    location: "gs://my-substrate-snapshots-bucket/anthropic-worker/"
   containers:
     - name: worker
-      image: "us-docker.pkg.dev/agent-substrate/substrate-anthropic/substrate-anthropic-worker:latest"
+      image: "gcr.io/your-project/anthropic-worker:latest"
       command:
-        - "/ko-app/substrate-anthropic-worker"
-      env:
-        - name: PORT
-          value: "8080"
-        - name: WORK_DIR
-          value: "/workspace"
-        - name: WORKER_MODE
-          value: "poll"
-      readyz:
-        httpGet:
-          path: /readyz
-          port: 8080
+        - "ant"
+        - "beta:worker"
+        - "poll"
+        - "--workdir"
+        - "/workspace"
 
 ---
 # Kubernetes Deployment for the Always-On Worker Daemon.
@@ -95,49 +83,33 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: substrate-anthropic-worker
-  namespace: substrate-anthropic
+  name: anthropic-worker
+  namespace: anthropic-worker
   labels:
-    app: substrate-anthropic-worker
+    app: anthropic-worker
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: substrate-anthropic-worker
+      app: anthropic-worker
   template:
     metadata:
       labels:
-        app: substrate-anthropic-worker
+        app: anthropic-worker
     spec:
       containers:
-        - name: substrate-anthropic-worker
-          image: "us-docker.pkg.dev/agent-substrate/substrate-anthropic/substrate-anthropic-worker:latest"
+        - name: anthropic-worker
+          image: "gcr.io/your-project/anthropic-worker:latest"
           imagePullPolicy: IfNotPresent
+          command:
+            - "ant"
+            - "beta:worker"
+            - "poll"
+            - "--workdir"
+            - "/workspace"
           envFrom:
             - secretRef:
                 name: anthropic-environment-creds
-          env:
-            - name: PORT
-              value: "8080"
-            - name: WORK_DIR
-              value: "/workspace"
-            - name: WORKER_MODE
-              value: "poll"
-          ports:
-            - name: http
-              containerPort: 8080
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: 8080
-            initialDelaySeconds: 3
-            periodSeconds: 5
           resources:
             requests:
               cpu: "500m"
@@ -157,14 +129,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: substrate-anthropic-worker
-  namespace: substrate-anthropic
+  name: anthropic-worker
+  namespace: anthropic-worker
   labels:
-    app: substrate-anthropic-worker
+    app: anthropic-worker
 spec:
   type: ClusterIP
   selector:
-    app: substrate-anthropic-worker
+    app: anthropic-worker
   ports:
     - name: http
       port: 8080
