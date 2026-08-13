@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/agent-substrate/substrate-anthropic/internal/worker"
+	"github.com/agent-substrate/anthropic/internal/worker"
 	"github.com/spf13/cobra"
 )
 

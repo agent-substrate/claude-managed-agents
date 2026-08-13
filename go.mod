@@ -1,4 +1,4 @@
-module github.com/agent-substrate/substrate-anthropic
+module github.com/agent-substrate/anthropic
 
 go 1.26.5
 

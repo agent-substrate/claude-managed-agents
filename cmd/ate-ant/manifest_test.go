@@ -145,8 +145,8 @@ func TestBuildManifests(t *testing.T) {
 		t.Fatalf("deployment containers count = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
 	}
 	workerContainer := deployment.Spec.Template.Spec.Containers[0]
-	if len(workerContainer.Command) < 2 || workerContainer.Command[0] != "substrate-anthropic" || workerContainer.Command[1] != "worker" {
-		t.Errorf("deployment container command = %v, want ['substrate-anthropic', 'worker']", workerContainer.Command)
+	if len(workerContainer.Command) < 2 || workerContainer.Command[0] != "ate-ant" || workerContainer.Command[1] != "worker" {
+		t.Errorf("deployment container command = %v, want ['ate-ant', 'worker']", workerContainer.Command)
 	}
 }
 
@@ -167,7 +167,7 @@ func TestWriteManifests(t *testing.T) {
 		"kind: Deployment",
 		"image: gcr.io/test/worker@sha256:1111",
 		"location: gs://test-bucket/snapshots/",
-		"substrate-anthropic",
+		"ate-ant",
 		"worker",
 		"ATEAPI_ADDR",
 	} {

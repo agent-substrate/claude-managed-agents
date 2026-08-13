@@ -248,7 +248,7 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 					Containers: []corev1.Container{{
 						Name:    DefaultDeploymentName,
 						Image:   cfg.WorkerImage,
-						Command: []string{"substrate-anthropic", "worker"},
+						Command: []string{"ate-ant", "worker"},
 						Env: []corev1.EnvVar{
 							{
 								Name:  "ATEAPI_ADDR",

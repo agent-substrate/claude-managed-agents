@@ -68,11 +68,11 @@ Using the CLI:
 
 ```bash
 # Install CLI tool
-go install github.com/agent-substrate/substrate-anthropic/cmd/substrate-anthropic@latest
+go install github.com/agent-substrate/anthropic/cmd/ate-ant@latest
 
 # Generate deployment YAML and apply to Kubernetes
-substrate-anthropic manifest \
-  --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/anthropic-worker@sha256:5d9b26548f13159ad3f55f177785b885b0b2720b74c620e136c00afd68ecf140 \
+ate-ant manifest \
+  --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/anthropic-worker@sha256:1dc73cf7abaf091cfb20c88cd6111d5b35692869b81f1a1f08162c6ac07ad6d8 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/anthropic-worker/ \
   --anthropic-env-id  $ANTHROPIC_ENVIRONMENT_ID \
@@ -116,7 +116,7 @@ To run the frontend worker server locally for development or testing:
 kubectl port-forward svc/api 8443:443 -n ate-system &
 
 # Run worker server
-substrate-anthropic worker \
+ate-ant worker \
   --anthropic-env-id $ANTHROPIC_ENVIRONMENT_ID \
   --anthropic-env-key $ANTHROPIC_ENVIRONMENT_KEY \
   --ateapi-addr localhost:8443

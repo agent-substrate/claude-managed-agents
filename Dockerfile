@@ -5,7 +5,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG TARGETOS TARGETARCH
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -buildvcs=false -o /out/substrate-anthropic ./cmd/substrate-anthropic
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -buildvcs=false -o /out/ate-ant ./cmd/ate-ant
 
 # Stage 2: Runtime image (Ubuntu 24.04 LTS)
 FROM ubuntu:noble
@@ -41,7 +41,7 @@ RUN set -eux; \
     ant --version
 
 # Copy compiled binaries from builder
-COPY --from=builder /out/substrate-anthropic /usr/local/bin/substrate-anthropic
+COPY --from=builder /out/ate-ant /usr/local/bin/ate-ant
 
 # Set default working directory
 WORKDIR /workspace
