@@ -1,0 +1,171 @@
+# ==============================================================================
+# Agent Substrate - Anthropic Self-Hosted Sandbox Worker Deployment Manifest
+# ==============================================================================
+# Prerequisites:
+# 1. Kubernetes cluster with Agent Substrate (CRDs and operators) installed.
+# 2. An Anthropic Managed Agents Environment created in Anthropic Console or API:
+#    - ANTHROPIC_ENVIRONMENT_ID (e.g. env_01abc...)
+#    - ANTHROPIC_ENVIRONMENT_KEY (e.g. sk-ant-env...)
+# 3. An Object Storage bucket for actor snapshots (e.g. gs://my-bucket/snapshots/).
+# 4. Digest-pinned container images for the worker and the Substrate ateom runner.
+#
+# To apply this file:
+#   kubectl apply -f deployment.yaml
+# ==============================================================================
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: substrate-anthropic
+  labels:
+    app.kubernetes.io/name: substrate-anthropic
+    app.kubernetes.io/part-of: agent-substrate
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: anthropic-environment-creds
+  namespace: substrate-anthropic
+  labels:
+    app.kubernetes.io/name: substrate-anthropic
+type: Opaque
+stringData:
+  # Replace with your Anthropic Managed Agents Environment ID:
+  ANTHROPIC_ENVIRONMENT_ID: "env_REPLACE_WITH_YOUR_ENVIRONMENT_ID"
+  # Replace with your Anthropic Environment API Key:
+  ANTHROPIC_ENVIRONMENT_KEY: "sk-ant-env-REPLACE_WITH_YOUR_ENVIRONMENT_KEY"
+  # (Optional) Required only if operating in webhook mode:
+  # ANTHROPIC_WEBHOOK_SIGNING_KEY: "whsec_REPLACE_WITH_WEBHOOK_SIGNING_KEY"
+
+---
+# Substrate WorkerPool manages pre-warmed worker pods running under the
+# Substrate microVM/gVisor runtime (ateom).
+apiVersion: ate.dev/v1alpha1
+kind: WorkerPool
+metadata:
+  name: substrate-anthropic-workerpool
+  namespace: substrate-anthropic
+  labels:
+    workload: substrate-anthropic-template
+spec:
+  # Number of pre-warmed worker pool pods ready to host sandboxes
+  replicas: 3
+  # Digest-pinned ateom runtime image (e.g. ateom-gvisor from Substrate release)
+  ateomImage: "gcr.io/dberkov-gke-dev3/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0"
+
+---
+# Substrate ActorTemplate defines the container environment for sandboxes.
+# When Anthropic claims a session, the worker executes tools inside this template.
+apiVersion: ate.dev/v1alpha1
+kind: ActorTemplate
+metadata:
+  name: substrate-anthropic-template
+  namespace: substrate-anthropic
+spec:
+  pauseImage: "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
+  workerSelector:
+    matchLabels:
+      workload: substrate-anthropic-template
+  snapshotsConfig:
+    # GCS/S3 bucket for checkpointing and fast fork recovery
+    location: "gs://my-substrate-snapshots-bucket/substrate-anthropic/"
+  containers:
+    - name: worker
+      image: "us-docker.pkg.dev/agent-substrate/substrate-anthropic/substrate-anthropic-worker:latest"
+      command:
+        - "/ko-app/substrate-anthropic-worker"
+      env:
+        - name: PORT
+          value: "8080"
+        - name: WORK_DIR
+          value: "/workspace"
+        - name: WORKER_MODE
+          value: "poll"
+      readyz:
+        httpGet:
+          path: /readyz
+          port: 8080
+
+---
+# Kubernetes Deployment for the Always-On Worker Daemon.
+# This pod continuously polls Anthropic's queue for work items and executes
+# bash, filesystem, and custom tool invocations in isolated /workspace storage.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: substrate-anthropic-worker
+  namespace: substrate-anthropic
+  labels:
+    app: substrate-anthropic-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: substrate-anthropic-worker
+  template:
+    metadata:
+      labels:
+        app: substrate-anthropic-worker
+    spec:
+      containers:
+        - name: substrate-anthropic-worker
+          image: "us-docker.pkg.dev/agent-substrate/substrate-anthropic/substrate-anthropic-worker:latest"
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - secretRef:
+                name: anthropic-environment-creds
+          env:
+            - name: PORT
+              value: "8080"
+            - name: WORK_DIR
+              value: "/workspace"
+            - name: WORKER_MODE
+              value: "poll"
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          emptyDir: {}
+
+---
+# Kubernetes Service exposing health check, stats, and optional webhook endpoints.
+apiVersion: v1
+kind: Service
+metadata:
+  name: substrate-anthropic-worker
+  namespace: substrate-anthropic
+  labels:
+    app: substrate-anthropic-worker
+spec:
+  type: ClusterIP
+  selector:
+    app: substrate-anthropic-worker
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
