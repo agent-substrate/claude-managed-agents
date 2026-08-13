@@ -19,7 +19,8 @@ func main() {
 		SilenceErrors: true,
 	}
 
-	root.AddCommand(newDeployCommand())
+	root.AddCommand(newManifestCommand())
+	root.AddCommand(newWorkerCommand())
 
 	root.AddCommand(&cobra.Command{
 		Use:   "version",

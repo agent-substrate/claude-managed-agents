@@ -1,33 +1,45 @@
-# ⚡ Substrate Anthropic Worker
+# ⚡ Agent Substrate Anthropic Worker
+
+This project enables Claude Managed Agents to run code execution, bash commands, file operations, and skills inside secure, isolated sandboxes running on your Agent Substrate cluster.
 
 Deploy [Anthropic Managed Agents Self-Hosted Sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes) workers on [Agent Substrate](https://github.com/agent-substrate/substrate).
 
-This project enables Claude Managed Agents to run code execution, bash commands, file operations, and skills inside secure, isolated sandboxes running on your Agent Substrate Kubernetes cluster.
+## Overview
 
-## Architecture
+The `anthropic-worker` frontend server acts as the bridge between Anthropic's Managed Agents control plane and your Agent Substrate cluster:
+
+1. **Polls**: Long-polls the self-hosted environment queue for claimed work items.
+2. **Resumes Actor**: When a session work item is claimed, the frontend server contacts Substrate's `ateapi` to resume (or create) the isolated sandbox `Actor` for that session.
+3. **Executes Session Worker**: Runs the Anthropic tool execution loop against the active sandbox.
+4. **Suspends Actor**: Once the turn or session work finishes, the frontend server suspends the actor, taking a snapshot of its memory/filesystem to Cloud Storage and releasing the worker pool pod back to the cluster.
 
 ```
- ╭─────────────────────────╮
- │ Anthropic Control Plane │ (Claude Managed Agents)
- ╰────────────┬────────────╯
-              │ Long-Poll (HTTPS with ANTHROPIC_ENVIRONMENT_KEY)
-              ▼
- ╭─────────────────────────╮             ╭─────────────────────────╮
- │ anthropic-worker        │  executes   │ Agent Substrate         │
- │ (ant CLI poller)        ├────────────▶│ WorkerPool              │
- │ (Deployment)            │  in-sandbox │ (ateom-gvisor runtime)  │
- ╰────────────┬────────────╯             ╰────────────┬────────────╯
-              │                                       │
-              │ tool executions                       ▼
-              │ in /workspace            ╭─────────────────────────╮
-              ╰─────────────────────────▶│ Isolated Sandbox Guest  │
-                                         │ (/workspace + skills)   │
-                                         ╰─────────────────────────╯
+                      ╭─────────────────────────────────╮
+                      │      Claude Managed Agents      │
+                      ╰────────────────┬────────────────╯
+                                       │ Poll with
+                                       │ ANTHROPIC_ENVIRONMENT_ID,
+                                       │ ANTHROPIC_ENVIRONMENT_KEY
+                                       ▼
+       ╭─────────────────────────────────────────────────────────────────╮
+       │             Agent Substrate on Kubernetes Cluster               │
+       │                                                                 │
+       │  ╭──────────────────────────╮       ╭────────────────────────╮  │
+       │  │ anthropic-worker         │       │ Substrate WorkerPool   │  │
+       │  │ (Frontend Server)        │       │ (ateom-gvisor runtime) │  │
+       │  │                          │       ╰───────────┬────────────╯  │
+       │  │ 1. Polls work item       │                   │               │
+       │  │ 2. Resumes session actor ├─ateapi (gRPC)────▶│ Launches/     │
+       │  │ 3. Executes tool runner  │                   │ Restores      │
+       │  │ 4. Suspends actor on end ├─ateapi (gRPC)────▶│               │
+       │  ╰──────────────────────────╯                   ▼               │
+       │                                        ╭─────────────────────╮  │
+       │                                        │ Substrate Actor     │  │
+       │                                        │ (session sandbox)   │  │
+       │                                        │ (/workspace)        │  │
+       │                                        ╰─────────────────────╯  │
+       ╰─────────────────────────────────────────────────────────────────╯
 ```
-
-- **`cmd/substrate-anthropic`**: CLI tool to generate Kubernetes and Agent Substrate deployment manifests.
-- **`Dockerfile`**: Debian-based container image packaging Anthropic's official prebuilt `ant` CLI worker.
-- **`deployment.yaml`**: Complete Kubernetes & Substrate manifest template.
 
 ## Prerequisites
 
@@ -35,19 +47,19 @@ This project enables Claude Managed Agents to run code execution, bash commands,
 2. Anthropic Managed Agents environment credentials:
    - `ANTHROPIC_ENVIRONMENT_ID` (e.g. `env_01abc...`)
    - `ANTHROPIC_ENVIRONMENT_KEY` (e.g. `sk-ant-env...`)
-3. An object storage bucket for actor snapshots (e.g. `gs://my-bucket/snapshots/`).
-4. [Podman](https://podman.io/) (or Docker) for building container images.
+3. A Google Cloud project provided by `GOOGLE_CLOUD_PROJECT` environment variable.
+4. An object storage bucket for actor snapshots (e.g. `gs://$GOOGLE_CLOUD_PROJECT/anthropic-worker/`).
+5. [Podman](https://podman.io/) (or Docker) for building container images.
 
 ## Quickstart
 
 ### 1. Build and Push Container Image
 
-Build the Debian-based container image with the official Anthropic `ant` CLI preinstalled using Podman:
+Build the container image with the frontend worker server using Podman (or Docker):
 
 ```bash
-export ANTHROPIC_WORKER_IMAGE=gcr.io/your-project/anthropic-worker
+export GOOGLE_CLOUD_PROJECT="your-gcp-project"
 make image
-# push to your registry:
 make push
 ```
 
@@ -60,53 +72,55 @@ Using the CLI:
 go install github.com/agent-substrate/substrate-anthropic/cmd/substrate-anthropic@latest
 
 # Generate deployment YAML and apply to Kubernetes
-substrate-anthropic deploy \
-  --worker-image     gcr.io/your-project/anthropic-worker@sha256:... \
-  --ateom-image      gcr.io/dberkov-gke-dev3/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
-  --snapshots-bucket gs://my-substrate-snapshots-bucket/anthropic-worker/ \
-  --anthropic-env-id env_01abc... \
-  --anthropic-env-key sk-ant-env-... | kubectl apply -f -
-```
-
-Alternatively, edit [`deployment.yaml`](deployment.yaml) with your credentials and images, then run:
-
-```bash
-kubectl apply -f deployment.yaml
+substrate-anthropic manifest \
+  --worker-image      gcr.io/dberkov-gke-dev3/anthropic-worker@sha256:aa69e1df9aef163966023a05ad1e589fd64e596a9271d9166194a8bd0507245f \
+  --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
+  --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/anthropic-worker/ \
+  --anthropic-env-id  $ANTHROPIC_ENVIRONMENT_ID \
+  --anthropic-env-key $ANTHROPIC_ENVIRONMENT_KEY | kubectl apply -f -
 ```
 
 ### 3. Verify Deployment
 
-Check that the worker pods and Substrate pre-warmed worker pool are running:
+Check that the worker frontend server and Substrate pre-warmed worker pool are running:
 
 ```bash
 kubectl get pods -n anthropic-worker
 ```
 
-Check logs of the worker:
+Check logs of the frontend worker server:
 
 ```bash
 kubectl logs -n anthropic-worker -l app=anthropic-worker -f
 ```
 
-## Running Locally
+## Example Agent
 
-To run the containerized worker locally for testing against your Anthropic environment:
+Once deployed, send tasks to Claude referencing your self-hosted `ANTHROPIC_ENVIRONMENT_ID`. The worker in your Kubernetes cluster will automatically claim the work, resume the sandbox actor, execute tools, and suspend the actor when idle.
 
 ```bash
-podman run --rm -it \
-  -e ANTHROPIC_ENVIRONMENT_ID="env_..." \
-  -e ANTHROPIC_ENVIRONMENT_KEY="sk-ant-env-..." \
-  gcr.io/your-project/anthropic-worker:latest
+# 1. Set environment variables
+export ANTHROPIC_API_KEY="sk-ant-api..."
+export ANTHROPIC_ENVIRONMENT_ID="env_..."
+
+# 2. Run example.
+go run ./examples/agent \
+  --prompt "Run 'uname -a' in bash and show the output."
 ```
 
-The `ant` worker will poll Anthropic for claimed sessions and execute tool calls in `/workspace`.
+## Running Locally
 
-## Testing
-
-Run unit tests:
+To run the frontend worker server locally for development or testing:
 
 ```bash
-make test
+# Port-forward ateapi if connecting to a remote Substrate cluster
+kubectl port-forward svc/api 8443:443 -n ate-system &
+
+# Run worker server
+substrate-anthropic worker \
+  --anthropic-env-id $ANTHROPIC_ENVIRONMENT_ID \
+  --anthropic-env-key $ANTHROPIC_ENVIRONMENT_KEY \
+  --ateapi-addr localhost:8443
 ```
 
 ## Manifest Reference
@@ -116,6 +130,5 @@ make test
 | `anthropic-worker` | `Namespace` | Target Kubernetes namespace |
 | `anthropic-environment-creds` | `Secret` | Stores `ANTHROPIC_ENVIRONMENT_ID` and `ANTHROPIC_ENVIRONMENT_KEY` |
 | `anthropic-worker-template-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pre-warmed microVM/gVisor runner pool |
-| `anthropic-worker-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition and workspace mount |
-| `anthropic-worker` | `Deployment` | Always-on Anthropic `ant` worker daemon polling work queue |
-| `anthropic-worker` | `Service` | Worker network endpoint |
+| `anthropic-worker-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition and workspace snapshot storage |
+| `anthropic-worker` | `Deployment` | Always-on frontend server polling work queue, resuming/suspending session actors |

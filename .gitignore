@@ -1,7 +1,7 @@
 # Binaries
 bin/
-substrate-anthropic
-substrate-anthropic-worker
+/substrate-anthropic
+/substrate-anthropic-worker
 *.exe
 *.exe~
 *.dll
@@ -17,6 +17,9 @@ coverage.txt
 .env
 .env.*
 !.env.example
+
+# Generated manifests
+deployment.yaml
 
 # IDE
 .idea/

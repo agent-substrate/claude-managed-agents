@@ -1,3 +1,13 @@
+# Stage 1: Build Go binaries
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG TARGETOS TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -buildvcs=false -o /out/substrate-anthropic ./cmd/substrate-anthropic
+
+# Stage 2: Runtime image
 FROM debian:bookworm-slim
 
 # Install system utilities needed by agent tools (bash, git, curl, ripgrep, coreutils, procps)
@@ -26,9 +36,11 @@ RUN set -eux; \
     chmod +x /usr/local/bin/ant; \
     ant --version
 
+# Copy compiled binaries from builder
+COPY --from=builder /out/substrate-anthropic /usr/local/bin/substrate-anthropic
+
 # Set default working directory
 WORKDIR /workspace
 
-# Run Anthropic's prebuilt worker poller by default
-ENTRYPOINT ["ant", "beta:worker", "poll"]
-CMD ["--workdir", "/workspace"]
+# Run Anthropic worker frontend server by default
+ENTRYPOINT ["substrate-anthropic", "worker"]
