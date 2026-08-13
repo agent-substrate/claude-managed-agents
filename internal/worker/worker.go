@@ -177,7 +177,7 @@ func (s *Server) handleWork(ctx context.Context, work *anthropic.BetaSelfHostedW
 		return fmt.Errorf("work item %s has empty session ID", work.ID)
 	}
 
-	actorName := ActorName(sessionID)
+	actorName := actorName(sessionID)
 	actorRef := &ateapipb.ObjectRef{
 		Atespace: s.cfg.Namespace,
 		Name:     actorName,
@@ -340,9 +340,9 @@ func (s *Server) ensureAtespace(ctx context.Context, atespace string) error {
 	return nil
 }
 
-// ActorName returns a deterministic RFC 1123 compliant actor name for a given Anthropic session ID.
+// actorName returns a deterministic RFC 1123 compliant actor name for a given Anthropic session ID.
 // It combines a sanitized readable prefix with a SHA-256 hash suffix to guarantee uniqueness and RFC 1123 conformance.
-func ActorName(sessionID string) string {
+func actorName(sessionID string) string {
 	h := sha256.Sum256([]byte(sessionID))
 	hashSuffix := fmt.Sprintf("%x", h[:8]) // 16 hex chars
 

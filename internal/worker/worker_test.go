@@ -29,16 +29,16 @@ func TestActorName(t *testing.T) {
 	}
 
 	for _, id := range testIDs {
-		name := ActorName(id)
+		name := actorName(id)
 		if !rfc1123Pattern.MatchString(name) {
-			t.Errorf("ActorName(%q) = %q does not match RFC 1123 regex", id, name)
+			t.Errorf("actorName(%q) = %q does not match RFC 1123 regex", id, name)
 		}
 		if len(name) > 63 {
-			t.Errorf("ActorName(%q) = %q length = %d > 63", id, name, len(name))
+			t.Errorf("actorName(%q) = %q length = %d > 63", id, name, len(name))
 		}
 		// Must be deterministic
-		if second := ActorName(id); second != name {
-			t.Errorf("ActorName(%q) not deterministic: %q vs %q", id, name, second)
+		if second := actorName(id); second != name {
+			t.Errorf("actorName(%q) not deterministic: %q vs %q", id, name, second)
 		}
 	}
 }
