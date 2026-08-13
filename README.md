@@ -14,31 +14,31 @@ The `anthropic-worker` frontend server acts as the bridge between Anthropic's Ma
 4. **Suspends Actor**: Once the turn or session work finishes, the frontend server suspends the actor, taking a snapshot of its memory/filesystem to Cloud Storage and releasing the worker pool pod back to the cluster.
 
 ```
-                      ╭─────────────────────────────────╮
-                      │      Claude Managed Agents      │
-                      ╰────────────────┬────────────────╯
-                                       │ Poll with
-                                       │ ANTHROPIC_ENVIRONMENT_ID,
-                                       │ ANTHROPIC_ENVIRONMENT_KEY
-                                       ▼
-       ╭─────────────────────────────────────────────────────────────────╮
-       │             Agent Substrate on Kubernetes Cluster               │
-       │                                                                 │
-       │  ╭──────────────────────────╮       ╭────────────────────────╮  │
-       │  │ anthropic-worker         │       │ Substrate WorkerPool   │  │
-       │  │ (Frontend Server)        │       │ (ateom-gvisor runtime) │  │
-       │  │                          │       ╰───────────┬────────────╯  │
-       │  │ 1. Polls work item       │                   │               │
-       │  │ 2. Resumes session actor ├─ateapi (gRPC)────▶│ Launches/     │
-       │  │ 3. Executes tool runner  │                   │ Restores      │
-       │  │ 4. Suspends actor on end ├─ateapi (gRPC)────▶│               │
-       │  ╰──────────────────────────╯                   ▼               │
-       │                                        ╭─────────────────────╮  │
-       │                                        │ Substrate Actor     │  │
-       │                                        │ (session sandbox)   │  │
-       │                                        │ (/workspace)        │  │
-       │                                        ╰─────────────────────╯  │
-       ╰─────────────────────────────────────────────────────────────────╯
+              ╭─────────────────────────────────╮
+              │      Claude Managed Agents      │
+              ╰────────────────▲────────────────╯
+                                │ Polls with
+                                │ ANTHROPIC_ENVIRONMENT_ID,
+                                │ ANTHROPIC_ENVIRONMENT_KEY
+                                │
+╭───────────────────────────────┴─────────────────────────────────╮
+│             Agent Substrate on Kubernetes Cluster               │
+│                                                                 │
+│  ╭──────────────────────────╮       ╭────────────────────────╮  │
+│  │ anthropic-worker         │       │ Substrate WorkerPool   │  │
+│  │ (Frontend Server)        │       │ (ateom-gvisor runtime) │  │
+│  │                          │       ╰───────────┬────────────╯  │
+│  │ 1. Polls work item       │                   │               │
+│  │ 2. Resumes session actor ├─ateapi (gRPC)────▶│ Suspends/     │
+│  │ 3. Executes tool runner  │                   │ Resumes       │
+│  │ 4. Suspends actor on end ├─ateapi (gRPC)────▶│               │
+│  ╰──────────────────────────╯                   ▼               │
+│                                        ╭─────────────────────╮  │
+│                                        │ Substrate Actor     │  │
+│                                        │ (session sandbox)   │  │
+│                                        │ (/workspace)        │  │
+│                                        ╰─────────────────────╯  │
+╰─────────────────────────────────────────────────────────────────╯
 ```
 
 ## Prerequisites
@@ -59,7 +59,6 @@ Build the container image with the frontend worker server using Podman (or Docke
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="your-gcp-project"
-make image
 make push
 ```
 
@@ -73,7 +72,7 @@ go install github.com/agent-substrate/substrate-anthropic/cmd/substrate-anthropi
 
 # Generate deployment YAML and apply to Kubernetes
 substrate-anthropic manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/anthropic-worker@sha256:5d9b26548f13159ad3f55f177785b885b0b2720b74c620e136c00afd68ecf140 \
+  --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/anthropic-worker@sha256:5d9b26548f13159ad3f55f177785b885b0b2720b74c620e136c00afd68ecf140 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/anthropic-worker/ \
   --anthropic-env-id  $ANTHROPIC_ENVIRONMENT_ID \
