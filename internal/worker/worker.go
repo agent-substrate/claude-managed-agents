@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -29,6 +30,11 @@ const (
 	DefaultSuspendTimeout = 30 * time.Second
 )
 
+// ItemHandler defines the interface for handling claimed session work items.
+type ItemHandler interface {
+	HandleItem(ctx context.Context, opts environments.HandleItemOptions) error
+}
+
 // Config defines the configuration for the Anthropic worker frontend server.
 type Config struct {
 	EnvironmentID     string
@@ -45,6 +51,9 @@ type Config struct {
 
 	// AteClient can be provided to override the default gRPC client (e.g. in tests).
 	AteClient ateapipb.ControlClient
+
+	// ItemHandler can be provided to override the default tool execution handler (e.g. in tests).
+	ItemHandler ItemHandler
 }
 
 // Defaults fills in default values for unset fields.
@@ -56,7 +65,11 @@ func (c *Config) Defaults() {
 		c.Template = DefaultTemplate
 	}
 	if c.Workdir == "" {
-		c.Workdir = DefaultWorkdir
+		if _, err := os.Stat(DefaultWorkdir); err == nil {
+			c.Workdir = DefaultWorkdir
+		} else {
+			c.Workdir = "."
+		}
 	}
 	if c.AteapiAddr == "" {
 		c.AteapiAddr = DefaultAteapiAddr
@@ -85,6 +98,7 @@ type Server struct {
 	ateClient       ateapipb.ControlClient
 	ateConn         *grpc.ClientConn
 	anthropicClient anthropic.Client
+	itemHandler     ItemHandler
 	logger          *slog.Logger
 }
 
@@ -113,11 +127,27 @@ func NewServer(cfg Config) (*Server, error) {
 
 	antClient := anthropic.NewClient(option.WithAPIKey(cfg.EnvironmentKey))
 
+	var itemHandler ItemHandler
+	if cfg.ItemHandler != nil {
+		itemHandler = cfg.ItemHandler
+	} else {
+		itemHandler = environments.NewEnvironmentWorker(antClient, environments.EnvironmentWorkerOptions{
+			EnvironmentID:     cfg.EnvironmentID,
+			EnvironmentKey:    cfg.EnvironmentKey,
+			WorkerID:          cfg.WorkerID,
+			Workdir:           cfg.Workdir,
+			UnrestrictedPaths: cfg.UnrestrictedPaths,
+			MaxFileBytes:      cfg.MaxFileBytes,
+			Logger:            logger,
+		})
+	}
+
 	return &Server{
 		cfg:             cfg,
 		ateClient:       ateClient,
 		ateConn:         ateConn,
 		anthropicClient: antClient,
+		itemHandler:     itemHandler,
 		logger:          logger,
 	}, nil
 }
@@ -212,15 +242,21 @@ func (s *Server) handleWork(ctx context.Context, work *anthropic.BetaSelfHostedW
 		}
 	}()
 
-	s.logger.Info("Actor is active; waiting for session turn to complete in actor sandbox",
+	s.logger.Info("Actor is active; executing session work item in actor sandbox",
 		slog.String("actor", actorName),
 		slog.String("session_id", sessionID),
 		slog.String("work_id", work.ID),
 	)
 
-	if err := s.waitForSessionIdle(ctx, sessionID); err != nil {
-		s.logger.Warn("Session wait ended with error",
+	if err := s.itemHandler.HandleItem(ctx, environments.HandleItemOptions{
+		WorkID:         work.ID,
+		EnvironmentID:  s.cfg.EnvironmentID,
+		SessionID:      sessionID,
+		EnvironmentKey: s.cfg.EnvironmentKey,
+	}); err != nil {
+		s.logger.Warn("Session work item execution ended with error",
 			slog.String("session_id", sessionID),
+			slog.String("work_id", work.ID),
 			slog.Any("error", err),
 		)
 		return err
@@ -228,49 +264,6 @@ func (s *Server) handleWork(ctx context.Context, work *anthropic.BetaSelfHostedW
 
 	s.logger.Info("Session turn finished successfully", slog.String("session_id", sessionID))
 	return nil
-}
-
-// waitForSessionIdle polls Anthropic until the session reaches an idle or terminated state.
-func (s *Server) waitForSessionIdle(ctx context.Context, sessionID string) error {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	// Wait at least a moment for the session to start processing
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(3 * time.Second):
-	}
-
-	for {
-		sess, err := s.anthropicClient.Beta.Sessions.Get(ctx, sessionID, anthropic.BetaSessionGetParams{})
-		if err != nil {
-			s.logger.Warn("Failed to get session status",
-				slog.String("session_id", sessionID),
-				slog.Any("error", err),
-			)
-		} else {
-			s.logger.Debug("Session status check",
-				slog.String("session_id", sessionID),
-				slog.String("status", string(sess.Status)),
-			)
-
-			if sess.Status == anthropic.BetaManagedAgentsSessionStatusIdle ||
-				sess.Status == anthropic.BetaManagedAgentsSessionStatusTerminated {
-				s.logger.Info("Session reached terminal turn state",
-					slog.String("session_id", sessionID),
-					slog.String("status", string(sess.Status)),
-				)
-				return nil
-			}
-		}
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
 }
 
 // resumeOrRegisterActor ensures the atespace and actor exist, and resumes the actor.

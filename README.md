@@ -73,7 +73,7 @@ go install github.com/agent-substrate/substrate-anthropic/cmd/substrate-anthropi
 
 # Generate deployment YAML and apply to Kubernetes
 substrate-anthropic manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/anthropic-worker@sha256:aa69e1df9aef163966023a05ad1e589fd64e596a9271d9166194a8bd0507245f \
+  --worker-image      gcr.io/dberkov-gke-dev3/anthropic-worker@sha256:5d9b26548f13159ad3f55f177785b885b0b2720b74c620e136c00afd68ecf140 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/anthropic-worker/ \
   --anthropic-env-id  $ANTHROPIC_ENVIRONMENT_ID \

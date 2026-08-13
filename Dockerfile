@@ -7,15 +7,19 @@ COPY . .
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -buildvcs=false -o /out/substrate-anthropic ./cmd/substrate-anthropic
 
-# Stage 2: Runtime image
-FROM debian:bookworm-slim
+# Stage 2: Runtime image (Ubuntu 24.04 LTS)
+FROM ubuntu:noble
 
-# Install system utilities needed by agent tools (bash, git, curl, ripgrep, coreutils, procps)
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install system utilities and developer tools needed by agent tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
+    coreutils \
     curl \
     git \
+    jq \
     procps \
     ripgrep \
     tar \
@@ -42,5 +46,5 @@ COPY --from=builder /out/substrate-anthropic /usr/local/bin/substrate-anthropic
 # Set default working directory
 WORKDIR /workspace
 
-# Run Anthropic worker frontend server by default
-ENTRYPOINT ["substrate-anthropic", "worker"]
+# Default entrypoint
+ENTRYPOINT ["ant", "beta:worker", "poll", "--workdir", "/workspace"]

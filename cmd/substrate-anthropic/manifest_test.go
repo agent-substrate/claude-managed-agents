@@ -127,8 +127,8 @@ func TestBuildManifests(t *testing.T) {
 	if len(template.Spec.Containers) != 1 || template.Spec.Containers[0].Image != cfg.WorkerImage {
 		t.Errorf("template containers = %+v", template.Spec.Containers)
 	}
-	if len(template.Spec.Containers[0].Command) == 0 || template.Spec.Containers[0].Command[0] != "ant" {
-		t.Errorf("template container command = %v, want ['ant', ...]", template.Spec.Containers[0].Command)
+	if len(template.Spec.Containers[0].Command) < 2 || template.Spec.Containers[0].Command[0] != "ant" || template.Spec.Containers[0].Command[1] != "beta:worker" {
+		t.Errorf("template container command = %v, want ['ant', 'beta:worker', ...]", template.Spec.Containers[0].Command)
 	}
 	if len(template.Spec.Containers[0].Env) != 2 {
 		t.Errorf("template container env count = %d, want 2", len(template.Spec.Containers[0].Env))

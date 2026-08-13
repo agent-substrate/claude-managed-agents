@@ -10,6 +10,7 @@ import (
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	anthropic "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/lib/environments"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -65,8 +66,8 @@ func TestConfigValidate(t *testing.T) {
 	if cfg.Template != DefaultTemplate {
 		t.Errorf("template = %q, want %q", cfg.Template, DefaultTemplate)
 	}
-	if cfg.Workdir != DefaultWorkdir {
-		t.Errorf("workdir = %q, want %q", cfg.Workdir, DefaultWorkdir)
+	if cfg.Workdir != DefaultWorkdir && cfg.Workdir != "." {
+		t.Errorf("workdir = %q, want %q or '.'", cfg.Workdir, DefaultWorkdir)
 	}
 	if cfg.AteapiAddr != DefaultAteapiAddr {
 		t.Errorf("ateapiAddr = %q, want %q", cfg.AteapiAddr, DefaultAteapiAddr)
@@ -321,5 +322,131 @@ func TestResumeActorErrorPropagation(t *testing.T) {
 		if status.Code(err) != codes.Internal {
 			t.Errorf("expected internal error, got %v", err)
 		}
+	}
+}
+
+type fakeItemHandler struct {
+	mu          sync.Mutex
+	handledOpts []environments.HandleItemOptions
+	handleErr   error
+}
+
+func (f *fakeItemHandler) HandleItem(ctx context.Context, opts environments.HandleItemOptions) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.handledOpts = append(f.handledOpts, opts)
+	return f.handleErr
+}
+
+func TestHandleWorkSuccess(t *testing.T) {
+	fakeClient := newFakeControlClient()
+	fakeHandler := &fakeItemHandler{}
+
+	cfg := Config{
+		EnvironmentID:  "env_test_123",
+		EnvironmentKey: "key_test_123",
+		AteClient:      fakeClient,
+		ItemHandler:    fakeHandler,
+		Namespace:      "anthropic-worker",
+		Template:       "anthropic-worker-template",
+	}
+	server, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer server.Close()
+
+	work := &anthropic.BetaSelfHostedWork{
+		ID:            "work_item_999",
+		EnvironmentID: "env_test_123",
+		Data: anthropic.BetaSessionWorkData{
+			ID: "sesn_test_abc",
+		},
+	}
+
+	ctx := context.Background()
+	if err := server.handleWork(ctx, work); err != nil {
+		t.Fatalf("handleWork failed: %v", err)
+	}
+
+	// 1. Check item handler was invoked with right parameters
+	fakeHandler.mu.Lock()
+	if len(fakeHandler.handledOpts) != 1 {
+		t.Fatalf("handled item count = %d, want 1", len(fakeHandler.handledOpts))
+	}
+	opt := fakeHandler.handledOpts[0]
+	fakeHandler.mu.Unlock()
+
+	if opt.WorkID != "work_item_999" {
+		t.Errorf("WorkID = %q, want %q", opt.WorkID, "work_item_999")
+	}
+	if opt.EnvironmentID != "env_test_123" {
+		t.Errorf("EnvironmentID = %q, want %q", opt.EnvironmentID, "env_test_123")
+	}
+	if opt.SessionID != "sesn_test_abc" {
+		t.Errorf("SessionID = %q, want %q", opt.SessionID, "sesn_test_abc")
+	}
+	if opt.EnvironmentKey != "key_test_123" {
+		t.Errorf("EnvironmentKey = %q, want %q", opt.EnvironmentKey, "key_test_123")
+	}
+
+	// 2. Check actor was created, resumed, and suspended
+	expectedActorName := actorName("sesn_test_abc")
+	key := "anthropic-worker/" + expectedActorName
+
+	fakeClient.mu.Lock()
+	defer fakeClient.mu.Unlock()
+	if _, ok := fakeClient.createdActors[key]; !ok {
+		t.Errorf("expected actor %q to be created", key)
+	}
+	if fakeClient.resumedActors[key] != 1 {
+		t.Errorf("resumed count = %d, want 1", fakeClient.resumedActors[key])
+	}
+	if fakeClient.suspendedActors[key] != 1 {
+		t.Errorf("suspended count = %d, want 1", fakeClient.suspendedActors[key])
+	}
+}
+
+func TestHandleWorkHandlerError(t *testing.T) {
+	fakeClient := newFakeControlClient()
+	fakeHandler := &fakeItemHandler{
+		handleErr: errors.New("tool runner execution failure"),
+	}
+
+	cfg := Config{
+		EnvironmentID:  "env_test_123",
+		EnvironmentKey: "key_test_123",
+		AteClient:      fakeClient,
+		ItemHandler:    fakeHandler,
+		Namespace:      "anthropic-worker",
+		Template:       "anthropic-worker-template",
+	}
+	server, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer server.Close()
+
+	work := &anthropic.BetaSelfHostedWork{
+		ID:            "work_item_error",
+		EnvironmentID: "env_test_123",
+		Data: anthropic.BetaSessionWorkData{
+			ID: "sesn_test_err",
+		},
+	}
+
+	err = server.handleWork(context.Background(), work)
+	if err == nil {
+		t.Fatal("expected handleWork to fail with handler error, got nil")
+	}
+
+	// Ensure actor was still suspended via defer
+	expectedActorName := actorName("sesn_test_err")
+	key := "anthropic-worker/" + expectedActorName
+
+	fakeClient.mu.Lock()
+	defer fakeClient.mu.Unlock()
+	if fakeClient.suspendedActors[key] != 1 {
+		t.Errorf("suspended count = %d, want 1 even after handler error", fakeClient.suspendedActors[key])
 	}
 }
