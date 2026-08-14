@@ -42,9 +42,10 @@ RUN set -eux; \
 
 # Copy compiled binaries from builder
 COPY --from=builder /out/ate-ant /usr/local/bin/ate-ant
+RUN ln -s /usr/local/bin/ate-ant /usr/local/bin/ate-ant-dispatch
 
 # Set default working directory
 WORKDIR /workspace
 
 # Default entrypoint
-ENTRYPOINT ["ant", "beta:worker", "poll", "--workdir", "/workspace"]
+ENTRYPOINT ["ate-ant", "waker"]

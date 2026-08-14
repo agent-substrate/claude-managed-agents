@@ -127,11 +127,14 @@ func TestBuildManifests(t *testing.T) {
 	if len(template.Spec.Containers) != 1 || template.Spec.Containers[0].Image != cfg.WorkerImage {
 		t.Errorf("template containers = %+v", template.Spec.Containers)
 	}
-	if len(template.Spec.Containers[0].Command) < 2 || template.Spec.Containers[0].Command[0] != "ant" || template.Spec.Containers[0].Command[1] != "beta:worker" {
-		t.Errorf("template container command = %v, want ['ant', 'beta:worker', ...]", template.Spec.Containers[0].Command)
+	if len(template.Spec.Containers[0].Command) < 2 || template.Spec.Containers[0].Command[0] != "ate-ant" || template.Spec.Containers[0].Command[1] != "waker" {
+		t.Errorf("template container command = %v, want ['ate-ant', 'waker', ...]", template.Spec.Containers[0].Command)
 	}
 	if len(template.Spec.Containers[0].Env) != 2 {
 		t.Errorf("template container env count = %d, want 2", len(template.Spec.Containers[0].Env))
+	}
+	if template.Spec.Containers[0].Readyz == nil || template.Spec.Containers[0].Readyz.HTTPGet == nil || template.Spec.Containers[0].Readyz.HTTPGet.Path != "/healthz" || template.Spec.Containers[0].Readyz.HTTPGet.Port != 80 {
+		t.Errorf("template container readyz = %+v, want path '/healthz' and port 80", template.Spec.Containers[0].Readyz)
 	}
 	if template.Spec.SnapshotsConfig.Location != cfg.SnapshotsBucket {
 		t.Errorf("snapshots location = %q", template.Spec.SnapshotsConfig.Location)
@@ -145,8 +148,8 @@ func TestBuildManifests(t *testing.T) {
 		t.Fatalf("deployment containers count = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
 	}
 	workerContainer := deployment.Spec.Template.Spec.Containers[0]
-	if len(workerContainer.Command) < 2 || workerContainer.Command[0] != "ate-ant" || workerContainer.Command[1] != "worker" {
-		t.Errorf("deployment container command = %v, want ['ate-ant', 'worker']", workerContainer.Command)
+	if len(workerContainer.Command) < 3 || workerContainer.Command[0] != "ant" || workerContainer.Command[1] != "beta:worker" || workerContainer.Command[2] != "poll" {
+		t.Errorf("deployment container command = %v, want ['ant', 'beta:worker', 'poll', ...]", workerContainer.Command)
 	}
 }
 
@@ -167,8 +170,10 @@ func TestWriteManifests(t *testing.T) {
 		"kind: Deployment",
 		"image: gcr.io/test/worker@sha256:1111",
 		"location: gs://test-bucket/snapshots/",
+		"ant",
+		"beta:worker",
+		"poll",
 		"ate-ant",
-		"worker",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)

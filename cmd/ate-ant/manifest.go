@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
 	"github.com/spf13/cobra"
@@ -19,30 +20,32 @@ const DefaultPauseImage = "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896c
 
 // Default constants for names and paths.
 const (
-	DefaultNamespace      = "anthropic-worker"
-	DefaultTemplate       = "anthropic-worker-template"
-	DefaultDeploymentName = "anthropic-worker"
-	DefaultSecretName     = "anthropic-environment-creds"
-	DefaultWorkdir        = "/workspace"
-	DefaultAteapiAddr     = "api.ate-system.svc.cluster.local:443"
+	DefaultNamespace        = "anthropic-worker"
+	DefaultTemplate         = "anthropic-worker-template"
+	DefaultDeploymentName   = "anthropic-worker"
+	DefaultSecretName       = "anthropic-environment-creds"
+	DefaultWorkdir          = "/workspace"
+	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
+	DefaultAtenetRouterAddr = "atenet-router.ate-system.svc.cluster.local:80"
 )
 
 // Config defines the parameters for generating Substrate and Kubernetes deployment manifests.
 type Config struct {
-	Namespace       string `json:"namespace"`
-	Template        string `json:"template"`
-	WorkerPool      string `json:"worker_pool"`
-	WorkerImage     string `json:"worker_image"`
-	AteomImage      string `json:"ateom_image"`
-	PauseImage      string `json:"pause_image"`
-	SnapshotsBucket string `json:"snapshots_bucket"`
-	Replicas        int32  `json:"replicas"`
-	WorkerReplicas  int32  `json:"worker_replicas"`
-	EnvironmentID   string `json:"environment_id"`
-	EnvironmentKey  string `json:"environment_key"`
-	APIKey          string `json:"api_key"`
-	Workdir         string `json:"workdir"`
-	AteapiAddr      string `json:"ateapi_addr"`
+	Namespace        string `json:"namespace"`
+	Template         string `json:"template"`
+	WorkerPool       string `json:"worker_pool"`
+	WorkerImage      string `json:"worker_image"`
+	AteomImage       string `json:"ateom_image"`
+	PauseImage       string `json:"pause_image"`
+	SnapshotsBucket  string `json:"snapshots_bucket"`
+	Replicas         int32  `json:"replicas"`
+	WorkerReplicas   int32  `json:"worker_replicas"`
+	EnvironmentID    string `json:"environment_id"`
+	EnvironmentKey   string `json:"environment_key"`
+	APIKey           string `json:"api_key"`
+	Workdir          string `json:"workdir"`
+	AteapiAddr       string `json:"ateapi_addr"`
+	AtenetRouterAddr string `json:"atenet_router_addr"`
 }
 
 // Defaults fills in default values for unset fields.
@@ -60,7 +63,7 @@ func (c *Config) Defaults() {
 		c.PauseImage = DefaultPauseImage
 	}
 	if c.Replicas == 0 {
-		c.Replicas = 3
+		c.Replicas = 50
 	}
 	if c.WorkerReplicas == 0 {
 		c.WorkerReplicas = 1
@@ -70,6 +73,9 @@ func (c *Config) Defaults() {
 	}
 	if c.AteapiAddr == "" {
 		c.AteapiAddr = DefaultAteapiAddr
+	}
+	if c.AtenetRouterAddr == "" {
+		c.AtenetRouterAddr = DefaultAtenetRouterAddr
 	}
 }
 
@@ -103,6 +109,15 @@ the ActorTemplate for sandboxed execution, and the worker daemon Deployment.
 It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cfg.EnvironmentID == "" {
+				cfg.EnvironmentID = os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
+			}
+			if cfg.EnvironmentKey == "" {
+				cfg.EnvironmentKey = os.Getenv("ANTHROPIC_ENVIRONMENT_KEY")
+			}
+			if cfg.APIKey == "" {
+				cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
+			}
 			if err := cfg.Validate(); err != nil {
 				return err
 			}
@@ -117,13 +132,14 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 	cmd.Flags().StringVar(&cfg.AteomImage, "ateom-image", "", "digest-pinned ateom image for the worker pool (e.g. ateom-gvisor)")
 	cmd.Flags().StringVar(&cfg.PauseImage, "pause-image", DefaultPauseImage, "digest-pinned pause image for the sandbox container")
 	cmd.Flags().StringVar(&cfg.SnapshotsBucket, "snapshots-bucket", "", "object-storage bucket (with prefix) for actor snapshots (e.g. gs://bucket/snapshots/)")
-	cmd.Flags().Int32Var(&cfg.Replicas, "replicas", 3, "number of pre-warmed worker pool pods")
+	cmd.Flags().Int32Var(&cfg.Replicas, "replicas", 50, "number of pre-warmed worker pool pods")
 	cmd.Flags().Int32Var(&cfg.WorkerReplicas, "worker-replicas", 1, "number of worker daemon deployment replicas")
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (e.g. env_...)")
 	cmd.Flags().StringVar(&cfg.EnvironmentKey, "anthropic-env-key", "", "Anthropic environment key")
 	cmd.Flags().StringVar(&cfg.APIKey, "anthropic-api-key", "", "Anthropic API key")
 	cmd.Flags().StringVar(&cfg.Workdir, "workdir", DefaultWorkdir, "working directory for tool execution")
 	cmd.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
+	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", DefaultAtenetRouterAddr, "Substrate atenet HTTP router endpoint")
 
 	_ = cmd.MarkFlagRequired("worker-image")
 	_ = cmd.MarkFlagRequired("ateom-image")
@@ -237,8 +253,14 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 			Containers: []atev1alpha1.Container{{
 				Name:    "worker",
 				Image:   cfg.WorkerImage,
-				Command: []string{"ant", "beta:worker", "poll", "--workdir", cfg.Workdir, "--unrestricted-paths"},
+				Command: []string{"ate-ant", "waker"},
 				Env:     envVars,
+				Readyz: &atev1alpha1.ContainerReadyz{
+					HTTPGet: &atev1alpha1.HTTPGetAction{
+						Path: "/healthz",
+						Port: 80,
+					},
+				},
 			}},
 			SnapshotsConfig: atev1alpha1.SnapshotsConfig{
 				Location: cfg.SnapshotsBucket,
@@ -251,7 +273,6 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 	labels := map[string]string{"app": DefaultDeploymentName}
 	replicas := cfg.WorkerReplicas
-
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -266,9 +287,12 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Name:    DefaultDeploymentName,
-						Image:   cfg.WorkerImage,
-						Command: []string{"ate-ant", "worker"},
+						Name:  DefaultDeploymentName,
+						Image: cfg.WorkerImage,
+						Command: []string{
+							"ant", "beta:worker", "poll",
+							"--on-work", "ate-ant",
+						},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
 								LocalObjectReference: corev1.LocalObjectReference{

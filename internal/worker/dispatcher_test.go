@@ -2,14 +2,16 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
-	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -29,16 +31,16 @@ func TestActorName(t *testing.T) {
 	}
 
 	for _, id := range testIDs {
-		name := actorName(id)
+		name := ActorName(id)
 		if !rfc1123Pattern.MatchString(name) {
-			t.Errorf("actorName(%q) = %q does not match RFC 1123 regex", id, name)
+			t.Errorf("ActorName(%q) = %q does not match RFC 1123 regex", id, name)
 		}
 		if len(name) > 63 {
-			t.Errorf("actorName(%q) = %q length = %d > 63", id, name, len(name))
+			t.Errorf("ActorName(%q) = %q length = %d > 63", id, name, len(name))
 		}
 		// Must be deterministic
-		if second := actorName(id); second != name {
-			t.Errorf("actorName(%q) not deterministic: %q vs %q", id, name, second)
+		if second := ActorName(id); second != name {
+			t.Errorf("ActorName(%q) not deterministic: %q vs %q", id, name, second)
 		}
 	}
 }
@@ -50,16 +52,6 @@ func TestConfigValidate(t *testing.T) {
 	}
 
 	cfg.EnvironmentID = "env_123"
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for missing EnvironmentKey, got nil")
-	}
-
-	cfg.EnvironmentKey = "key_123"
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for missing APIKey, got nil")
-	}
-
-	cfg.APIKey = "sk-ant-api03-xxx"
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("unexpected error for valid Config: %v", err)
 	}
@@ -121,7 +113,7 @@ func (f *fakeControlClient) CreateActor(ctx context.Context, in *ateapipb.Create
 		return nil, status.Error(codes.AlreadyExists, "actor already exists")
 	}
 	actor := in.GetActor()
-	actor.Status = ateapipb.Actor_STATUS_SUSPENDED
+	actor.Status = ateapipb.Actor_STATUS_RUNNING
 	f.createdActors[key] = actor
 	return actor, nil
 }
@@ -239,20 +231,23 @@ func (f *fakeControlClient) DeleteAtespace(ctx context.Context, in *ateapipb.Del
 func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 	fakeClient := newFakeControlClient()
 
-	cfg := Config{
-		EnvironmentID:  "env_test_123",
-		EnvironmentKey: "key_test_123",
-		APIKey:         "key_test_123",
-		AteClient:      fakeClient,
-		Namespace:      "anthropic-worker",
-		Template:       "anthropic-worker-template",
-	}
+	mockRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "completed"})
+	}))
+	defer mockRouter.Close()
 
-	server, err := NewServer(cfg)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
+	cfg := Config{
+		EnvironmentID:    "env_test_123",
+		EnvironmentKey:   "key_test_123",
+		APIKey:           "key_test_123",
+		AteClient:        fakeClient,
+		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
+		Namespace:        "anthropic-worker",
+		Template:         "anthropic-worker-template",
 	}
-	defer server.Close()
+	cfg.Defaults()
 
 	ctx := context.Background()
 	actorRef := &ateapipb.ObjectRef{
@@ -260,9 +255,9 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 		Name:     "session-test-001",
 	}
 
-	// 1. Initial Resume: Actor does not exist yet -> should create atespace, create actor, and resume
-	if err := server.resumeOrRegisterActor(ctx, actorRef); err != nil {
-		t.Fatalf("resumeOrRegisterActor: %v", err)
+	// 1. Initial Registration: Actor does not exist yet -> should create atespace, create actor, and notify router
+	if err := EnsureActorRegistered(ctx, fakeClient, cfg, actorRef, "work-test-001", "session-test-001"); err != nil {
+		t.Fatalf("EnsureActorRegistered: %v", err)
 	}
 
 	key := "anthropic-worker/session-test-001"
@@ -272,30 +267,25 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 	if _, ok := fakeClient.createdActors[key]; !ok {
 		t.Errorf("expected Actor %q to be created", key)
 	}
-	if fakeClient.resumedActors[key] != 1 {
-		t.Errorf("resumed count = %d, want 1", fakeClient.resumedActors[key])
-	}
 
 	// 2. Suspend Actor
-	if err := server.suspendActor(ctx, actorRef); err != nil {
-		t.Fatalf("suspendActor: %v", err)
+	fakeClient.createdActors[key].Status = ateapipb.Actor_STATUS_RUNNING
+	if err := SuspendActor(ctx, fakeClient, actorRef); err != nil {
+		t.Fatalf("SuspendActor: %v", err)
 	}
 	if fakeClient.suspendedActors[key] != 1 {
 		t.Errorf("suspended count = %d, want 1", fakeClient.suspendedActors[key])
 	}
 
-	// 3. Subsequent Resume: Actor already exists -> should resume directly without error
-	if err := server.resumeOrRegisterActor(ctx, actorRef); err != nil {
-		t.Fatalf("second resumeOrRegisterActor: %v", err)
-	}
-	if fakeClient.resumedActors[key] != 2 {
-		t.Errorf("resumed count = %d, want 2", fakeClient.resumedActors[key])
+	// 3. Subsequent Notification: Actor already exists -> should notify router directly without error
+	if err := EnsureActorRegistered(ctx, fakeClient, cfg, actorRef, "work-test-002", "session-test-001"); err != nil {
+		t.Fatalf("second EnsureActorRegistered: %v", err)
 	}
 }
 
-func TestResumeActorErrorPropagation(t *testing.T) {
+func TestEnsureActorErrorPropagation(t *testing.T) {
 	fakeClient := newFakeControlClient()
-	fakeClient.resumeErr = status.Error(codes.Internal, "internal substrate error")
+	fakeClient.createErr = status.Error(codes.Internal, "internal substrate error")
 
 	cfg := Config{
 		EnvironmentID:  "env_test_123",
@@ -303,175 +293,100 @@ func TestResumeActorErrorPropagation(t *testing.T) {
 		APIKey:         "key_test_123",
 		AteClient:      fakeClient,
 	}
-	server, err := NewServer(cfg)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	defer server.Close()
+	cfg.Defaults()
 
 	actorRef := &ateapipb.ObjectRef{
 		Atespace: "anthropic-worker",
 		Name:     "session-test",
 	}
 
-	err = server.resumeOrRegisterActor(context.Background(), actorRef)
-	if err == nil || !errors.Is(err, fakeClient.resumeErr) {
+	err := EnsureActorRegistered(context.Background(), fakeClient, cfg, actorRef, "work-test", "session-test")
+	if err == nil || !errors.Is(err, fakeClient.createErr) {
 		if status.Code(err) != codes.Internal {
 			t.Errorf("expected internal error, got %v", err)
 		}
 	}
 }
 
-func TestParseWorkActivityTime(t *testing.T) {
-	t1 := time.Date(2026, 8, 14, 1, 0, 0, 0, time.UTC)
-	t2 := time.Date(2026, 8, 14, 1, 5, 0, 0, time.UTC)
-	t3 := time.Date(2026, 8, 14, 1, 10, 0, 0, time.UTC)
-
-	workWithHeartbeat := &anthropic.BetaSelfHostedWork{
-		CreatedAt:         t1.Format(time.RFC3339),
-		StartedAt:         t2.Format(time.RFC3339),
-		LatestHeartbeatAt: t3.Format(time.RFC3339),
-	}
-	parsed := parseWorkActivityTime(workWithHeartbeat)
-	if !parsed.Equal(t3) {
-		t.Errorf("parsed activity time = %v, want LatestHeartbeatAt %v", parsed, t3)
-	}
-
-	workWithStarted := &anthropic.BetaSelfHostedWork{
-		CreatedAt: t1.Format(time.RFC3339),
-		StartedAt: t2.Format(time.RFC3339),
-	}
-	parsed = parseWorkActivityTime(workWithStarted)
-	if !parsed.Equal(t2) {
-		t.Errorf("parsed activity time = %v, want StartedAt %v", parsed, t2)
-	}
-
-	workWithCreatedOnly := &anthropic.BetaSelfHostedWork{
-		CreatedAt: t1.Format(time.RFC3339),
-	}
-	parsed = parseWorkActivityTime(workWithCreatedOnly)
-	if !parsed.Equal(t1) {
-		t.Errorf("parsed activity time = %v, want CreatedAt %v", parsed, t1)
-	}
-}
-
-func TestIsNonTerminated(t *testing.T) {
-	if !isNonTerminated(anthropic.BetaSelfHostedWorkStateQueued) {
-		t.Error("queued should be non-terminated")
-	}
-	if !isNonTerminated(anthropic.BetaSelfHostedWorkStateStarting) {
-		t.Error("starting should be non-terminated")
-	}
-	if !isNonTerminated(anthropic.BetaSelfHostedWorkStateActive) {
-		t.Error("active should be non-terminated")
-	}
-	if isNonTerminated(anthropic.BetaSelfHostedWorkStateStopping) {
-		t.Error("stopping should be terminated")
-	}
-	if isNonTerminated(anthropic.BetaSelfHostedWorkStateStopped) {
-		t.Error("stopped should be terminated")
-	}
-}
-
-func TestSuspendActorPrerequisite(t *testing.T) {
+func TestDispatchWork(t *testing.T) {
 	fakeClient := newFakeControlClient()
 
+	mockRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "completed"})
+	}))
+	defer mockRouter.Close()
+
 	cfg := Config{
-		EnvironmentID:  "env_test_123",
-		EnvironmentKey: "key_test_123",
-		APIKey:         "key_test_123",
-		AteClient:      fakeClient,
-		Namespace:      "anthropic-worker",
-		Template:       "anthropic-worker-template",
+		AteClient:        fakeClient,
+		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
+		Namespace:        "anthropic-worker",
+		Template:         "anthropic-worker-template",
 	}
 
-	server, err := NewServer(cfg)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	ctx := context.Background()
-	actorRef := &ateapipb.ObjectRef{
-		Atespace: "anthropic-worker",
-		Name:     "session-resuming-001",
-	}
+	sessionID := "sesn_test_dispatch_01"
+	aName := ActorName(sessionID)
+	key := "anthropic-worker/" + aName
 
-	// Create actor in STATUS_RESUMING state manually in fake client
-	key := "anthropic-worker/session-resuming-001"
-	fakeClient.createdActors[key] = &ateapipb.Actor{
-		Metadata: &ateapipb.ResourceMetadata{
-			Atespace: actorRef.Atespace,
-			Name:     actorRef.Name,
-		},
-		Status: ateapipb.Actor_STATUS_RESUMING,
+	req := DispatchRequest{
+		WorkID:    "work_test_dispatch_01",
+		SessionID: sessionID,
+		Wait:      true,
 	}
 
-	// Calling suspendActor directly on a STATUS_RESUMING actor should return FailedPrecondition
-	err = server.suspendActor(ctx, actorRef)
-	if err == nil {
-		t.Fatal("expected error suspending a STATUS_RESUMING actor, got nil")
-	}
-	if status.Code(err) != codes.FailedPrecondition {
-		t.Errorf("expected FailedPrecondition, got code %v: %v", status.Code(err), err)
+	if err := DispatchWork(ctx, cfg, req); err != nil {
+		t.Fatalf("DispatchWork: %v", err)
 	}
 
-	// Once actor is STATUS_RUNNING, suspendActor should succeed
-	fakeClient.createdActors[key].Status = ateapipb.Actor_STATUS_RUNNING
-	if err := server.suspendActor(ctx, actorRef); err != nil {
-		t.Fatalf("expected suspendActor to succeed on STATUS_RUNNING actor: %v", err)
+	if _, ok := fakeClient.createdActors[key]; !ok {
+		t.Fatalf("expected actor %q to be created", key)
 	}
-	if fakeClient.createdActors[key].Status != ateapipb.Actor_STATUS_SUSPENDED {
-		t.Errorf("expected actor status to be STATUS_SUSPENDED, got %v", fakeClient.createdActors[key].Status)
+	if fakeClient.suspendedActors[key] != 1 {
+		t.Errorf("expected actor %q to be suspended after turn, count=%d", key, fakeClient.suspendedActors[key])
 	}
 }
 
-func TestWaitForActorResumed(t *testing.T) {
+func TestDispatchWorkNoWait(t *testing.T) {
 	fakeClient := newFakeControlClient()
 
-	cfg := Config{
-		EnvironmentID:  "env_test_123",
-		EnvironmentKey: "key_test_123",
-		APIKey:         "key_test_123",
-		AteClient:      fakeClient,
-		Namespace:      "anthropic-worker",
-		Template:       "anthropic-worker-template",
-	}
+	mockRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "started"})
+	}))
+	defer mockRouter.Close()
 
-	server, err := NewServer(cfg)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
+	cfg := Config{
+		AteClient:        fakeClient,
+		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
+		Namespace:        "anthropic-worker",
+		Template:         "anthropic-worker-template",
 	}
-	defer server.Close()
 
 	ctx := context.Background()
-	actorRef := &ateapipb.ObjectRef{
-		Atespace: "anthropic-worker",
-		Name:     "session-async-resume",
+	sessionID := "sesn_test_dispatch_nowait"
+	aName := ActorName(sessionID)
+	key := "anthropic-worker/" + aName
+
+	req := DispatchRequest{
+		WorkID:    "work_test_nowait",
+		SessionID: sessionID,
+		Wait:      false,
 	}
 
-	key := "anthropic-worker/session-async-resume"
-	fakeClient.createdActors[key] = &ateapipb.Actor{
-		Metadata: &ateapipb.ResourceMetadata{
-			Atespace: actorRef.Atespace,
-			Name:     actorRef.Name,
-		},
-		Status: ateapipb.Actor_STATUS_RESUMING,
+	if err := DispatchWork(ctx, cfg, req); err != nil {
+		t.Fatalf("DispatchWork (no wait): %v", err)
 	}
 
-	// Simulate background transition from STATUS_RESUMING to STATUS_RUNNING after 100ms
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		fakeClient.mu.Lock()
-		fakeClient.createdActors[key].Status = ateapipb.Actor_STATUS_RUNNING
-		fakeClient.mu.Unlock()
-	}()
-
-	if err := server.waitForActorResumed(ctx, actorRef); err != nil {
-		t.Fatalf("waitForActorResumed failed: %v", err)
+	if _, ok := fakeClient.createdActors[key]; !ok {
+		t.Fatalf("expected actor %q to be created", key)
 	}
-
-	if fakeClient.createdActors[key].Status != ateapipb.Actor_STATUS_RUNNING {
-		t.Errorf("expected STATUS_RUNNING, got %v", fakeClient.createdActors[key].Status)
+	// With wait=false, it shouldn't suspend
+	if fakeClient.suspendedActors[key] != 0 {
+		t.Errorf("expected 0 suspensions with wait=false, got %d", fakeClient.suspendedActors[key])
 	}
 }
