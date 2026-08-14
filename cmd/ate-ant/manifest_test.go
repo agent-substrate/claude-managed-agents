@@ -169,7 +169,6 @@ func TestWriteManifests(t *testing.T) {
 		"location: gs://test-bucket/snapshots/",
 		"ate-ant",
 		"worker",
-		"ATEAPI_ADDR",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)

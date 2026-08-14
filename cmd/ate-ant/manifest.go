@@ -249,24 +249,6 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 						Name:    DefaultDeploymentName,
 						Image:   cfg.WorkerImage,
 						Command: []string{"ate-ant", "worker"},
-						Env: []corev1.EnvVar{
-							{
-								Name:  "ATEAPI_ADDR",
-								Value: cfg.AteapiAddr,
-							},
-							{
-								Name:  "NAMESPACE",
-								Value: cfg.Namespace,
-							},
-							{
-								Name:  "TEMPLATE",
-								Value: cfg.Template,
-							},
-							{
-								Name:  "WORKDIR",
-								Value: cfg.Workdir,
-							},
-						},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
 								LocalObjectReference: corev1.LocalObjectReference{

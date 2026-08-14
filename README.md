@@ -72,7 +72,7 @@ go install github.com/agent-substrate/anthropic/cmd/ate-ant@latest
 
 # Generate deployment YAML and apply to Kubernetes
 ate-ant manifest \
-  --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/anthropic-worker@sha256:1dc73cf7abaf091cfb20c88cd6111d5b35692869b81f1a1f08162c6ac07ad6d8 \
+  --worker-image      gcr.io/dberkov-gke-dev3/anthropic-worker@sha256:c3e102f8cbd90dda1585686474078370dab09c4b9a72e0a4ebda690135c4f18f \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/anthropic-worker/ \
   --anthropic-env-id  $ANTHROPIC_ENVIRONMENT_ID \
