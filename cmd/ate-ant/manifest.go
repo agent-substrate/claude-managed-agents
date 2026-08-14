@@ -40,6 +40,7 @@ type Config struct {
 	WorkerReplicas  int32  `json:"worker_replicas"`
 	EnvironmentID   string `json:"environment_id"`
 	EnvironmentKey  string `json:"environment_key"`
+	APIKey          string `json:"api_key"`
 	Workdir         string `json:"workdir"`
 	AteapiAddr      string `json:"ateapi_addr"`
 }
@@ -120,6 +121,7 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 	cmd.Flags().Int32Var(&cfg.WorkerReplicas, "worker-replicas", 1, "number of worker daemon deployment replicas")
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (e.g. env_...)")
 	cmd.Flags().StringVar(&cfg.EnvironmentKey, "anthropic-env-key", "", "Anthropic environment key")
+	cmd.Flags().StringVar(&cfg.APIKey, "anthropic-api-key", "", "Anthropic API key")
 	cmd.Flags().StringVar(&cfg.Workdir, "workdir", DefaultWorkdir, "working directory for tool execution")
 	cmd.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 
@@ -152,17 +154,24 @@ func BuildNamespace(cfg Config) *corev1.Namespace {
 
 // BuildSecret constructs the corev1.Secret containing Anthropic environment credentials.
 func BuildSecret(cfg Config) *corev1.Secret {
+	stringData := map[string]string{
+		"ANTHROPIC_ENVIRONMENT_ID": cfg.EnvironmentID,
+	}
+	if cfg.EnvironmentKey != "" {
+		stringData["ANTHROPIC_ENVIRONMENT_KEY"] = cfg.EnvironmentKey
+	}
+	if cfg.APIKey != "" {
+		stringData["ANTHROPIC_API_KEY"] = cfg.APIKey
+	}
+
 	return &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      DefaultSecretName,
 			Namespace: cfg.Namespace,
 		},
-		Type: corev1.SecretTypeOpaque,
-		StringData: map[string]string{
-			"ANTHROPIC_ENVIRONMENT_ID":  cfg.EnvironmentID,
-			"ANTHROPIC_ENVIRONMENT_KEY": cfg.EnvironmentKey,
-		},
+		Type:       corev1.SecretTypeOpaque,
+		StringData: stringData,
 	}
 }
 
@@ -189,6 +198,26 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 
 // BuildActorTemplate constructs the Substrate ActorTemplate CRD.
 func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
+	var envVars []atev1alpha1.EnvVar
+	if cfg.EnvironmentID != "" {
+		envVars = append(envVars, atev1alpha1.EnvVar{
+			Name:  "ANTHROPIC_ENVIRONMENT_ID",
+			Value: &cfg.EnvironmentID,
+		})
+	}
+	if cfg.EnvironmentKey != "" {
+		envVars = append(envVars, atev1alpha1.EnvVar{
+			Name:  "ANTHROPIC_ENVIRONMENT_KEY",
+			Value: &cfg.EnvironmentKey,
+		})
+	}
+	if cfg.APIKey != "" {
+		envVars = append(envVars, atev1alpha1.EnvVar{
+			Name:  "ANTHROPIC_API_KEY",
+			Value: &cfg.APIKey,
+		})
+	}
+
 	return &atev1alpha1.ActorTemplate{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: atev1alpha1.GroupVersion.String(),
@@ -209,16 +238,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 				Name:    "worker",
 				Image:   cfg.WorkerImage,
 				Command: []string{"ant", "beta:worker", "poll", "--workdir", cfg.Workdir, "--unrestricted-paths"},
-				Env: []atev1alpha1.EnvVar{
-					{
-						Name:  "ANTHROPIC_ENVIRONMENT_ID",
-						Value: &cfg.EnvironmentID,
-					},
-					{
-						Name:  "ANTHROPIC_ENVIRONMENT_KEY",
-						Value: &cfg.EnvironmentKey,
-					},
-				},
+				Env:     envVars,
 			}},
 			SnapshotsConfig: atev1alpha1.SnapshotsConfig{
 				Location: cfg.SnapshotsBucket,

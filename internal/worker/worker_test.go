@@ -3,14 +3,13 @@ package worker
 import (
 	"context"
 	"errors"
+	"regexp"
 	"sync"
 	"testing"
-
-	"regexp"
+	"time"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	anthropic "github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/lib/environments"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -56,6 +55,11 @@ func TestConfigValidate(t *testing.T) {
 	}
 
 	cfg.EnvironmentKey = "key_123"
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for missing APIKey, got nil")
+	}
+
+	cfg.APIKey = "sk-ant-api03-xxx"
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("unexpected error for valid Config: %v", err)
 	}
@@ -117,6 +121,7 @@ func (f *fakeControlClient) CreateActor(ctx context.Context, in *ateapipb.Create
 		return nil, status.Error(codes.AlreadyExists, "actor already exists")
 	}
 	actor := in.GetActor()
+	actor.Status = ateapipb.Actor_STATUS_SUSPENDED
 	f.createdActors[key] = actor
 	return actor, nil
 }
@@ -132,6 +137,12 @@ func (f *fakeControlClient) SuspendActor(ctx context.Context, in *ateapipb.Suspe
 		return nil, f.suspendErr
 	}
 	key := in.GetActor().Atespace + "/" + in.GetActor().Name
+	if a, ok := f.createdActors[key]; ok {
+		if a.Status != ateapipb.Actor_STATUS_RUNNING {
+			return nil, status.Errorf(codes.FailedPrecondition, "MarkSuspendingStep prerequisite not met for Actor: %s (got: %s, want STATUS_RUNNING)", in.GetActor().Name, a.Status)
+		}
+		a.Status = ateapipb.Actor_STATUS_SUSPENDED
+	}
 	f.suspendedActors[key]++
 	return &ateapipb.SuspendActorResponse{}, nil
 }
@@ -150,6 +161,7 @@ func (f *fakeControlClient) ResumeActor(ctx context.Context, in *ateapipb.Resume
 	if _, ok := f.createdActors[key]; !ok {
 		return nil, status.Error(codes.NotFound, "actor not found")
 	}
+	f.createdActors[key].Status = ateapipb.Actor_STATUS_RUNNING
 	f.resumedActors[key]++
 	return &ateapipb.ResumeActorResponse{Actor: f.createdActors[key], Resumed: true}, nil
 }
@@ -179,7 +191,15 @@ func (f *fakeControlClient) DeleteActorSnapshotTag(ctx context.Context, in *atea
 }
 
 func (f *fakeControlClient) ListActors(ctx context.Context, in *ateapipb.ListActorsRequest, opts ...grpc.CallOption) (*ateapipb.ListActorsResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "unimplemented")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var actors []*ateapipb.Actor
+	for _, a := range f.createdActors {
+		if in.Atespace == "" || a.Metadata.Atespace == in.Atespace {
+			actors = append(actors, a)
+		}
+	}
+	return &ateapipb.ListActorsResponse{Actors: actors}, nil
 }
 
 func (f *fakeControlClient) ListWorkers(ctx context.Context, in *ateapipb.ListWorkersRequest, opts ...grpc.CallOption) (*ateapipb.ListWorkersResponse, error) {
@@ -222,6 +242,7 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 	cfg := Config{
 		EnvironmentID:  "env_test_123",
 		EnvironmentKey: "key_test_123",
+		APIKey:         "key_test_123",
 		AteClient:      fakeClient,
 		Namespace:      "anthropic-worker",
 		Template:       "anthropic-worker-template",
@@ -272,31 +293,6 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 	}
 }
 
-func TestHandleWorkEmptySessionID(t *testing.T) {
-	fakeClient := newFakeControlClient()
-	cfg := Config{
-		EnvironmentID:  "env_test_123",
-		EnvironmentKey: "key_test_123",
-		AteClient:      fakeClient,
-	}
-	server, err := NewServer(cfg)
-	if err != nil {
-		t.Fatalf("NewServer: %v", err)
-	}
-	defer server.Close()
-
-	work := &anthropic.BetaSelfHostedWork{
-		ID:            "work_123",
-		EnvironmentID: "env_test_123",
-		Data:          anthropic.BetaSessionWorkData{}, // empty ID
-	}
-
-	err = server.handleWork(context.Background(), work)
-	if err == nil {
-		t.Error("expected error for empty session ID, got nil")
-	}
-}
-
 func TestResumeActorErrorPropagation(t *testing.T) {
 	fakeClient := newFakeControlClient()
 	fakeClient.resumeErr = status.Error(codes.Internal, "internal substrate error")
@@ -304,6 +300,7 @@ func TestResumeActorErrorPropagation(t *testing.T) {
 	cfg := Config{
 		EnvironmentID:  "env_test_123",
 		EnvironmentKey: "key_test_123",
+		APIKey:         "key_test_123",
 		AteClient:      fakeClient,
 	}
 	server, err := NewServer(cfg)
@@ -325,128 +322,156 @@ func TestResumeActorErrorPropagation(t *testing.T) {
 	}
 }
 
-type fakeItemHandler struct {
-	mu          sync.Mutex
-	handledOpts []environments.HandleItemOptions
-	handleErr   error
+func TestParseWorkActivityTime(t *testing.T) {
+	t1 := time.Date(2026, 8, 14, 1, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 8, 14, 1, 5, 0, 0, time.UTC)
+	t3 := time.Date(2026, 8, 14, 1, 10, 0, 0, time.UTC)
+
+	workWithHeartbeat := &anthropic.BetaSelfHostedWork{
+		CreatedAt:         t1.Format(time.RFC3339),
+		StartedAt:         t2.Format(time.RFC3339),
+		LatestHeartbeatAt: t3.Format(time.RFC3339),
+	}
+	parsed := parseWorkActivityTime(workWithHeartbeat)
+	if !parsed.Equal(t3) {
+		t.Errorf("parsed activity time = %v, want LatestHeartbeatAt %v", parsed, t3)
+	}
+
+	workWithStarted := &anthropic.BetaSelfHostedWork{
+		CreatedAt: t1.Format(time.RFC3339),
+		StartedAt: t2.Format(time.RFC3339),
+	}
+	parsed = parseWorkActivityTime(workWithStarted)
+	if !parsed.Equal(t2) {
+		t.Errorf("parsed activity time = %v, want StartedAt %v", parsed, t2)
+	}
+
+	workWithCreatedOnly := &anthropic.BetaSelfHostedWork{
+		CreatedAt: t1.Format(time.RFC3339),
+	}
+	parsed = parseWorkActivityTime(workWithCreatedOnly)
+	if !parsed.Equal(t1) {
+		t.Errorf("parsed activity time = %v, want CreatedAt %v", parsed, t1)
+	}
 }
 
-func (f *fakeItemHandler) HandleItem(ctx context.Context, opts environments.HandleItemOptions) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.handledOpts = append(f.handledOpts, opts)
-	return f.handleErr
+func TestIsNonTerminated(t *testing.T) {
+	if !isNonTerminated(anthropic.BetaSelfHostedWorkStateQueued) {
+		t.Error("queued should be non-terminated")
+	}
+	if !isNonTerminated(anthropic.BetaSelfHostedWorkStateStarting) {
+		t.Error("starting should be non-terminated")
+	}
+	if !isNonTerminated(anthropic.BetaSelfHostedWorkStateActive) {
+		t.Error("active should be non-terminated")
+	}
+	if isNonTerminated(anthropic.BetaSelfHostedWorkStateStopping) {
+		t.Error("stopping should be terminated")
+	}
+	if isNonTerminated(anthropic.BetaSelfHostedWorkStateStopped) {
+		t.Error("stopped should be terminated")
+	}
 }
 
-func TestHandleWorkSuccess(t *testing.T) {
+func TestSuspendActorPrerequisite(t *testing.T) {
 	fakeClient := newFakeControlClient()
-	fakeHandler := &fakeItemHandler{}
 
 	cfg := Config{
 		EnvironmentID:  "env_test_123",
 		EnvironmentKey: "key_test_123",
+		APIKey:         "key_test_123",
 		AteClient:      fakeClient,
-		ItemHandler:    fakeHandler,
 		Namespace:      "anthropic-worker",
 		Template:       "anthropic-worker-template",
 	}
+
 	server, err := NewServer(cfg)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 	defer server.Close()
-
-	work := &anthropic.BetaSelfHostedWork{
-		ID:            "work_item_999",
-		EnvironmentID: "env_test_123",
-		Data: anthropic.BetaSessionWorkData{
-			ID: "sesn_test_abc",
-		},
-	}
 
 	ctx := context.Background()
-	if err := server.handleWork(ctx, work); err != nil {
-		t.Fatalf("handleWork failed: %v", err)
+	actorRef := &ateapipb.ObjectRef{
+		Atespace: "anthropic-worker",
+		Name:     "session-resuming-001",
 	}
 
-	// 1. Check item handler was invoked with right parameters
-	fakeHandler.mu.Lock()
-	if len(fakeHandler.handledOpts) != 1 {
-		t.Fatalf("handled item count = %d, want 1", len(fakeHandler.handledOpts))
-	}
-	opt := fakeHandler.handledOpts[0]
-	fakeHandler.mu.Unlock()
-
-	if opt.WorkID != "work_item_999" {
-		t.Errorf("WorkID = %q, want %q", opt.WorkID, "work_item_999")
-	}
-	if opt.EnvironmentID != "env_test_123" {
-		t.Errorf("EnvironmentID = %q, want %q", opt.EnvironmentID, "env_test_123")
-	}
-	if opt.SessionID != "sesn_test_abc" {
-		t.Errorf("SessionID = %q, want %q", opt.SessionID, "sesn_test_abc")
-	}
-	if opt.EnvironmentKey != "key_test_123" {
-		t.Errorf("EnvironmentKey = %q, want %q", opt.EnvironmentKey, "key_test_123")
+	// Create actor in STATUS_RESUMING state manually in fake client
+	key := "anthropic-worker/session-resuming-001"
+	fakeClient.createdActors[key] = &ateapipb.Actor{
+		Metadata: &ateapipb.ResourceMetadata{
+			Atespace: actorRef.Atespace,
+			Name:     actorRef.Name,
+		},
+		Status: ateapipb.Actor_STATUS_RESUMING,
 	}
 
-	// 2. Check actor was created, resumed, and suspended
-	expectedActorName := actorName("sesn_test_abc")
-	key := "anthropic-worker/" + expectedActorName
+	// Calling suspendActor directly on a STATUS_RESUMING actor should return FailedPrecondition
+	err = server.suspendActor(ctx, actorRef)
+	if err == nil {
+		t.Fatal("expected error suspending a STATUS_RESUMING actor, got nil")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("expected FailedPrecondition, got code %v: %v", status.Code(err), err)
+	}
 
-	fakeClient.mu.Lock()
-	defer fakeClient.mu.Unlock()
-	if _, ok := fakeClient.createdActors[key]; !ok {
-		t.Errorf("expected actor %q to be created", key)
+	// Once actor is STATUS_RUNNING, suspendActor should succeed
+	fakeClient.createdActors[key].Status = ateapipb.Actor_STATUS_RUNNING
+	if err := server.suspendActor(ctx, actorRef); err != nil {
+		t.Fatalf("expected suspendActor to succeed on STATUS_RUNNING actor: %v", err)
 	}
-	if fakeClient.resumedActors[key] != 1 {
-		t.Errorf("resumed count = %d, want 1", fakeClient.resumedActors[key])
-	}
-	if fakeClient.suspendedActors[key] != 1 {
-		t.Errorf("suspended count = %d, want 1", fakeClient.suspendedActors[key])
+	if fakeClient.createdActors[key].Status != ateapipb.Actor_STATUS_SUSPENDED {
+		t.Errorf("expected actor status to be STATUS_SUSPENDED, got %v", fakeClient.createdActors[key].Status)
 	}
 }
 
-func TestHandleWorkHandlerError(t *testing.T) {
+func TestWaitForActorResumed(t *testing.T) {
 	fakeClient := newFakeControlClient()
-	fakeHandler := &fakeItemHandler{
-		handleErr: errors.New("tool runner execution failure"),
-	}
 
 	cfg := Config{
 		EnvironmentID:  "env_test_123",
 		EnvironmentKey: "key_test_123",
+		APIKey:         "key_test_123",
 		AteClient:      fakeClient,
-		ItemHandler:    fakeHandler,
 		Namespace:      "anthropic-worker",
 		Template:       "anthropic-worker-template",
 	}
+
 	server, err := NewServer(cfg)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 	defer server.Close()
 
-	work := &anthropic.BetaSelfHostedWork{
-		ID:            "work_item_error",
-		EnvironmentID: "env_test_123",
-		Data: anthropic.BetaSessionWorkData{
-			ID: "sesn_test_err",
+	ctx := context.Background()
+	actorRef := &ateapipb.ObjectRef{
+		Atespace: "anthropic-worker",
+		Name:     "session-async-resume",
+	}
+
+	key := "anthropic-worker/session-async-resume"
+	fakeClient.createdActors[key] = &ateapipb.Actor{
+		Metadata: &ateapipb.ResourceMetadata{
+			Atespace: actorRef.Atespace,
+			Name:     actorRef.Name,
 		},
+		Status: ateapipb.Actor_STATUS_RESUMING,
 	}
 
-	err = server.handleWork(context.Background(), work)
-	if err == nil {
-		t.Fatal("expected handleWork to fail with handler error, got nil")
+	// Simulate background transition from STATUS_RESUMING to STATUS_RUNNING after 100ms
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		fakeClient.mu.Lock()
+		fakeClient.createdActors[key].Status = ateapipb.Actor_STATUS_RUNNING
+		fakeClient.mu.Unlock()
+	}()
+
+	if err := server.waitForActorResumed(ctx, actorRef); err != nil {
+		t.Fatalf("waitForActorResumed failed: %v", err)
 	}
 
-	// Ensure actor was still suspended via defer
-	expectedActorName := actorName("sesn_test_err")
-	key := "anthropic-worker/" + expectedActorName
-
-	fakeClient.mu.Lock()
-	defer fakeClient.mu.Unlock()
-	if fakeClient.suspendedActors[key] != 1 {
-		t.Errorf("suspended count = %d, want 1 even after handler error", fakeClient.suspendedActors[key])
+	if fakeClient.createdActors[key].Status != ateapipb.Actor_STATUS_RUNNING {
+		t.Errorf("expected STATUS_RUNNING, got %v", fakeClient.createdActors[key].Status)
 	}
 }

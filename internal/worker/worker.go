@@ -13,7 +13,6 @@ import (
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	anthropic "github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/lib/environments"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -23,20 +22,20 @@ import (
 )
 
 const (
-	DefaultNamespace      = "anthropic-worker"
-	DefaultTemplate       = "anthropic-worker-template"
-	DefaultWorkdir        = "/workspace"
-	DefaultAteapiAddr     = "api.ate-system.svc.cluster.local:443"
-	DefaultSuspendTimeout = 30 * time.Second
+	DefaultNamespace       = "anthropic-worker"
+	DefaultTemplate        = "anthropic-worker-template"
+	DefaultWorkdir         = "/workspace"
+	DefaultAteapiAddr      = "api.ate-system.svc.cluster.local:443"
+	DefaultSuspendTimeout  = 30 * time.Second
+	DefaultResumeTimeout   = 60 * time.Second
+	DefaultIdleTimeout     = 20 * time.Second
+	DefaultPollInterval    = 5 * time.Second
+	DefaultMaxActiveActors = 3
 )
-
-// ItemHandler defines the interface for handling claimed session work items.
-type ItemHandler interface {
-	HandleItem(ctx context.Context, opts environments.HandleItemOptions) error
-}
 
 // Config defines the configuration for the Anthropic worker frontend server.
 type Config struct {
+	APIKey            string
 	EnvironmentID     string
 	EnvironmentKey    string
 	AteapiAddr        string
@@ -47,13 +46,13 @@ type Config struct {
 	Insecure          bool
 	UnrestrictedPaths bool
 	MaxFileBytes      int64
+	IdleTimeout       time.Duration
+	PollInterval      time.Duration
+	MaxActiveActors   int
 	Logger            *slog.Logger
 
 	// AteClient can be provided to override the default gRPC client (e.g. in tests).
 	AteClient ateapipb.ControlClient
-
-	// ItemHandler can be provided to override the default tool execution handler (e.g. in tests).
-	ItemHandler ItemHandler
 }
 
 // Defaults fills in default values for unset fields.
@@ -74,6 +73,15 @@ func (c *Config) Defaults() {
 	if c.AteapiAddr == "" {
 		c.AteapiAddr = DefaultAteapiAddr
 	}
+	if c.IdleTimeout <= 0 {
+		c.IdleTimeout = DefaultIdleTimeout
+	}
+	if c.PollInterval <= 0 {
+		c.PollInterval = DefaultPollInterval
+	}
+	if c.MaxActiveActors <= 0 {
+		c.MaxActiveActors = DefaultMaxActiveActors
+	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
@@ -88,17 +96,19 @@ func (c *Config) Validate() error {
 	if c.EnvironmentKey == "" {
 		return errors.New("EnvironmentKey is required")
 	}
+	if c.APIKey == "" {
+		return errors.New("APIKey is required")
+	}
 	return nil
 }
 
-// Server is the frontend server that polls Anthropic, manages Substrate actors,
-// executes session worker items, and suspends actors once finished.
+// Server is the stateless frontend server that reconciles Anthropic work items
+// with Substrate actors in the cluster.
 type Server struct {
 	cfg             Config
 	ateClient       ateapipb.ControlClient
 	ateConn         *grpc.ClientConn
 	anthropicClient anthropic.Client
-	itemHandler     ItemHandler
 	logger          *slog.Logger
 }
 
@@ -125,31 +135,26 @@ func NewServer(cfg Config) (*Server, error) {
 		}
 	}
 
-	antClient := anthropic.NewClient(option.WithAPIKey(cfg.EnvironmentKey))
-
-	var itemHandler ItemHandler
-	if cfg.ItemHandler != nil {
-		itemHandler = cfg.ItemHandler
-	} else {
-		itemHandler = environments.NewEnvironmentWorker(antClient, environments.EnvironmentWorkerOptions{
-			EnvironmentID:     cfg.EnvironmentID,
-			EnvironmentKey:    cfg.EnvironmentKey,
-			WorkerID:          cfg.WorkerID,
-			Workdir:           cfg.Workdir,
-			UnrestrictedPaths: cfg.UnrestrictedPaths,
-			MaxFileBytes:      cfg.MaxFileBytes,
-			Logger:            logger,
-		})
-	}
+	antClient := anthropic.NewClient(option.WithAPIKey(cfg.APIKey))
 
 	return &Server{
 		cfg:             cfg,
 		ateClient:       ateClient,
 		ateConn:         ateConn,
 		anthropicClient: antClient,
-		itemHandler:     itemHandler,
 		logger:          logger,
 	}, nil
+}
+
+func (s *Server) workRequestOptions() []option.RequestOption {
+	var opts []option.RequestOption
+	if s.cfg.EnvironmentKey != "" {
+		opts = append(opts,
+			option.WithHeaderDel("X-Api-Key"),
+			option.WithAuthToken(s.cfg.EnvironmentKey),
+		)
+	}
+	return opts
 }
 
 // Close releases any held connections.
@@ -160,118 +165,238 @@ func (s *Server) Close() error {
 	return nil
 }
 
-// Run starts the worker polling loop. It blocks until ctx is cancelled or a fatal error occurs.
+// Run starts the stateless work reconciliation loop.
 func (s *Server) Run(ctx context.Context) error {
-	s.logger.Info("Starting Anthropic worker frontend server",
+	s.logger.Info("Starting Anthropic worker frontend server (stateless reconciler)",
 		slog.String("environment_id", s.cfg.EnvironmentID),
 		slog.String("namespace", s.cfg.Namespace),
 		slog.String("template", s.cfg.Template),
 		slog.String("workdir", s.cfg.Workdir),
+		slog.Int("max_active_actors", s.cfg.MaxActiveActors),
+		slog.Duration("idle_timeout", s.cfg.IdleTimeout),
+		slog.Duration("poll_interval", s.cfg.PollInterval),
 	)
 
-	poller := environments.NewWorkPoller(ctx, s.anthropicClient, environments.WorkPollerOptions{
-		EnvironmentID:  s.cfg.EnvironmentID,
-		EnvironmentKey: s.cfg.EnvironmentKey,
-		WorkerID:       s.cfg.WorkerID,
-		Logger:         s.logger,
-	})
-	defer poller.Close()
+	ticker := time.NewTicker(s.cfg.PollInterval)
+	defer ticker.Stop()
 
-	for poller.Next() {
-		work := poller.Current()
-		if work == nil {
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info("Anthropic worker frontend server stopped")
+			return nil
+		case <-ticker.C:
+			if err := s.Reconcile(ctx); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return nil
+				}
+				s.logger.Warn("Reconciliation error", slog.Any("error", err))
+			}
+		}
+	}
+}
+
+// Reconcile synchronizes Anthropic work queue items with Substrate running actors.
+func (s *Server) Reconcile(ctx context.Context) error {
+	// 1. Fetch current actor state from Substrate
+	actorsResp, err := s.ateClient.ListActors(ctx, &ateapipb.ListActorsRequest{
+		Atespace: s.cfg.Namespace,
+	})
+	if err != nil {
+		return fmt.Errorf("listing substrate actors: %w", err)
+	}
+
+	clusterActors := make(map[string]*ateapipb.Actor)
+	activeActorCount := 0
+	for _, actor := range actorsResp.Actors {
+		name := actor.Metadata.Name
+		clusterActors[name] = actor
+		if actor.Status != ateapipb.Actor_STATUS_SUSPENDED {
+			activeActorCount++
+		}
+	}
+
+	// 2. Fetch current work items from Anthropic
+	page, err := s.anthropicClient.Beta.Environments.Work.List(
+		ctx,
+		s.cfg.EnvironmentID,
+		anthropic.BetaEnvironmentWorkListParams{
+			Limit: anthropic.Int(30),
+		},
+		s.workRequestOptions()...,
+	)
+	if err != nil {
+		return fmt.Errorf("listing anthropic work: %w", err)
+	}
+
+	activeWorkBySession := make(map[string]*anthropic.BetaSelfHostedWork)
+	for i := range page.Data {
+		work := &page.Data[i]
+		if work.Data.ID == "" {
+			continue
+		}
+		if existing, exists := activeWorkBySession[work.Data.ID]; !exists || isNonTerminated(work.State) {
+			if !exists || !isNonTerminated(existing.State) {
+				activeWorkBySession[work.Data.ID] = work
+			}
+		}
+	}
+
+	now := time.Now()
+
+	// 3. Suspend any running Substrate actors that are idle (>IdleTimeout without heartbeat) or terminated
+	for _, actor := range clusterActors {
+		if actor.Status != ateapipb.Actor_STATUS_RUNNING {
 			continue
 		}
 
-		if err := s.handleWork(ctx, work); err != nil {
-			s.logger.Error("Error handling work item",
-				slog.String("work_id", work.ID),
-				slog.Any("error", err),
-			)
+		aName := actor.Metadata.Name
+		actorRef := &ateapipb.ObjectRef{
+			Atespace: s.cfg.Namespace,
+			Name:     aName,
 		}
-	}
 
-	if err := poller.Err(); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("poller error: %w", err)
-	}
+		var matchingWork *anthropic.BetaSelfHostedWork
+		for sessionID, work := range activeWorkBySession {
+			if aName == actorName(sessionID) {
+				matchingWork = work
+				break
+			}
+		}
 
-	s.logger.Info("Anthropic worker frontend server stopped")
-	return nil
-}
+		shouldSuspend := false
+		reason := ""
 
-// handleWork handles a single work item: resumes the session's actor, executes the worker,
-// and ensures the actor is suspended once done.
-func (s *Server) handleWork(ctx context.Context, work *anthropic.BetaSelfHostedWork) error {
-	sessionID := work.Data.ID
-	if sessionID == "" {
-		return fmt.Errorf("work item %s has empty session ID", work.ID)
-	}
-
-	actorName := actorName(sessionID)
-	actorRef := &ateapipb.ObjectRef{
-		Atespace: s.cfg.Namespace,
-		Name:     actorName,
-	}
-
-	// 1. Resume or create the actor
-	s.logger.Info("Resuming actor for session",
-		slog.String("actor", actorName),
-		slog.String("session_id", sessionID),
-	)
-	if err := s.resumeOrRegisterActor(ctx, actorRef); err != nil {
-		return fmt.Errorf("resuming actor %s: %w", actorName, err)
-	}
-	s.logger.Info("Actor is active", slog.String("actor", actorName))
-
-	// 2. Execute worker and ensure the actor is suspended when finished
-	defer func() {
-		suspendCtx, cancel := context.WithTimeout(context.Background(), DefaultSuspendTimeout)
-		defer cancel()
-
-		s.logger.Info("Suspending actor after session work",
-			slog.String("actor", actorName),
-			slog.String("session_id", sessionID),
-		)
-		if err := s.suspendActor(suspendCtx, actorRef); err != nil {
-			s.logger.Error("Failed to suspend actor",
-				slog.String("actor", actorName),
-				slog.Any("error", err),
-			)
+		if matchingWork == nil {
+			shouldSuspend = true
+			reason = "no work item found in Anthropic"
+		} else if !isNonTerminated(matchingWork.State) {
+			shouldSuspend = true
+			reason = fmt.Sprintf("work state is %s", matchingWork.State)
 		} else {
-			s.logger.Info("Actor suspended successfully", slog.String("actor", actorName))
+			lastActivity := parseWorkActivityTime(matchingWork)
+			idleDuration := now.Sub(lastActivity)
+			if idleDuration >= s.cfg.IdleTimeout {
+				shouldSuspend = true
+				reason = fmt.Sprintf("idle for %s (threshold %s)", idleDuration.Round(time.Millisecond), s.cfg.IdleTimeout)
+			}
 		}
-	}()
 
-	s.logger.Info("Actor is active; executing session work item in actor sandbox",
-		slog.String("actor", actorName),
-		slog.String("session_id", sessionID),
-		slog.String("work_id", work.ID),
-	)
+		if shouldSuspend {
+			s.logger.Info("Suspending idle/terminated actor",
+				slog.String("actor", aName),
+				slog.String("reason", reason),
+			)
+			if err := s.suspendActor(ctx, actorRef); err != nil {
+				s.logger.Error("Failed to suspend actor",
+					slog.String("actor", aName),
+					slog.Any("error", err),
+				)
+			} else {
+				s.logger.Info("Actor suspended successfully", slog.String("actor", aName))
+				activeActorCount--
+			}
+		}
+	}
 
-	if err := s.itemHandler.HandleItem(ctx, environments.HandleItemOptions{
-		WorkID:         work.ID,
-		EnvironmentID:  s.cfg.EnvironmentID,
-		SessionID:      sessionID,
-		EnvironmentKey: s.cfg.EnvironmentKey,
-	}); err != nil {
-		s.logger.Warn("Session work item execution ended with error",
+	// 4. Resume or register actors for queued/active work items (up to MaxActiveActors limit)
+	for sessionID, work := range activeWorkBySession {
+		if !isNonTerminated(work.State) {
+			continue
+		}
+
+		expectedName := actorName(sessionID)
+		existingActor, existsInCluster := clusterActors[expectedName]
+
+		// If actor is already running in Substrate, skip
+		if existsInCluster && existingActor.Status != ateapipb.Actor_STATUS_SUSPENDED {
+			continue
+		}
+
+		// Don't wake up anything that has been idle for more than IdleTimeout
+		lastActivity := parseWorkActivityTime(work)
+		if idleDuration := now.Sub(lastActivity); idleDuration >= s.cfg.IdleTimeout {
+			s.logger.Debug("Skipping actor wake for idle work item",
+				slog.String("session_id", sessionID),
+				slog.String("work_id", work.ID),
+				slog.Duration("idle_duration", idleDuration.Round(time.Millisecond)),
+				slog.Duration("idle_timeout", s.cfg.IdleTimeout),
+			)
+			continue
+		}
+
+		// Enforce capacity limit
+		if activeActorCount >= s.cfg.MaxActiveActors {
+			s.logger.Debug("Worker pool at capacity, skipping actor resume",
+				slog.String("session_id", sessionID),
+				slog.Int("active_actors", activeActorCount),
+				slog.Int("max_active_actors", s.cfg.MaxActiveActors),
+			)
+			break
+		}
+
+		actorRef := &ateapipb.ObjectRef{
+			Atespace: s.cfg.Namespace,
+			Name:     expectedName,
+		}
+
+		s.logger.Info("Waking actor for work item",
+			slog.String("actor", expectedName),
 			slog.String("session_id", sessionID),
 			slog.String("work_id", work.ID),
-			slog.Any("error", err),
+			slog.String("state", string(work.State)),
 		)
-		return err
+
+		if err := s.resumeOrRegisterActor(ctx, actorRef); err != nil {
+			s.logger.Warn("Failed to resume actor for session",
+				slog.String("actor", expectedName),
+				slog.String("session_id", sessionID),
+				slog.Any("error", err),
+			)
+			continue
+		}
+
+		s.logger.Info("Actor is active in Substrate", slog.String("actor", expectedName))
+		activeActorCount++
 	}
 
-	s.logger.Info("Session turn finished successfully", slog.String("session_id", sessionID))
 	return nil
 }
 
-// resumeOrRegisterActor ensures the atespace and actor exist, and resumes the actor.
+// isNonTerminated returns true if the work item is queued, starting, or active.
+func isNonTerminated(state anthropic.BetaSelfHostedWorkState) bool {
+	return state == anthropic.BetaSelfHostedWorkStateActive ||
+		state == anthropic.BetaSelfHostedWorkStateQueued ||
+		state == anthropic.BetaSelfHostedWorkStateStarting
+}
+
+// parseWorkActivityTime extracts the latest activity timestamp from a work item.
+// It prioritizes LatestHeartbeatAt, then StartedAt, then CreatedAt, falling back to time.Now().
+func parseWorkActivityTime(work *anthropic.BetaSelfHostedWork) time.Time {
+	if work.LatestHeartbeatAt != "" {
+		if t, err := time.Parse(time.RFC3339, work.LatestHeartbeatAt); err == nil {
+			return t
+		}
+	}
+	if work.StartedAt != "" {
+		if t, err := time.Parse(time.RFC3339, work.StartedAt); err == nil {
+			return t
+		}
+	}
+	if work.CreatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, work.CreatedAt); err == nil {
+			return t
+		}
+	}
+	return time.Now()
+}
+
+// resumeOrRegisterActor ensures the atespace and actor exist, resumes the actor,
+// and waits until the actor reaches STATUS_RUNNING.
 func (s *Server) resumeOrRegisterActor(ctx context.Context, actorRef *ateapipb.ObjectRef) error {
-	// First, try resuming directly
 	_, err := s.ateClient.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: actorRef})
 	if err == nil {
-		return nil
+		return s.waitForActorResumed(ctx, actorRef)
 	}
 
 	// If actor doesn't exist yet, create it and retry resume
@@ -303,15 +428,55 @@ func (s *Server) resumeOrRegisterActor(ctx context.Context, actorRef *ateapipb.O
 		if err != nil {
 			return fmt.Errorf("resuming actor %s after creation: %w", actorRef.Name, err)
 		}
-		return nil
+		return s.waitForActorResumed(ctx, actorRef)
 	}
 
 	return err
 }
 
+// waitForActorResumed polls Substrate until the actor reaches STATUS_RUNNING.
+func (s *Server) waitForActorResumed(ctx context.Context, actorRef *ateapipb.ObjectRef) error {
+	waitCtx, cancel := context.WithTimeout(ctx, DefaultResumeTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		actor, err := s.ateClient.GetActor(waitCtx, &ateapipb.GetActorRequest{Actor: actorRef})
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				select {
+				case <-waitCtx.Done():
+					return fmt.Errorf("timed out waiting for actor %s: %w", actorRef.Name, waitCtx.Err())
+				case <-ticker.C:
+					continue
+				}
+			}
+			return fmt.Errorf("getting actor status for %s: %w", actorRef.Name, err)
+		}
+
+		switch actor.Status {
+		case ateapipb.Actor_STATUS_RUNNING:
+			return nil
+		case ateapipb.Actor_STATUS_CRASHED:
+			return fmt.Errorf("actor %s crashed while resuming", actorRef.Name)
+		}
+
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("timed out waiting for actor %s to reach STATUS_RUNNING (current status: %s): %w", actorRef.Name, actor.Status, waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 // suspendActor suspends the specified actor in Substrate.
 func (s *Server) suspendActor(ctx context.Context, actorRef *ateapipb.ObjectRef) error {
-	_, err := s.ateClient.SuspendActor(ctx, &ateapipb.SuspendActorRequest{Actor: actorRef})
+	suspendCtx, cancel := context.WithTimeout(ctx, DefaultSuspendTimeout)
+	defer cancel()
+
+	_, err := s.ateClient.SuspendActor(suspendCtx, &ateapipb.SuspendActorRequest{Actor: actorRef})
 	if err != nil && status.Code(err) != codes.NotFound {
 		return err
 	}

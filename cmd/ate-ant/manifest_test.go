@@ -175,3 +175,29 @@ func TestWriteManifests(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildManifestsWithAPIKey(t *testing.T) {
+	cfg := testConfig()
+	cfg.EnvironmentKey = ""
+	cfg.APIKey = "sk-ant-api03-test-key"
+
+	objs := BuildManifests(cfg)
+	secret := objs[1].(*corev1.Secret)
+	if secret.StringData["ANTHROPIC_API_KEY"] != "sk-ant-api03-test-key" {
+		t.Errorf("secret ANTHROPIC_API_KEY = %q", secret.StringData["ANTHROPIC_API_KEY"])
+	}
+	if _, ok := secret.StringData["ANTHROPIC_ENVIRONMENT_KEY"]; ok {
+		t.Errorf("expected no ANTHROPIC_ENVIRONMENT_KEY in secret")
+	}
+
+	template := objs[3].(*atev1alpha1.ActorTemplate)
+	foundAPIKey := false
+	for _, env := range template.Spec.Containers[0].Env {
+		if env.Name == "ANTHROPIC_API_KEY" && *env.Value == "sk-ant-api03-test-key" {
+			foundAPIKey = true
+		}
+	}
+	if !foundAPIKey {
+		t.Errorf("expected ANTHROPIC_API_KEY in ActorTemplate env: %+v", template.Spec.Containers[0].Env)
+	}
+}
