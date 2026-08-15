@@ -11,7 +11,7 @@ This project enables Claude Managed Agents to run bash commands, file operations
 
 - **Poller**: An always-on service in your cluster that fetches incoming events and appends them to the work queue.
 - **Work Queue**: A durable Redis queue holding polled events until the work has actually completed.
-- **Consumers**: Deployment that drains the queue, resumes the sandbox actor for each event, and acknowledges the event when the work is done.
+- **Dispatchers**: Deployment that drains the queue, resumes the sandbox actor for each event, and acknowledges the event when the work is done.
 - **Worker Pool**: A set of microVM/gVisor runners that sandbox actors are scheduled onto.
 - **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across work items.
 
@@ -19,8 +19,8 @@ This project enables Claude Managed Agents to run bash commands, file operations
 
 1. **Poll**: The poller fetches a work item queued by Claude Managed Agents.
 2. **Queue**: The poller appends it to the durable Redis queue and returns immediately, without touching an actor.
-3. **Claim**: A consumer takes the work item together with its session, so no other consumer can enter that sandbox.
-4. **Run**: The consumer resumes the sandbox actor, the worker runs the work item, Substrate suspends the actor and persists its snapshot, and only then is the item acknowledged.
+3. **Claim**: A dispatcher takes the work item together with its session, so no other dispatcher can enter that sandbox.
+4. **Run**: The dispatcher resumes the sandbox actor, the worker runs the work item, Substrate suspends the actor and persists its snapshot, and only then is the item acknowledged.
 
 If anything interrupts step 4, the claim lapses and the work item returns to `ate-antworker:pending` to be retried; after 3 attempts it lands on `ate-antworker:dead`.
 
@@ -47,7 +47,7 @@ If anything interrupts step 4, the claim lapses and the work item returns to `at
 │                                 │ 3. claim work item + its session │
 │                                 ▼                                  │
 │    ╭──────────────────────────────────────────────────────────╮    │
-│    │ Consumer Deployment   (N replicas, one work item each)   │    │
+│    │ Dispatcher Deployment (N replicas, one work item each)   │    │
 │    │   ate-antworker dispatch                                 │    │
 │    ╰────────────────────────────┬─────────────────────────────╯    │
 │                                 │ 4. resume, run, suspend, ack     │
@@ -152,21 +152,21 @@ go run ./examples/agent \
 ## Work Queue
 
 Polled events are persisted before any actor is resumed, so a work item is not
-lost if the poller pod is evicted, the consumer crashes mid-run, or the actor
+lost if the poller pod is evicted, the dispatcher crashes mid-run, or the actor
 cannot be woken. A claimed item stays in `ate-antworker:inflight`, owned by a
 single key — `ate-antworker:session:<id>`, whose value names the item holding it
-and whose TTL the consumer renews while it works. When renewals stop,
+and whose TTL the dispatcher renews while it works. When renewals stop,
 maintenance requeues the item, or moves it to `ate-antworker:dead` after three
 attempts. Expiry is the only retry
 path, so a failed work item waits out its lease (5 minutes) instead of retrying
 immediately.
 
-Each consumer runs one work item at a time and a claim takes the whole session,
-so concurrency is the replica count and no two work items ever share a sandbox.
-Set the pool with `--consumer-replicas` (8 by default, under the WorkerPool
-size). On SIGTERM a consumer stops claiming and finishes the item it is on, so
-give the pod a `terminationGracePeriodSeconds` longer than a typical work item
-if you want it to finish rather than be reclaimed.
+Each dispatcher runs one work item at a time and a claim takes the whole
+session, so concurrency is the replica count and no two work items ever share a
+sandbox. Set the pool with `--dispatcher-replicas` (8 by default, under the
+WorkerPool size). On SIGTERM a dispatcher stops claiming and finishes the item
+it is on, so give the pod a `terminationGracePeriodSeconds` longer than a
+typical work item if you want it to finish rather than be reclaimed.
 
 Inspect the queue with `redis-cli`:
 
@@ -183,7 +183,7 @@ managed or replicated Redis for a stronger guarantee.
 
 ## Running Locally
 
-To run the poller, queue, and consumer locally for development or testing:
+To run the poller, queue, and dispatcher locally for development or testing:
 
 ```bash
 # 1. Port-forward ateapi and router
@@ -200,7 +200,7 @@ ant beta:worker poll \
   --environment-key "$ANTHROPIC_ENVIRONMENT_KEY" \
   --on-work "ate-antworker queue --redis-addr localhost:6379"
 
-# 4. In another shell, run the consumer
+# 4. In another shell, run the dispatcher
 ate-antworker dispatch \
   --redis-addr localhost:6379 \
   --ateapi-addr localhost:8443 \
@@ -222,7 +222,7 @@ an actor itself, so the poller cannot be the thing that loses work.
 | `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of microVM/gVisor runners for sandbox actors (10 replicas) |
 | `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
 | `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work "ate-antworker queue"` |
-| `ate-antworker-consumer` | `Deployment` | Queue consumers running `ate-antworker dispatch` (8 replicas) |
+| `ate-antworker-dispatcher` | `Deployment` | Dispatchers running `ate-antworker dispatch` (8 replicas) |
 
 ## Roadmap
 

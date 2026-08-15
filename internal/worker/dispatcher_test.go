@@ -184,7 +184,7 @@ func TestDispatcherLeavesFailedWorkInFlight(t *testing.T) {
 
 	// A failed work item is neither acknowledged nor put back by the dispatcher:
 	// it stays leased until maintenance reclaims it, which is the same path a
-	// killed consumer takes.
+	// killed dispatcher takes.
 	waitFor(t, "the failed work item to stay in flight", func() bool {
 		return depth(t, server, "inflight") == 1 &&
 			depth(t, server, "pending") == 0 &&

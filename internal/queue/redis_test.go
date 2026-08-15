@@ -69,9 +69,9 @@ func mustClaim(t *testing.T, q *RedisQueue) *Lease {
 	return lease
 }
 
-// killConsumer drops the claim on a leased event, standing in for a consumer
+// killDispatcher drops the claim on a leased event, standing in for a dispatcher
 // that stopped renewing it — crashed, partitioned, or simply gone.
-func killConsumer(t *testing.T, q *RedisQueue, lease *Lease) {
+func killDispatcher(t *testing.T, q *RedisQueue, lease *Lease) {
 	t.Helper()
 	if err := q.client.Del(context.Background(), q.sessionKey(lease.Event.Session())).Err(); err != nil {
 		t.Fatalf("dropping claim: %v", err)
@@ -221,7 +221,7 @@ func TestMaintainRetriesUnclaimedWork(t *testing.T) {
 		t.Fatalf("pending = %d in-flight = %d, want the item still claimed", pending, inflight)
 	}
 
-	killConsumer(t, q, lease)
+	killDispatcher(t, q, lease)
 
 	if err := q.Maintain(ctx); err != nil {
 		t.Fatalf("Maintain: %v", err)
@@ -241,7 +241,7 @@ func TestMaintainDeadLettersAfterMaxAttempts(t *testing.T) {
 
 	for range maxAttempts {
 		lease := mustClaim(t, q)
-		killConsumer(t, q, lease)
+		killDispatcher(t, q, lease)
 		if err := q.Maintain(ctx); err != nil {
 			t.Fatalf("Maintain: %v", err)
 		}
@@ -272,7 +272,7 @@ func TestMaintainRetriesWorkWhoseSessionMovedOn(t *testing.T) {
 	mustEnqueue(t, q, "work_2", "sesn_1")
 
 	first := mustClaim(t, q)
-	killConsumer(t, q, first)
+	killDispatcher(t, q, first)
 
 	// The session is free again, so the next work item takes it while work_1 is
 	// still sitting in flight. work_1 must still count as abandoned: its session
@@ -315,7 +315,7 @@ func TestExtendKeepsTheClaimAlive(t *testing.T) {
 
 	// Once the claim lapses and the work item is reclaimed, the old holder can
 	// no longer renew it.
-	killConsumer(t, q, lease)
+	killDispatcher(t, q, lease)
 	if err := q.Maintain(ctx); err != nil {
 		t.Fatalf("Maintain: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestClaimLapsesOnItsOwn(t *testing.T) {
 	mustClaim(t, q)
 
 	// Nothing renews the session hold, so it lapses on its own even if no
-	// consumer is left to run maintenance.
+	// dispatcher is left to run maintenance.
 	server.FastForward(leaseTTL + time.Minute)
 	if server.Exists(q.sessionKey("sesn_1")) {
 		t.Error("session hold outlived the lease")

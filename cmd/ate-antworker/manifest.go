@@ -76,7 +76,7 @@ func (c *Config) Defaults() {
 		c.AtenetRouterAddr = DefaultAtenetRouterAddr
 	}
 	if c.DispatcherReplicas == 0 {
-		// Each consumer runs one work item at a time, so replicas are the
+		// Each dispatcher runs one work item at a time, so replicas are the
 		// only concurrency dial. Stay under the pre-warmed worker pool.
 		c.DispatcherReplicas = 8
 	}
