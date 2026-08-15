@@ -189,11 +189,11 @@ func TestBuildManifestsQueue(t *testing.T) {
 		t.Errorf("redis service ports = %+v, want %d", svc.Spec.Ports, DefaultRedisPort)
 	}
 
-	consumer := find[*appsv1.Deployment](t, objs, DefaultConsumerName)
-	if got := *consumer.Spec.Replicas; got != 8 {
-		t.Errorf("consumer replicas = %d, want 8", got)
+	dispatcher := find[*appsv1.Deployment](t, objs, DefaultDispatcherName)
+	if got := *dispatcher.Spec.Replicas; got != 8 {
+		t.Errorf("dispatcher replicas = %d, want 8", got)
 	}
-	command := strings.Join(consumer.Spec.Template.Spec.Containers[0].Command, " ")
+	command := strings.Join(dispatcher.Spec.Template.Spec.Containers[0].Command, " ")
 	for _, want := range []string{
 		"ate-antworker dispatch",
 		"--redis-addr " + cfg.QueueAddr(),
@@ -201,7 +201,7 @@ func TestBuildManifestsQueue(t *testing.T) {
 		"--namespace " + cfg.Namespace,
 	} {
 		if !strings.Contains(command, want) {
-			t.Errorf("consumer command = %q, want it to contain %q", command, want)
+			t.Errorf("dispatcher command = %q, want it to contain %q", command, want)
 		}
 	}
 }
@@ -220,16 +220,16 @@ func TestBuildManifestsExternalRedis(t *testing.T) {
 
 	secret := find[*corev1.Secret](t, objs, DefaultSecretName)
 	if secret.StringData["REDIS_PASSWORD"] != "hunter2" {
-		t.Errorf("secret REDIS_PASSWORD = %q, want it stored for the consumer", secret.StringData["REDIS_PASSWORD"])
+		t.Errorf("secret REDIS_PASSWORD = %q, want it stored for the dispatcher", secret.StringData["REDIS_PASSWORD"])
 	}
 
-	consumer := find[*appsv1.Deployment](t, objs, DefaultConsumerName)
-	command := strings.Join(consumer.Spec.Template.Spec.Containers[0].Command, " ")
+	dispatcher := find[*appsv1.Deployment](t, objs, DefaultDispatcherName)
+	command := strings.Join(dispatcher.Spec.Template.Spec.Containers[0].Command, " ")
 	if !strings.Contains(command, "--redis-addr redis.example.com:6379") {
-		t.Errorf("consumer command = %q, want the external Redis address", command)
+		t.Errorf("dispatcher command = %q, want the external Redis address", command)
 	}
 	if strings.Contains(command, "hunter2") {
-		t.Errorf("consumer command = %q, want the password read from the Secret, not the command line", command)
+		t.Errorf("dispatcher command = %q, want the password read from the Secret, not the command line", command)
 	}
 }
 

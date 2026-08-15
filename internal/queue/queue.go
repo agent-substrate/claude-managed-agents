@@ -2,18 +2,18 @@
 // fetched by 'ant beta:worker poll'.
 //
 // The poller hook ('ate-antworker queue') enqueues an event and returns
-// immediately; a consumer ('ate-antworker dispatch') claims the event, resumes
+// immediately; a dispatcher ('ate-antworker dispatch') claims the event, resumes
 // the Substrate actor, runs the work, and acknowledges it. Because the event
 // outlives the short-lived hook process, a crash between the poll and the work
 // no longer loses the work item.
 //
 // Delivery is at-least-once. An event stays in the in-flight list until it is
-// acknowledged; a consumer holds it under a lease that it renews while the work
+// acknowledged; a dispatcher holds it under a lease that it renews while the work
 // runs. Anything that stops the work — a failure, a killed pod, a lost network —
 // stops the renewals, and the event is reclaimed once the lease expires.
 //
 // A claim also takes the event's session, and Claim never hands out two events
-// for one session at a time, so two consumers cannot run work against the same
+// for one session at a time, so two dispatchers cannot run work against the same
 // sandbox concurrently.
 package queue
 
@@ -33,7 +33,7 @@ var ErrLeaseLost = errors.New("queue: claim no longer held")
 // Event is a single Anthropic work item waiting to be dispatched to an actor.
 //
 // Events are stored as JSON. Secrets are deliberately not part of the payload:
-// the consumer reads its own Anthropic credentials from its environment rather
+// the dispatcher reads its own Anthropic credentials from its environment rather
 // than out of the queue.
 type Event struct {
 	// ID uniquely identifies this queue entry. It also keeps every serialized
@@ -59,7 +59,7 @@ func (e Event) Session() string {
 	return e.WorkID
 }
 
-// Lease is a claimed event, held by one consumer along with its session, until
+// Lease is a claimed event, held by one dispatcher along with its session, until
 // it is acknowledged or the claim lapses.
 type Lease struct {
 	Event Event

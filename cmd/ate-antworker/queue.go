@@ -30,7 +30,7 @@ func runQueue(ctx context.Context, req worker.DispatchRequest, ropts redisOption
 		ctx = context.Background()
 	}
 
-	// Persist the work item and return: resuming the actor is the consumer's
+	// Persist the work item and return: resuming the actor is the dispatcher's
 	// job, so this process dying cannot drop the work item.
 	ctx, cancel := context.WithTimeout(ctx, enqueueTimeout)
 	defer cancel()

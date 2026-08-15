@@ -26,7 +26,7 @@ const (
 	DefaultTemplate         = "ate-antworker-actor-template"
 	DefaultWorkerPool       = "ate-antworker-workerpool"
 	DefaultDeploymentName   = "ate-antworker"
-	DefaultConsumerName     = "ate-antworker-consumer"
+	DefaultDispatcherName   = "ate-antworker-dispatcher"
 	DefaultRedisName        = "ate-antworker-redis"
 	DefaultSecretName       = "ate-antworker-creds"
 	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
@@ -55,7 +55,7 @@ type Config struct {
 	RedisAddr     string `json:"redis_addr"`
 	RedisPassword string `json:"redis_password"`
 
-	ConsumerReplicas int32 `json:"consumer_replicas"`
+	DispatcherReplicas int32 `json:"dispatcher_replicas"`
 }
 
 // Defaults fills in default values for unset fields.
@@ -75,10 +75,10 @@ func (c *Config) Defaults() {
 	if c.AtenetRouterAddr == "" {
 		c.AtenetRouterAddr = DefaultAtenetRouterAddr
 	}
-	if c.ConsumerReplicas == 0 {
+	if c.DispatcherReplicas == 0 {
 		// Each consumer runs one work item at a time, so replicas are the
 		// only concurrency dial. Stay under the pre-warmed worker pool.
-		c.ConsumerReplicas = 8
+		c.DispatcherReplicas = 8
 	}
 }
 
@@ -86,7 +86,7 @@ func (c *Config) Defaults() {
 // which they do unless the queue points at an existing one.
 func (c *Config) BundlesRedis() bool { return c.RedisAddr == "" }
 
-// QueueAddr returns the Redis endpoint the poller and consumers connect to.
+// QueueAddr returns the Redis endpoint the poller and dispatchers connect to.
 func (c *Config) QueueAddr() string {
 	if c.RedisAddr != "" {
 		return c.RedisAddr
@@ -153,7 +153,7 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", DefaultAtenetRouterAddr, "Substrate atenet HTTP router endpoint")
 	cmd.Flags().StringVar(&cfg.RedisAddr, "redis-addr", "", "existing Redis host:port for the work queue (default: generate a single-replica Redis)")
 	cmd.Flags().StringVar(&cfg.RedisPassword, "redis-password", "", "Redis password, stored in the credentials Secret")
-	cmd.Flags().Int32Var(&cfg.ConsumerReplicas, "consumer-replicas", 8, "number of queue consumer replicas; each runs one work item at a time")
+	cmd.Flags().Int32Var(&cfg.DispatcherReplicas, "dispatcher-replicas", 8, "number of dispatcher replicas; each runs one work item at a time")
 
 	_ = cmd.MarkFlagRequired("worker-image")
 	_ = cmd.MarkFlagRequired("ateom-image")
@@ -177,7 +177,7 @@ func BuildManifests(cfg Config) []any {
 		BuildWorkerPool(cfg),
 		BuildActorTemplate(cfg),
 		BuildWorkerDeployment(cfg),
-		BuildConsumerDeployment(cfg),
+		BuildDispatcherDeployment(cfg),
 	)
 }
 
@@ -397,16 +397,16 @@ func BuildRedisStatefulSet(cfg Config) *appsv1.StatefulSet {
 	}
 }
 
-// BuildConsumerDeployment constructs the Deployment that drains the queue: it
+// BuildDispatcherDeployment constructs the Deployment that drains the queue: it
 // resumes the actor for each queued work item, runs it, and suspends the actor.
-func BuildConsumerDeployment(cfg Config) *appsv1.Deployment {
-	labels := map[string]string{"app": DefaultConsumerName}
-	replicas := cfg.ConsumerReplicas
+func BuildDispatcherDeployment(cfg Config) *appsv1.Deployment {
+	labels := map[string]string{"app": DefaultDispatcherName}
+	replicas := cfg.DispatcherReplicas
 
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultConsumerName,
+			Name:      DefaultDispatcherName,
 			Namespace: cfg.Namespace,
 			Labels:    labels,
 		},
@@ -417,7 +417,7 @@ func BuildConsumerDeployment(cfg Config) *appsv1.Deployment {
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Name:  DefaultConsumerName,
+						Name:  DefaultDispatcherName,
 						Image: cfg.WorkerImage,
 						Command: []string{
 							"ate-antworker", "dispatch",
@@ -463,7 +463,7 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 						Image: cfg.WorkerImage,
 						Command: []string{
 							"ant", "beta:worker", "poll",
-							// The hook only queues the work item; the consumer
+							// The hook only queues the work item; the dispatcher
 							// Deployment resumes the actor and runs the work item.
 							"--on-work", "ate-antworker queue --redis-addr " + cfg.QueueAddr(),
 						},

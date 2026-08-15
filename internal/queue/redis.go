@@ -24,7 +24,7 @@ const (
 	// dead-letter list.
 	maxAttempts = 3
 
-	// leaseTTL is how long a claimed event stays leased. Consumers renew it
+	// leaseTTL is how long a claimed event stays leased. Dispatchers renew it
 	// while the work runs; when renewals stop, the event becomes reclaimable
 	// this long afterwards. It doubles as the lifetime of the session's claim.
 	leaseTTL = 5 * time.Minute
@@ -65,18 +65,18 @@ func (c *RedisConfig) defaults() {
 
 // RedisQueue is a durable work queue backed by Redis lists.
 //
-// Enqueue LPUSHes onto <prefix>:pending. A consumer claims the oldest entry by
+// Enqueue LPUSHes onto <prefix>:pending. A dispatcher claims the oldest entry by
 // atomically moving it to <prefix>:inflight (BLMOVE ... RIGHT LEFT) and taking
 // the event's session with SET NX on <prefix>:session:<id>, whose value is the
 // claiming event's ID and whose TTL is the lease. An entry whose session is
 // already taken goes back to the end of the pending list untouched.
 //
 // That one key is the whole ownership record: an in-flight entry is still owned
-// exactly while its session key names it. A consumer keeps it alive by renewing
-// the TTL, so a consumer that stops — crashed, partitioned, or failed — lets
+// exactly while its session key names it. A dispatcher keeps it alive by
+// renewing the TTL, so one that stops — crashed, partitioned, or failed — lets
 // Redis expire the key for us, and Maintain requeues whatever it finds
 // unclaimed. That is the single retry path, so an unfinished work item needs no
-// cooperation from the consumer that dropped it. Events that exhaust their
+// cooperation from the dispatcher that dropped it. Events that exhaust their
 // attempts land on <prefix>:dead.
 //
 // Acknowledging removes the entry from the in-flight list by value, which is
@@ -249,7 +249,7 @@ redis.call('PEXPIRE', KEYS[1], ARGV[2])
 return 1
 `)
 
-// Extend keeps a claim alive while the work is still running. Consumers call it
+// Extend keeps a claim alive while the work is still running. Dispatchers call it
 // on a heartbeat; when the calls stop, the claim expires and Maintain requeues
 // the event.
 func (q *RedisQueue) Extend(ctx context.Context, lease *Lease) error {
@@ -290,11 +290,11 @@ return 1
 
 // Maintain requeues in-flight events that nothing claims any more, and
 // dead-letters those that ran out of attempts. It is the only retry path, so
-// consumers must call it periodically.
+// dispatchers must call it periodically.
 //
-// An event is unclaimed once its session key stops naming it: the consumer let
+// An event is unclaimed once its session key stops naming it: the dispatcher let
 // the TTL lapse, or the session has since been claimed by a different event.
-// Both mean the same thing — no live consumer is working on this entry.
+// Both mean the same thing — no live dispatcher is working on this entry.
 func (q *RedisQueue) Maintain(ctx context.Context) error {
 	payloads, err := q.client.LRange(ctx, q.inflightKey(), 0, -1).Result()
 	if err != nil {
@@ -343,7 +343,7 @@ func (q *RedisQueue) reclaim(ctx context.Context, ev Event, payload string) erro
 		return fmt.Errorf("queue: reclaiming %s: %w", ev.WorkID, err)
 	}
 	if moved == 0 {
-		// Another consumer reclaimed it first.
+		// Another dispatcher reclaimed it first.
 		return nil
 	}
 

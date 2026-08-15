@@ -22,7 +22,7 @@ func newDispatchCommand() *cobra.Command {
 For each work item it takes an exclusive lock on the session, ensures the
 Substrate actor exists, wakes it via the Substrate router, waits for the work to
 finish, suspends the actor, and only then acknowledges the item. A work item that
-fails is retried, and one whose consumer dies is reclaimed when its lease
+fails is retried, and one whose dispatcher dies is reclaimed when its lease
 expires, so no polled work item is lost.
 
 Run it as its own Deployment, scaled with replicas.`,
@@ -37,7 +37,7 @@ Run it as its own Deployment, scaled with replicas.`,
 			}
 			defer q.Close()
 
-			consumer, err := worker.NewConsumer(worker.ConsumerConfig{
+			dispatcher, err := worker.NewDispatcher(worker.DispatcherConfig{
 				Queue:    q,
 				Dispatch: cfg,
 			})
@@ -46,7 +46,7 @@ Run it as its own Deployment, scaled with replicas.`,
 			}
 
 			// A clean shutdown is not a failure.
-			if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			if err := dispatcher.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				return err
 			}
 			return nil
