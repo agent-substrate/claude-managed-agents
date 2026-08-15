@@ -202,13 +202,13 @@ contacts an actor itself, so the poller cannot be the thing that loses work.
 
 ## Manifest Reference
 
-| Resource | Kind | Purpose |
+| Resource | Kind | Description |
 | --- | --- | --- |
 | `ate-antworker` | `Atespace` (`ate.dev/v1alpha1`) | Substrate tenant atespace for actors |
 | `ate-antworker` | `Namespace` | Target Kubernetes namespace |
 | `ate-antworker-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_ENVIRONMENT_KEY`, and `REDIS_PASSWORD` |
 | `ate-antworker-redis` | `Service` + `StatefulSet` | Durable work queue, with append-only persistence (omitted when `--redis-addr` points at an existing Redis) |
-| `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pre-warmed microVM/gVisor runner pool (10 replicas) |
+| `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pre-warmed worker pool (10 replicas) |
 | `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
 | `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work "ate-antworker dispatch"` |
 | `ate-antworker-consumer` | `Deployment` | Queue consumers running `ate-antworker consume` (2 replicas) |
