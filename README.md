@@ -84,7 +84,7 @@ go install github.com/agent-substrate/claude-managed-agents/cmd/ate-antworker@la
 
 # Generate deployment YAML and apply to Kubernetes
 ate-antworker manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:717c04c3d42442ad8ac9aa7eb97792ba348acd21fc0c207f1b2822ed68921765 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:45af8375fb9630eebdd75b156288b9cb60744e8dc043aa78ee7d1ae24274080d \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
@@ -139,7 +139,7 @@ podman run -it --rm \
 ```
 
 Inside the container:
-- **Run worker manually**: `ant beta:worker run --work-id "<work-id>" --session-id "<session-id>"`
+- **Run worker manually**: `ant beta:worker run --session-id "<session-id>"`
 
 ## Manifest Reference
 
