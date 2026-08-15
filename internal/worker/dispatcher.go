@@ -101,7 +101,7 @@ type DispatchRequest struct {
 
 // DispatchWork receives a single Anthropic work item (e.g. from 'ant beta:worker poll --on-work')
 // and dispatches it to the corresponding Substrate actor via the atenet router.
-// If req.Wait is true, it waits for turn completion and suspends the actor before returning.
+// If req.Wait is true, it waits for the work item to finish and suspends the actor before returning.
 func DispatchWork(ctx context.Context, cfg Config, req DispatchRequest) error {
 	cfg.Defaults()
 	logger := cfg.Logger
@@ -144,7 +144,7 @@ func DispatchWork(ctx context.Context, cfg Config, req DispatchRequest) error {
 		defer conn.Close()
 	}
 
-	// Ensure actor exists and execute turn synchronously via worker daemon
+	// Ensure actor exists and run the work item synchronously via worker daemon
 	if err := EnsureActorRegistered(ctx, ateClient, cfg, actorRef, req.WorkID, sessionID); err != nil {
 		return fmt.Errorf("dispatching work to actor: %w", err)
 	}
@@ -159,10 +159,10 @@ func DispatchWork(ctx context.Context, cfg Config, req DispatchRequest) error {
 		return nil
 	}
 
-	// Turn completed; suspend actor to free WorkerPool slot
-	logger.Info("Turn completed; suspending actor", slog.String("actor", aName))
+	// Work item finished; suspend actor to free WorkerPool slot
+	logger.Info("Suspending actor", slog.String("actor", aName))
 	if err := SuspendActor(ctx, ateClient, actorRef); err != nil {
-		return fmt.Errorf("suspending actor after turn completion: %w", err)
+		return fmt.Errorf("suspending actor after work item completed: %w", err)
 	}
 	logger.Info("Actor suspended successfully", slog.String("actor", aName))
 	return nil

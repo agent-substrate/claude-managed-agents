@@ -11,10 +11,10 @@ This project connects Claude Managed Agents to secure, isolated sandboxes runnin
 ### Key Components
 
 - **Poller**: An always-on service in your cluster that fetches incoming events and appends them to the work queue.
-- **Work Queue**: A durable Redis queue holding polled events until a turn has actually completed.
-- **Consumers**: Deployment that drains the queue, resumes the sandbox actor for each event, and acknowledges the event when the turn is done.
+- **Work Queue**: A durable Redis queue holding polled events until the work has actually completed.
+- **Consumers**: Deployment that drains the queue, resumes the sandbox actor for each event, and acknowledges the event when the work is done.
 - **Worker Pool**: A set of pre-warmed microVM/gVisor runners ready to launch sandboxes.
-- **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across turns.
+- **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across work items.
 
 ### How It Works
 
@@ -57,7 +57,7 @@ This project connects Claude Managed Agents to secure, isolated sandboxes runnin
 
 1. **`ate-antworker manifest`**: Generates Kubernetes deployment YAML for Redis, the worker pool, sandbox template, poller Deployment, and consumer Deployment.
 2. **`ate-antworker dispatch`**: Hook target for **`ant beta:worker poll --on-work 'ate-antworker dispatch'`**. Appends the work item to the durable queue and returns.
-3. **`ate-antworker consume`**: Drains the queue (claims item $\rightarrow$ locks session $\rightarrow$ wakes actor $\rightarrow$ executes turn $\rightarrow$ suspends actor $\rightarrow$ acknowledges item).
+3. **`ate-antworker consume`**: Drains the queue (claims item and its session $\rightarrow$ wakes actor $\rightarrow$ runs the work $\rightarrow$ suspends actor $\rightarrow$ acknowledges item).
 4. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
 
 ---
@@ -143,19 +143,19 @@ go run ./examples/agent \
 ## Work Queue
 
 Polled events are persisted before any actor is resumed, so a work item is not
-lost if the poller pod is evicted, the consumer crashes mid-turn, or the actor
+lost if the poller pod is evicted, the consumer crashes mid-run, or the actor
 cannot be woken. A claimed item stays in `<prefix>:inflight` under a lease until
-its turn completes; when renewals stop, maintenance reclaims and retries it, or
-moves it to `<prefix>:dead` once `--max-attempts` is used up. Expiry is the only
-retry path, so a failed turn waits out its lease (5 minutes) instead of retrying
+it completes; when renewals stop, maintenance reclaims and retries it, or moves
+it to `<prefix>:dead` once `--max-attempts` is used up. Expiry is the only retry
+path, so a failed work item waits out its lease (5 minutes) instead of retrying
 immediately.
 
-Each consumer runs one turn at a time and a claim takes the whole session, so
-concurrency is the replica count and no two turns ever share a sandbox. Set the
-pool with `--consumer-replicas` (8 by default, under the pre-warmed WorkerPool
-size). On SIGTERM a consumer stops claiming and finishes the turn it is on, so
-give the pod a `terminationGracePeriodSeconds` longer than a typical turn if you
-want it to finish rather than be reclaimed.
+Each consumer runs one work item at a time and a claim takes the whole session,
+so concurrency is the replica count and no two work items ever share a sandbox.
+Set the pool with `--consumer-replicas` (8 by default, under the pre-warmed
+WorkerPool size). On SIGTERM a consumer stops claiming and finishes the item it
+is on, so give the pod a `terminationGracePeriodSeconds` longer than a typical
+work item if you want it to finish rather than be reclaimed.
 
 Inspect the queue with `redis-cli`:
 

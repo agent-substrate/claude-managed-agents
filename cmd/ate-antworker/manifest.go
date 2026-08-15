@@ -106,8 +106,8 @@ func (c *Config) Defaults() {
 		c.QueuePrefix = queue.DefaultPrefix
 	}
 	if c.ConsumerReplicas == 0 {
-		// Each consumer runs one turn at a time, so replicas are the only
-		// concurrency dial. Stay under the pre-warmed worker pool.
+		// Each consumer runs one work item at a time, so replicas are the
+		// only concurrency dial. Stay under the pre-warmed worker pool.
 		c.ConsumerReplicas = 8
 	}
 }
@@ -190,7 +190,7 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 	cmd.Flags().StringVar(&cfg.RedisImage, "redis-image", DefaultRedisImage, "container image for the generated Redis")
 	cmd.Flags().StringVar(&cfg.RedisStorage, "redis-storage", DefaultRedisStorage, "persistent volume size for the generated Redis")
 	cmd.Flags().StringVar(&cfg.QueuePrefix, "queue-prefix", queue.DefaultPrefix, "prefix for the queue's Redis keys")
-	cmd.Flags().Int32Var(&cfg.ConsumerReplicas, "consumer-replicas", 8, "number of queue consumer replicas; each runs one turn at a time")
+	cmd.Flags().Int32Var(&cfg.ConsumerReplicas, "consumer-replicas", 8, "number of queue consumer replicas; each runs one work item at a time")
 
 	_ = cmd.MarkFlagRequired("worker-image")
 	_ = cmd.MarkFlagRequired("ateom-image")
@@ -435,7 +435,7 @@ func BuildRedisStatefulSet(cfg Config) *appsv1.StatefulSet {
 }
 
 // BuildConsumerDeployment constructs the Deployment that drains the queue: it
-// resumes the actor for each queued work item, runs the turn, and suspends it.
+// resumes the actor for each queued work item, runs it, and suspends the actor.
 func BuildConsumerDeployment(cfg Config) *appsv1.Deployment {
 	labels := map[string]string{"app": DefaultConsumerName}
 	replicas := cfg.ConsumerReplicas
@@ -502,7 +502,7 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 						Command: []string{
 							"ant", "beta:worker", "poll",
 							// The hook only queues the work item; the consumer
-							// Deployment resumes the actor and runs the turn.
+							// Deployment resumes the actor and runs the work item.
 							"--on-work", fmt.Sprintf("ate-antworker dispatch --redis-addr %s --queue-prefix %s",
 								cfg.QueueAddr(), cfg.QueuePrefix),
 						},

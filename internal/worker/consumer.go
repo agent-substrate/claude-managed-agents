@@ -14,13 +14,13 @@ import (
 // the consumer paces itself against Redis and the actors, not a deployment
 // choice. Scale with the number of consumer replicas instead.
 const (
-	// heartbeatInterval is how often a running turn renews its lease. It must
-	// stay well under the queue's lease TTL.
+	// heartbeatInterval is how often a running work item renews its lease. It
+	// must stay well under the queue's lease TTL.
 	heartbeatInterval = time.Minute
 
 	// maintenanceInterval is how often a consumer reclaims expired leases,
 	// checked between claims. This is the retry path, so it also bounds how
-	// quickly a failed turn is retried.
+	// quickly a failed work item is retried.
 	maintenanceInterval = 30 * time.Second
 
 	// claimBackoff is how long the consumer waits before retrying after the
@@ -38,7 +38,7 @@ type ConsumerConfig struct {
 
 	Logger *slog.Logger
 
-	// dispatch overrides how a turn is run. Tests set it; production uses
+	// dispatch overrides how a work item is run. Tests set it; production uses
 	// DispatchWork.
 	dispatch func(ctx context.Context, cfg Config, req DispatchRequest) error
 }
@@ -54,16 +54,16 @@ func (c *ConsumerConfig) defaults() {
 }
 
 // Consumer drains the durable queue: it claims a polled work item, resumes the
-// Substrate actor for its session, waits for the turn, suspends the actor, and
-// only then acknowledges the work item.
+// Substrate actor for its session, waits for the work to finish, suspends the
+// actor, and only then acknowledges the work item.
 //
-// One consumer runs one turn at a time. Concurrency is the number of consumer
-// replicas, which keeps the unit of scaling and the unit of failure the same
-// thing: a consumer is either working on exactly one work item or on none.
+// One consumer runs one work item at a time. Concurrency is the number of
+// consumer replicas, which keeps the unit of scaling and the unit of failure the
+// same thing: a consumer is either working on exactly one work item or on none.
 //
-// It never puts work back itself. A turn that fails, or a consumer that dies,
-// simply stops renewing the lease, and queue maintenance retries the work item
-// once it expires. That is the only retry path, which is why the consumer can be
+// It never puts work back itself. A work item that fails, or a consumer that
+// dies, simply stops renewing the lease, and queue maintenance retries the work
+// item once it expires. That is the only retry path, which is why the consumer can be
 // killed at any point without losing or duplicating work.
 type Consumer struct {
 	cfg ConsumerConfig
@@ -80,15 +80,16 @@ func NewConsumer(cfg ConsumerConfig) (*Consumer, error) {
 	return &Consumer{cfg: cfg, log: cfg.Logger, q: cfg.Queue}, nil
 }
 
-// Run consumes work items one at a time until ctx is canceled. A turn already
-// underway finishes first, so shutdown is bounded by the turn, not by a timer.
+// Run consumes work items one at a time until ctx is canceled. A work item
+// already underway finishes first, so shutdown is bounded by the work, not by a
+// timer.
 func (c *Consumer) Run(ctx context.Context) error {
 	c.log.Info("Starting queue consumer",
 		slog.String("namespace", c.cfg.Dispatch.Namespace),
 	)
 
-	// The turn outlives shutdown: cancelling Run stops further claims, but the
-	// turn in progress runs to completion rather than dying mid-tool-call.
+	// The work outlives shutdown: cancelling Run stops further claims, but the
+	// work item in progress runs to completion rather than dying mid-tool-call.
 	workCtx := context.WithoutCancel(ctx)
 
 	var lastMaintenance time.Time
@@ -97,8 +98,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 		// Reclaiming expired leases rides along on the claim loop rather than
 		// running beside it: a claim blocks for only a few seconds, so an idle
 		// consumer keeps to the schedule, and a busy one catches up the moment
-		// its turn ends. Work it would have reclaimed while every consumer was
-		// busy had nowhere to run anyway.
+		// its work item ends. Work it would have reclaimed while every consumer
+		// was busy had nowhere to run anyway.
 		if time.Since(lastMaintenance) >= maintenanceInterval {
 			if err := c.q.Maintain(ctx); err != nil && ctx.Err() == nil {
 				c.log.Error("Queue maintenance failed", slog.Any("error", err))
@@ -143,7 +144,8 @@ func (c *Consumer) handle(ctx context.Context, lease *queue.Lease) {
 	err := c.cfg.dispatch(ctx, c.cfg.Dispatch, DispatchRequest{
 		WorkID:    ev.WorkID,
 		SessionID: ev.Session(),
-		// Wait for the turn and suspend the actor, freeing its WorkerPool slot.
+		// Wait for the work to finish and suspend the actor, freeing its
+		// WorkerPool slot.
 		Wait:        true,
 		IdleTimeout: c.cfg.Dispatch.IdleTimeout,
 	})
@@ -154,15 +156,15 @@ func (c *Consumer) handle(ctx context.Context, lease *queue.Lease) {
 	}
 
 	if err := c.q.Ack(ctx, lease); err != nil {
-		// The turn already ran; a lost lease here means it may run again.
+		// The work item already ran; a lost lease here means it may run again.
 		log.Error("Acknowledging completed work item failed", slog.Any("error", err))
 		return
 	}
 	log.Info("Queued work item completed", slog.Duration("took", time.Since(start)))
 }
 
-// heartbeat renews the lease while a turn is running. The returned function
-// stops it; once renewals stop, the work item becomes reclaimable.
+// heartbeat renews the lease while a work item is running. The returned
+// function stops it; once renewals stop, the work item becomes reclaimable.
 func (c *Consumer) heartbeat(ctx context.Context, lease *queue.Lease, log *slog.Logger) func() {
 	done := make(chan struct{})
 	stopped := make(chan struct{})

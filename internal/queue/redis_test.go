@@ -174,7 +174,7 @@ func TestClaimTakesOneEventPerSession(t *testing.T) {
 		t.Errorf("pending = %d dead = %d, want work_2 still pending", pending, dead)
 	}
 
-	// Once the first turn is acknowledged, the session frees up.
+	// Once the first work item is acknowledged, the session frees up.
 	if err := q.Ack(ctx, first); err != nil {
 		t.Fatalf("Ack: %v", err)
 	}

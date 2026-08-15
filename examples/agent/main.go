@@ -83,7 +83,7 @@ func main() {
 	stream := client.Beta.Sessions.Events.StreamEvents(ctx, session.ID, anthropic.BetaSessionEventStreamParams{})
 	defer stream.Close()
 
-	// Send initial user message event to start the turn
+	// Send initial user message event to start the work
 	_, err = client.Beta.Sessions.Events.Send(ctx, session.ID, anthropic.BetaSessionEventSendParams{
 		Events: []anthropic.BetaManagedAgentsEventParamsUnion{
 			{

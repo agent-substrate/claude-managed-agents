@@ -20,8 +20,8 @@ func newConsumeCommand() *cobra.Command {
 		Long: `Consume drains the durable Redis queue filled by 'ate-antworker dispatch'.
 
 For each work item it takes an exclusive lock on the session, ensures the
-Substrate actor exists, wakes it via the Substrate router, waits for the turn,
-suspends the actor, and only then acknowledges the item. A work item whose turn
+Substrate actor exists, wakes it via the Substrate router, waits for the work to
+finish, suspends the actor, and only then acknowledges the item. A work item that
 fails is retried, and one whose consumer dies is reclaimed when its lease
 expires, so no polled work item is lost.
 
@@ -60,7 +60,7 @@ Run it as its own Deployment, scaled with replicas.`,
 	cmd.Flags().StringVar(&cfg.Namespace, "namespace", worker.DefaultNamespace, "Substrate atespace / namespace")
 	cmd.Flags().StringVar(&cfg.Template, "template", worker.DefaultTemplate, "Substrate ActorTemplate name")
 	cmd.Flags().BoolVar(&cfg.Insecure, "insecure", false, "Use plaintext gRPC connection to ateapi")
-	cmd.Flags().DurationVar(&cfg.IdleTimeout, "idle-timeout", worker.DefaultIdleTimeout, "Max idle duration before considering turn complete")
+	cmd.Flags().DurationVar(&cfg.IdleTimeout, "idle-timeout", worker.DefaultIdleTimeout, "Max idle duration before considering the work item complete")
 
 	return cmd
 }

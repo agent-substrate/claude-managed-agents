@@ -346,7 +346,7 @@ func TestDispatchWork(t *testing.T) {
 		t.Fatalf("expected actor %q to be created", key)
 	}
 	if fakeClient.suspendedActors[key] != 1 {
-		t.Errorf("expected actor %q to be suspended after turn, count=%d", key, fakeClient.suspendedActors[key])
+		t.Errorf("expected actor %q to be suspended after the work item, count=%d", key, fakeClient.suspendedActors[key])
 	}
 }
 

@@ -65,8 +65,8 @@ It receives work details via environment variables or flags, appends the work
 item to the durable queue, and returns immediately.
 
 'ate-antworker consume' claims the work item from there, resumes the Substrate
-actor, and runs the turn, so a work item survives this process dying between the
-poll and the turn.`,
+actor, and runs it, so a work item survives this process dying between the poll
+and the work being done.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDispatch(cmd.Context(), req, qopts)

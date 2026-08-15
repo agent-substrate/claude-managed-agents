@@ -24,19 +24,19 @@ const (
 // choice, so they are fixed.
 const (
 	// leaseTTL is how long a claimed event stays leased. Consumers renew it
-	// while a turn runs; when renewals stop, the event becomes reclaimable this
-	// long afterwards. It doubles as the lifetime of the session's claim.
+	// while the work runs; when renewals stop, the event becomes reclaimable
+	// this long afterwards. It doubles as the lifetime of the session's claim.
 	leaseTTL = 5 * time.Minute
 
 	// claimBlock is how long a claim blocks waiting for an event to arrive.
-	claimBlock = 5 * time.Second
+	claimBlock = 1 * time.Second
 
 	// maxDeferPerClaim bounds how many events one Claim puts back because their
 	// session is busy, so a queue full of one busy session cannot spin.
 	maxDeferPerClaim = 8
 
 	// busyBackoff is how long Claim waits after deferring that many events.
-	busyBackoff = time.Second
+	busyBackoff = 100 * time.Millisecond
 )
 
 // RedisConfig configures the queue.
@@ -89,7 +89,7 @@ func (c *RedisConfig) defaults() {
 // Acknowledging removes the entry from the in-flight list by value, which is
 // unambiguous because every payload carries a unique event ID. Maintain reclaims
 // entries whose lease expired: that is the single retry path, so an unfinished
-// turn needs no cooperation from the consumer that dropped it. Events that
+// work item needs no cooperation from the consumer that dropped it. Events that
 // exhaust their attempts land on <prefix>:dead.
 type RedisQueue struct {
 	client      redis.UniversalClient
@@ -219,7 +219,7 @@ func (q *RedisQueue) Claim(ctx context.Context) (*Lease, error) {
 			token:    newID(),
 		}
 
-		// Take the session: one turn per sandbox at a time.
+		// Take the session: one work item per sandbox at a time.
 		free, err := q.client.SetNX(ctx, q.sessionKey(ev.Session()), lease.token, leaseTTL).Result()
 		if err != nil {
 			return nil, fmt.Errorf("queue: claiming session %s: %w", ev.Session(), err)
@@ -240,7 +240,7 @@ func (q *RedisQueue) Claim(ctx context.Context) (*Lease, error) {
 		return lease, nil
 	}
 
-	// Everything seen belongs to a session that is already running a turn.
+	// Everything seen belongs to a session that is already running a work item.
 	sleep(ctx, busyBackoff)
 	return nil, nil
 }
@@ -300,7 +300,7 @@ end
 return 1
 `)
 
-// Extend keeps a lease and its session alive while the turn is still running.
+// Extend keeps a lease and its session alive while the work is still running.
 // Consumers call it on a heartbeat; when the calls stop, the event is reclaimed.
 func (q *RedisQueue) Extend(ctx context.Context, lease *Lease) error {
 	if lease == nil {

@@ -47,8 +47,8 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// runConsumers starts n consumers against the same queue. Each runs one turn at
-// a time, so n is the concurrency under test.
+// runConsumers starts n consumers against the same queue. Each runs one work
+// item at a time, so n is the concurrency under test.
 func runConsumers(t *testing.T, n int, cfg ConsumerConfig) {
 	t.Helper()
 
@@ -162,7 +162,7 @@ func TestConsumerDispatchesAndAcksQueuedWork(t *testing.T) {
 		t.Errorf("dispatched %+v, want work_1/sesn_1", got)
 	}
 	if !got.Wait {
-		t.Error("dispatch request Wait = false, want true so the actor is suspended after the turn")
+		t.Error("dispatch request Wait = false, want true so the actor is suspended once the work is done")
 	}
 
 	waitFor(t, "the queue to drain", func() bool {
@@ -181,11 +181,11 @@ func TestConsumerLeavesFailedWorkInFlight(t *testing.T) {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
-	waitFor(t, "the turn to fail", func() bool { return len(rec.snapshot()) == 1 })
+	waitFor(t, "the work item to fail", func() bool { return len(rec.snapshot()) == 1 })
 
-	// A failed turn is neither acknowledged nor put back by the consumer: the
-	// work item stays leased until maintenance reclaims it, which is the same
-	// path a killed consumer takes.
+	// A failed work item is neither acknowledged nor put back by the consumer:
+	// it stays leased until maintenance reclaims it, which is the same path a
+	// killed consumer takes.
 	waitFor(t, "the failed work item to stay in flight", func() bool {
 		return depth(t, server, "inflight") == 1 &&
 			depth(t, server, "pending") == 0 &&
@@ -193,13 +193,13 @@ func TestConsumerLeavesFailedWorkInFlight(t *testing.T) {
 	})
 }
 
-func TestConsumersSerializeTurnsPerSession(t *testing.T) {
+func TestConsumersSerializeWorkPerSession(t *testing.T) {
 	ctx := context.Background()
 	q, server := newTestQueue(t)
 	rec := &recorder{block: make(chan struct{})}
 
 	// Two consumers and two work items for one session: with idle capacity to
-	// spare, only the session itself can hold the second turn back.
+	// spare, only the session itself can hold the second one back.
 	runConsumers(t, 2, ConsumerConfig{Queue: q, dispatch: rec.dispatch})
 
 	for _, id := range []string{"work_1", "work_2"} {
@@ -208,7 +208,7 @@ func TestConsumersSerializeTurnsPerSession(t *testing.T) {
 		}
 	}
 
-	waitFor(t, "the first turn to start", func() bool { return len(rec.snapshot()) >= 1 })
+	waitFor(t, "the first work item to start", func() bool { return len(rec.snapshot()) >= 1 })
 	waitFor(t, "the second work item to stay pending", func() bool {
 		return depth(t, server, "pending") == 1 && depth(t, server, "inflight") == 1
 	})
@@ -219,10 +219,10 @@ func TestConsumersSerializeTurnsPerSession(t *testing.T) {
 
 	close(rec.block)
 
-	// Acknowledging the first turn frees the session, and the second runs.
+	// Acknowledging the first work item frees the session, and the second runs.
 	waitFor(t, "both work items to be dispatched", func() bool { return len(rec.snapshot()) == 2 })
 	if peak := rec.peak(); peak != 1 {
-		t.Errorf("peak concurrent turns for one session = %d, want 1", peak)
+		t.Errorf("peak concurrent work items for one session = %d, want 1", peak)
 	}
 
 	waitFor(t, "the queue to drain", func() bool {
@@ -232,7 +232,7 @@ func TestConsumersSerializeTurnsPerSession(t *testing.T) {
 	})
 }
 
-func TestConsumerRunsOneTurnAtATime(t *testing.T) {
+func TestConsumerRunsOneWorkItemAtATime(t *testing.T) {
 	ctx := context.Background()
 	q, _ := newTestQueue(t)
 	rec := &recorder{block: make(chan struct{})}
@@ -246,11 +246,11 @@ func TestConsumerRunsOneTurnAtATime(t *testing.T) {
 	}
 
 	// Three unrelated sessions, so nothing but the consumer itself limits them.
-	waitFor(t, "a turn to start", func() bool { return len(rec.snapshot()) == 1 })
+	waitFor(t, "a work item to start", func() bool { return len(rec.snapshot()) == 1 })
 	time.Sleep(200 * time.Millisecond)
 
 	if peak := rec.peak(); peak != 1 {
-		t.Errorf("peak concurrent turns for one consumer = %d, want 1", peak)
+		t.Errorf("peak concurrent work items for one consumer = %d, want 1", peak)
 	}
 	close(rec.block)
 }

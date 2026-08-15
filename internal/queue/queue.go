@@ -3,17 +3,17 @@
 //
 // The poller hook ('ate-antworker dispatch') enqueues an event and returns
 // immediately; a consumer ('ate-antworker consume') claims the event, resumes
-// the Substrate actor, runs the turn, and acknowledges it. Because the event
-// outlives the short-lived hook process, a crash between the poll and the turn
+// the Substrate actor, runs the work, and acknowledges it. Because the event
+// outlives the short-lived hook process, a crash between the poll and the work
 // no longer loses the work item.
 //
 // Delivery is at-least-once. An event stays in the in-flight list until it is
-// acknowledged; a consumer holds it under a lease that it renews while the turn
-// runs. Anything that stops a turn — a failure, a killed pod, a lost network —
+// acknowledged; a consumer holds it under a lease that it renews while the work
+// runs. Anything that stops the work — a failure, a killed pod, a lost network —
 // stops the renewals, and the event is reclaimed once the lease expires.
 //
 // A claim also takes the event's session, and Claim never hands out two events
-// for one session at a time, so two consumers cannot run turns against the same
+// for one session at a time, so two consumers cannot run work against the same
 // sandbox concurrently.
 package queue
 
