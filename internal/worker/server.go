@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 const (
@@ -102,12 +104,15 @@ func (w *Worker) Handler() http.Handler {
 // Non-heartbeat environment requests are forwarded to Anthropic via the reverse proxy.
 func (w *Worker) handleEnvironments(rw http.ResponseWriter, req *http.Request) {
 	if strings.HasSuffix(req.URL.Path, "/heartbeat") {
+		nowStr := time.Now().UTC().Format(time.RFC3339)
 		w.logger.Info("Intercepted local worker heartbeat, responding success",
 			slog.String("path", req.URL.Path),
+			slog.String("last_heartbeat", nowStr),
 		)
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(http.StatusOK)
-		_, _ = rw.Write([]byte(`{"state":"active","lease_extended":true,"ttl_seconds":300}`))
+		resp := fmt.Sprintf(`{"type":"work_heartbeat","state":"active","lease_extended":true,"last_heartbeat":%q,"ttl_seconds":300}`, nowStr)
+		_, _ = rw.Write([]byte(resp))
 		return
 	}
 	w.handleProxy(rw, req)
@@ -145,7 +150,7 @@ func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	stdout, stderr, err := w.StartWork(req.Context(), sessionID)
+	stdout, stderr, err := w.StartWork(context.Background(), sessionID)
 	if err != nil {
 		errMsg := err.Error()
 		if stderr != "" {
@@ -199,7 +204,7 @@ func (w *Worker) StartWork(ctx context.Context, sessionID string) (stdout string
 		"--work-id", sessionID,
 		"--session-id", sessionID,
 		"--unrestricted-paths",
-		"--max-idle", "10m",
+		"--max-idle", "30s",
 		"--base-url", baseURL,
 	}
 	if envID := os.Getenv("ANTHROPIC_ENVIRONMENT_ID"); envID != "" {

@@ -60,7 +60,11 @@ func TestWorkerHTTPHandler(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("POST /work with session_id status = %d, want 200", resp.StatusCode)
 	}
+	_ = json.NewDecoder(resp.Body).Decode(&startResp)
 	resp.Body.Close()
+	if startResp.Status != "completed" {
+		t.Errorf("unexpected dispatch response: %+v", startResp)
+	}
 }
 
 func TestWorkerStartWorkMissingIDs(t *testing.T) {

@@ -260,6 +260,8 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 			return false, err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-envoy-upstream-rq-timeout-ms", "0")
+		req.Header.Set("x-envoy-upstream-rq-per-try-timeout-ms", "0")
 		req.Host = fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorRef.Name, actorRef.Atespace)
 
 		client := &http.Client{
@@ -270,11 +272,12 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 			lastErr = fmt.Errorf("posting to router at %s (host %s): %w", url, req.Host, err)
 			return false, nil
 		}
+		defer resp.Body.Close()
+
 		var workResp WorkResponse
 		_ = json.NewDecoder(resp.Body).Decode(&workResp)
-		resp.Body.Close()
 
-		if resp.StatusCode >= 400 {
+		if resp.StatusCode >= 400 || workResp.Status == "error" {
 			lastErr = fmt.Errorf("worker daemon via router at %s returned status %d: %s (output: %s)", url, resp.StatusCode, workResp.Error, workResp.Output)
 			return false, nil
 		}
@@ -284,7 +287,6 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 			slog.String("work_id", workID),
 			slog.String("session_id", sessionID),
 			slog.String("status", workResp.Status),
-			slog.String("output", workResp.Output),
 		)
 		return true, nil
 	})

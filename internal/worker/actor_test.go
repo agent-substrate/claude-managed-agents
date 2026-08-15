@@ -302,7 +302,7 @@ func TestDispatchWork(t *testing.T) {
 	mockRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "completed"})
+		_ = json.NewEncoder(w).Encode(WorkResponse{Status: "completed"})
 	}))
 	defer mockRouter.Close()
 
