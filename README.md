@@ -8,7 +8,7 @@ This project enables Claude Managed Agents to run bash commands, file operations
 
 ### Components
 
-- **Poller Deployment**: An always-on service in your cluster running `ant beta:worker poll --on-work ate-antworker`. It fetches incoming work items and synchronously dispatches them.
+- **Poller**: An always-on service in your cluster running `ant beta:worker poll --on-work ate-antworker`. It fetches incoming work items and synchronously dispatches them.
 - **Worker Pool**: A pool of worker runners that sandbox actors are scheduled onto.
 - **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across turns via snapshots.
 
@@ -41,6 +41,17 @@ This project enables Claude Managed Agents to run bash commands, file operations
 │                                 4. suspend actor to snapshot       │
 ╰────────────────────────────────────────────────────────────────────╯
 ```
+
+### Heartbeat Interception
+
+When `ant beta:worker poll --on-work ate-antworker` claims a work item, the poller process maintains an upstream heartbeat loop with Anthropic to keep the work lease active for the duration of the hook execution.
+
+Inside the sandbox actor, `ant beta:worker run` also attempts to heartbeat the same work item to Anthropic with `expected_last_heartbeat=NO_HEARTBEAT`. Because the poller has already heartbeated the work item, sending this request upstream would result in a `412 Precondition Failed` conflict error, causing `ant beta:worker run` to terminate prematurely.
+
+To prevent this conflict:
+- `ate-antworker worker` acts as a local HTTP reverse proxy for `api.anthropic.com`.
+- `ant beta:worker run` is started with `--base-url http://127.0.0.1:80`.
+- Local heartbeat requests (`POST /v1/environments/.../work/.../heartbeat`) are intercepted locally and acknowledged with `200 OK`, while all other API calls (session events, tool results) are proxied upstream to Anthropic.
 
 ## Commands
 
