@@ -153,6 +153,9 @@ func TestBuildManifests(t *testing.T) {
 	}
 
 	deployment := find[*appsv1.Deployment](t, objs, DefaultDeploymentName)
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 3 {
+		t.Errorf("deployment replicas = %v, want 3", deployment.Spec.Replicas)
+	}
 	if len(deployment.Spec.Template.Spec.Containers) != 1 {
 		t.Fatalf("deployment containers count = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
 	}

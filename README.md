@@ -162,7 +162,7 @@ Inside the container:
 | `ate-antworker-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_ENVIRONMENT_KEY` |
 | `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of microVM/gVisor runners for sandbox actors (10 replicas) |
 | `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
-| `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work ate-antworker` |
+| `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work ate-antworker` (3 replicas) |
 
 ## Roadmap
 

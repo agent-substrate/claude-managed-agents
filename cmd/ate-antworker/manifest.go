@@ -232,7 +232,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 // BuildWorkerDeployment constructs the Kubernetes Deployment for the worker daemon.
 func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 	labels := map[string]string{"app": DefaultDeploymentName}
-	replicas := int32(1)
+	replicas := int32(3)
 
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
