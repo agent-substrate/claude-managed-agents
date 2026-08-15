@@ -1,4 +1,4 @@
-# ⚡ Agent Substrate Anthropic Worker
+# Claude Managed Agents on Agent Substrate
 
 This project enables Claude Managed Agents to run code execution, bash commands, file operations, and skills inside secure, isolated sandboxes running on your Agent Substrate cluster.
 
@@ -6,47 +6,50 @@ Deploy [Anthropic Managed Agents Self-Hosted Sandbox](https://platform.claude.co
 
 ## Overview
 
-The `anthropic-worker` frontend server acts as the bridge between Anthropic's Managed Agents control plane and your Agent Substrate cluster:
+This project connects Claude Managed Agents to secure, isolated sandboxes running on your Agent Substrate cluster.
 
-1. **Monitors Work Queue**: Inspects Anthropic's environment work queue via `Work.List`.
-2. **Resumes Actor**: When a session work item is queued, the controller calls Substrate's `ateapi` to resume (or create) the isolated sandbox `Actor` for that session.
-3. **Sandbox Execution**: Inside the Substrate actor container, `ate-ant waker` receives the work item via HTTP `/start` and executes `ant beta:worker run --work-id <id> --session-id <id>` in the sandboxed `/workspace`.
-4. **Suspends Actor on Turn Completion**: When Claude finishes its turn, `ant beta:worker run` exits. The controller detects the idle state via `/healthz` and calls `ateapi` to suspend the actor. Substrate snapshots the actor's memory/filesystem to Cloud Storage and releases the worker pool pod back to the cluster.
+### Key Components
+
+- **Poller**: An always-on service in your cluster that fetches incoming events.
+- **Worker Pool**: A set of pre-warmed microVM/gVisor runners ready to launch sandboxes.
+- **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across turns.
+
+### How It Works
+
+1. **Poll a new Task**: The poller fetches a new task queued by Claude Managed Agents.
+2. **Dispatch**: The poller dispatch the work to a dedicated sandbox actor.
+3. **Run**: Inside the session-tenant sandbox, the worker runs the requested work.
+4. **Suspend**: When the execution completes, Substrate automatically suspends the actor and persists its snapshot.
 
 ```
               ╭─────────────────────────────────╮
               │      Claude Managed Agents      │
               ╰─────────────────▲───────────────╯
-                                │ Work.List & Session status
-                                │ (ANTHROPIC_API_KEY)
-╭───────────────────────────────┴─────────────────────────────────╮
-│             Agent Substrate on Kubernetes Cluster               │
-│                                                                 │
-│  ╭──────────────────────────╮       ╭────────────────────────╮  │
-│  │ anthropic-worker         │       │ Substrate WorkerPool   │  │
-│  │ (Frontend Server)        │       │ (ateom-gvisor runtime) │  │
-│  │                          │       ╰───────────┬────────────╯  │
-│  │ 1. Lists queued work     │                   │               │
-│  │ 2. Resumes session actor ├─ateapi (gRPC)────▶│ Suspends/     │
-│  │ 3. Notifies actor session├─/start (HTTP)────▶│ Resumes       │
-│  │ 4. Suspends actor on idle├─ateapi (gRPC)────▶│               │
-│  ╰──────────────────────────╯                   ▼               │
-│                                        ╭─────────────────────╮  │
-│                                        │ Substrate Actor     │  │
-│                                        │ (ate-ant waker)     │  │
-│                                        │ ant beta:worker run │  │
-│                                        │ (/workspace)        │  │
-│                                        ╰─────────────────────╯  │
-╰─────────────────────────────────────────────────────────────────╯
+                                │ Poll Work
+╭───────────────────────────────┴─────────────────────────────────────╮
+│                Agent Substrate on Kubernetes Cluster                │
+│                                                                     │
+│  ╭──────────────────────────╮                                       │
+│  │ ate-antworker Poller     │ 2. Dispatches Session                 │
+│  │ (Poller Deployment)      ├─────────────────────╮                 │
+│  ╰──────────────────────────╯                     │                 │
+│                                                   ▼                 │
+│  ╭──────────────────────╮                ╭───────────────────────╮  │
+│  │ Substrate WorkerPool ├─ 3. Resumes ──►│ Sandbox Actor         │  │
+│  ╰──────────────────────╯                │ (ate-antworker)       │  │
+│                                          │ • Runs worker task    │  │
+│                                          │ • Persists snapshot   │  │
+│                                          ╰───────────────────────╯  │
+╰─────────────────────────────────────────────────────────────────────╯
 ```
 
-## CLI Commands
+## Commands
 
-`ate-ant` provides three subcommands:
+`ate-antworker` provides three subcommands:
 
-1. **`ate-ant manifest`**: Generates Kubernetes deployment YAML for the worker pool, sandbox template, and poller Deployment.
-2. **`ate-ant dispatch`**: Hook target for **`ant beta:worker poll --on-work 'ate-ant dispatch'`** (wakes actor $\rightarrow$ executes turn $\rightarrow$ suspends actor).
-3. **`ate-ant waker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
+1. **`ate-antworker manifest`**: Generates Kubernetes deployment YAML for the worker pool, sandbox template, and poller Deployment.
+2. **`ate-antworker dispatch`**: Hook target for **`ant beta:worker poll --on-work 'ate-antworker dispatch'`** (wakes actor $\rightarrow$ executes turn $\rightarrow$ suspends actor).
+3. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
 
 ---
 
@@ -58,7 +61,7 @@ The `anthropic-worker` frontend server acts as the bridge between Anthropic's Ma
    - `ANTHROPIC_ENVIRONMENT_ID` (e.g. `env_01abc...`)
    - `ANTHROPIC_ENVIRONMENT_KEY` (optional, e.g. `sk-ant-oat...`)
 3. A Google Cloud project provided by `GOOGLE_CLOUD_PROJECT` environment variable.
-4. An object storage bucket for actor snapshots (e.g. `gs://$GOOGLE_CLOUD_PROJECT/anthropic-worker/`).
+4. An object storage bucket for actor snapshots (e.g. `gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/`).
 5. [Podman](https://podman.io/) (or Docker) for building container images.
 
 ## Quickstart
@@ -78,13 +81,13 @@ Using the CLI:
 
 ```bash
 # Install CLI tool
-go install github.com/agent-substrate/anthropic/cmd/ate-ant@latest
+go install github.com/agent-substrate/claude-managed-agents/cmd/ate-antworker@latest
 
 # Generate deployment YAML and apply to Kubernetes
-ate-ant manifest \
+ate-antworker manifest \
   --worker-image      gcr.io/dberkov-gke-dev3/anthropic-worker@sha256:73b3f624137c4334c5f351799ec8d943a60beea7b037a958aca9858bb44852d1 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
-  --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/anthropic-worker/ \
+  --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
   --anthropic-env-id  "$ANTHROPIC_ENVIRONMENT_ID" \
   --anthropic-env-key "$ANTHROPIC_ENVIRONMENT_KEY" | kubectl apply -f -
@@ -95,13 +98,13 @@ ate-ant manifest \
 Check that the worker poller Deployment and Substrate pre-warmed worker pool are running:
 
 ```bash
-kubectl get pods -n anthropic-worker
+kubectl get pods -n ate-antworker
 ```
 
 Check logs of the worker poller Deployment:
 
 ```bash
-kubectl logs -n anthropic-worker -l app=anthropic-worker -f
+kubectl logs -n ate-antworker -l app=ate-antworker -f
 ```
 
 ## Example Agent
@@ -127,19 +130,20 @@ To run the poller and dispatcher locally for development or testing:
 kubectl port-forward svc/api 8443:443 -n ate-system &
 kubectl port-forward svc/atenet-router 8080:80 -n ate-system &
 
-# 2. Run poller with ate-ant dispatch
+# 2. Run poller with ate-antworker dispatch
 ant beta:worker poll \
   --environment-id "$ANTHROPIC_ENVIRONMENT_ID" \
   --environment-key "$ANTHROPIC_ENVIRONMENT_KEY" \
-  --on-work "ate-ant dispatch --ateapi-addr localhost:8443 --atenet-router-addr localhost:8080 --insecure"
+  --on-work "ate-antworker dispatch --ateapi-addr localhost:8443 --atenet-router-addr localhost:8080 --insecure"
 ```
 
 ## Manifest Reference
 
 | Resource | Kind | Purpose |
 | --- | --- | --- |
-| `anthropic-worker` | `Namespace` | Target Kubernetes namespace |
-| `anthropic-environment-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and `ANTHROPIC_ENVIRONMENT_KEY` |
-| `anthropic-worker-template-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pre-warmed microVM/gVisor runner pool (50 replicas) |
-| `anthropic-worker-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-ant waker`) and workspace snapshot storage |
-| `anthropic-worker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work "ate-ant dispatch"` |
+| `ate-antworker` | `Atespace` (`ate.dev/v1alpha1`) | Substrate tenant atespace for actors |
+| `ate-antworker` | `Namespace` | Target Kubernetes namespace |
+| `ate-antworker-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and `ANTHROPIC_ENVIRONMENT_KEY` |
+| `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pre-warmed microVM/gVisor runner pool (10 replicas) |
+| `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
+| `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work "ate-antworker dispatch"` |

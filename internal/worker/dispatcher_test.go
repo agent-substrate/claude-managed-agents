@@ -244,14 +244,14 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 		APIKey:           "key_test_123",
 		AteClient:        fakeClient,
 		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
-		Namespace:        "anthropic-worker",
-		Template:         "anthropic-worker-template",
+		Namespace:        "ate-antworker",
+		Template:         "ate-antworker-actor-template",
 	}
 	cfg.Defaults()
 
 	ctx := context.Background()
 	actorRef := &ateapipb.ObjectRef{
-		Atespace: "anthropic-worker",
+		Atespace: "ate-antworker",
 		Name:     "session-test-001",
 	}
 
@@ -260,9 +260,9 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 		t.Fatalf("EnsureActorRegistered: %v", err)
 	}
 
-	key := "anthropic-worker/session-test-001"
-	if _, ok := fakeClient.createdAtespaces["anthropic-worker"]; !ok {
-		t.Errorf("expected Atespace 'anthropic-worker' to be created")
+	key := "ate-antworker/session-test-001"
+	if _, ok := fakeClient.createdAtespaces["ate-antworker"]; !ok {
+		t.Errorf("expected Atespace 'ate-antworker' to be created")
 	}
 	if _, ok := fakeClient.createdActors[key]; !ok {
 		t.Errorf("expected Actor %q to be created", key)
@@ -296,7 +296,7 @@ func TestEnsureActorErrorPropagation(t *testing.T) {
 	cfg.Defaults()
 
 	actorRef := &ateapipb.ObjectRef{
-		Atespace: "anthropic-worker",
+		Atespace: "ate-antworker",
 		Name:     "session-test",
 	}
 
@@ -321,8 +321,8 @@ func TestDispatchWork(t *testing.T) {
 	cfg := Config{
 		AteClient:        fakeClient,
 		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
-		Namespace:        "anthropic-worker",
-		Template:         "anthropic-worker-template",
+		Namespace:        "ate-antworker",
+		Template:         "ate-antworker-actor-template",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -330,7 +330,7 @@ func TestDispatchWork(t *testing.T) {
 
 	sessionID := "sesn_test_dispatch_01"
 	aName := ActorName(sessionID)
-	key := "anthropic-worker/" + aName
+	key := "ate-antworker/" + aName
 
 	req := DispatchRequest{
 		WorkID:    "work_test_dispatch_01",
@@ -363,14 +363,14 @@ func TestDispatchWorkNoWait(t *testing.T) {
 	cfg := Config{
 		AteClient:        fakeClient,
 		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
-		Namespace:        "anthropic-worker",
-		Template:         "anthropic-worker-template",
+		Namespace:        "ate-antworker",
+		Template:         "ate-antworker-actor-template",
 	}
 
 	ctx := context.Background()
 	sessionID := "sesn_test_dispatch_nowait"
 	aName := ActorName(sessionID)
-	key := "anthropic-worker/" + aName
+	key := "ate-antworker/" + aName
 
 	req := DispatchRequest{
 		WorkID:    "work_test_nowait",

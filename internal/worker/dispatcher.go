@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	DefaultNamespace        = "anthropic-worker"
-	DefaultTemplate         = "anthropic-worker-template"
+	DefaultNamespace        = "ate-antworker"
+	DefaultTemplate         = "ate-antworker-actor-template"
 	DefaultWorkdir          = "/workspace"
 	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
 	DefaultAtenetRouterAddr = "atenet-router.ate-system.svc.cluster.local:80"
@@ -144,7 +144,7 @@ func DispatchWork(ctx context.Context, cfg Config, req DispatchRequest) error {
 		defer conn.Close()
 	}
 
-	// Ensure actor exists and execute turn synchronously via waker
+	// Ensure actor exists and execute turn synchronously via worker daemon
 	if err := EnsureActorRegistered(ctx, ateClient, cfg, actorRef, req.WorkID, sessionID); err != nil {
 		return fmt.Errorf("dispatching work to actor: %w", err)
 	}
@@ -318,7 +318,7 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 		resp.Body.Close()
 
 		if resp.StatusCode >= 400 {
-			lastErr = fmt.Errorf("waker via router at %s returned status %d", url, resp.StatusCode)
+			lastErr = fmt.Errorf("worker daemon via router at %s returned status %d", url, resp.StatusCode)
 			return false, nil
 		}
 

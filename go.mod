@@ -1,4 +1,4 @@
-module github.com/agent-substrate/anthropic
+module github.com/agent-substrate/claude-managed-agents
 
 go 1.26.5
 

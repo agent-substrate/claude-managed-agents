@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/agent-substrate/anthropic/internal/worker"
+	"github.com/agent-substrate/claude-managed-agents/internal/worker"
 	"github.com/spf13/cobra"
 )
 

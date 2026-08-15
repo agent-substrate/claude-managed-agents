@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-func TestWakerHTTPHandler(t *testing.T) {
-	w := NewWaker(nil)
+func TestWorkerHTTPHandler(t *testing.T) {
+	w := NewWorker(nil)
 	w.antBinary = "true"
 
 	server := httptest.NewServer(w.Handler())
@@ -69,8 +69,8 @@ func TestWakerHTTPHandler(t *testing.T) {
 	resp.Body.Close()
 }
 
-func TestWakerStartWorkMissingIDs(t *testing.T) {
-	w := NewWaker(nil)
+func TestWorkerStartWorkMissingIDs(t *testing.T) {
+	w := NewWorker(nil)
 	if err := w.StartWork(t.Context(), "", "sesn_123"); err == nil {
 		t.Error("expected error when workID is empty, got nil")
 	}
@@ -82,8 +82,8 @@ func TestWakerStartWorkMissingIDs(t *testing.T) {
 	}
 }
 
-func TestWakerStartWorkExecution(t *testing.T) {
-	w := NewWaker(nil)
+func TestWorkerStartWorkExecution(t *testing.T) {
+	w := NewWorker(nil)
 	w.antBinary = "true"
 
 	if err := w.StartWork(t.Context(), "work_test_123", "sesn_test_123"); err != nil {

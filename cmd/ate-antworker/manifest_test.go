@@ -12,9 +12,9 @@ import (
 
 func testConfig() Config {
 	return Config{
-		Namespace:       "anthropic-worker",
-		Template:        "anthropic-worker-template",
-		WorkerPool:      "anthropic-worker-template-workerpool",
+		Namespace:       "ate-antworker",
+		Template:        "ate-antworker-actor-template",
+		WorkerPool:      "ate-antworker-workerpool",
 		WorkerImage:     "gcr.io/test/worker@sha256:1111",
 		AteomImage:      "gcr.io/test/ateom@sha256:2222",
 		PauseImage:      DefaultPauseImage,
@@ -50,7 +50,7 @@ func TestManifestCommand(t *testing.T) {
 		"kind: Namespace",
 		"name: test-ns",
 		"kind: Secret",
-		"name: anthropic-environment-creds",
+		"name: ate-antworker-creds",
 		"ANTHROPIC_ENVIRONMENT_ID: env_test_abc",
 		"kind: WorkerPool",
 		"kind: ActorTemplate",
@@ -106,8 +106,8 @@ func TestBuildManifests(t *testing.T) {
 	}
 
 	ns := objs[0].(*corev1.Namespace)
-	if ns.Name != "anthropic-worker" {
-		t.Errorf("namespace = %q, want anthropic-worker", ns.Name)
+	if ns.Name != "ate-antworker" {
+		t.Errorf("namespace = %q, want ate-antworker", ns.Name)
 	}
 
 	secret := objs[1].(*corev1.Secret)
@@ -119,7 +119,7 @@ func TestBuildManifests(t *testing.T) {
 	}
 
 	pool := objs[2].(*atev1alpha1.WorkerPool)
-	if pool.Name != "anthropic-worker-template-workerpool" || pool.Spec.Replicas != 3 {
+	if pool.Name != "ate-antworker-workerpool" || pool.Spec.Replicas != 3 {
 		t.Errorf("workerpool = %+v", pool)
 	}
 
@@ -127,8 +127,8 @@ func TestBuildManifests(t *testing.T) {
 	if len(template.Spec.Containers) != 1 || template.Spec.Containers[0].Image != cfg.WorkerImage {
 		t.Errorf("template containers = %+v", template.Spec.Containers)
 	}
-	if len(template.Spec.Containers[0].Command) < 2 || template.Spec.Containers[0].Command[0] != "ate-ant" || template.Spec.Containers[0].Command[1] != "waker" {
-		t.Errorf("template container command = %v, want ['ate-ant', 'waker', ...]", template.Spec.Containers[0].Command)
+	if len(template.Spec.Containers[0].Command) < 2 || template.Spec.Containers[0].Command[0] != "ate-antworker" || template.Spec.Containers[0].Command[1] != "worker" {
+		t.Errorf("template container command = %v, want ['ate-antworker', 'worker', ...]", template.Spec.Containers[0].Command)
 	}
 	if len(template.Spec.Containers[0].Env) != 2 {
 		t.Errorf("template container env count = %d, want 2", len(template.Spec.Containers[0].Env))
@@ -173,7 +173,7 @@ func TestWriteManifests(t *testing.T) {
 		"ant",
 		"beta:worker",
 		"poll",
-		"ate-ant",
+		"ate-antworker",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)

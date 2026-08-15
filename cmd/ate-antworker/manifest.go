@@ -20,10 +20,11 @@ const DefaultPauseImage = "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896c
 
 // Default constants for names and paths.
 const (
-	DefaultNamespace        = "anthropic-worker"
-	DefaultTemplate         = "anthropic-worker-template"
-	DefaultDeploymentName   = "anthropic-worker"
-	DefaultSecretName       = "anthropic-environment-creds"
+	DefaultNamespace        = "ate-antworker"
+	DefaultTemplate         = "ate-antworker-actor-template"
+	DefaultWorkerPool       = "ate-antworker-workerpool"
+	DefaultDeploymentName   = "ate-antworker"
+	DefaultSecretName       = "ate-antworker-creds"
 	DefaultWorkdir          = "/workspace"
 	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
 	DefaultAtenetRouterAddr = "atenet-router.ate-system.svc.cluster.local:80"
@@ -57,13 +58,13 @@ func (c *Config) Defaults() {
 		c.Template = DefaultTemplate
 	}
 	if c.WorkerPool == "" {
-		c.WorkerPool = c.Template + "-workerpool"
+		c.WorkerPool = DefaultWorkerPool
 	}
 	if c.PauseImage == "" {
 		c.PauseImage = DefaultPauseImage
 	}
 	if c.Replicas == 0 {
-		c.Replicas = 50
+		c.Replicas = 10
 	}
 	if c.WorkerReplicas == 0 {
 		c.WorkerReplicas = 1
@@ -132,7 +133,7 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 	cmd.Flags().StringVar(&cfg.AteomImage, "ateom-image", "", "digest-pinned ateom image for the worker pool (e.g. ateom-gvisor)")
 	cmd.Flags().StringVar(&cfg.PauseImage, "pause-image", DefaultPauseImage, "digest-pinned pause image for the sandbox container")
 	cmd.Flags().StringVar(&cfg.SnapshotsBucket, "snapshots-bucket", "", "object-storage bucket (with prefix) for actor snapshots (e.g. gs://bucket/snapshots/)")
-	cmd.Flags().Int32Var(&cfg.Replicas, "replicas", 50, "number of pre-warmed worker pool pods")
+	cmd.Flags().Int32Var(&cfg.Replicas, "replicas", 10, "number of pre-warmed worker pool pods")
 	cmd.Flags().Int32Var(&cfg.WorkerReplicas, "worker-replicas", 1, "number of worker daemon deployment replicas")
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (e.g. env_...)")
 	cmd.Flags().StringVar(&cfg.EnvironmentKey, "anthropic-env-key", "", "Anthropic environment key")
@@ -253,7 +254,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 			Containers: []atev1alpha1.Container{{
 				Name:    "worker",
 				Image:   cfg.WorkerImage,
-				Command: []string{"ate-ant", "waker"},
+				Command: []string{"ate-antworker", "worker"},
 				Env:     envVars,
 				Readyz: &atev1alpha1.ContainerReadyz{
 					HTTPGet: &atev1alpha1.HTTPGetAction{
@@ -291,7 +292,7 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 						Image: cfg.WorkerImage,
 						Command: []string{
 							"ant", "beta:worker", "poll",
-							"--on-work", "ate-ant",
+							"--on-work", "ate-antworker",
 						},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{

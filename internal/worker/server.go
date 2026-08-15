@@ -12,41 +12,41 @@ import (
 )
 
 const (
-	DefaultWakerAddr = ":80"
+	DefaultWorkerAddr = ":80"
 )
 
-// WorkRequest is the JSON payload accepted by the waker HTTP server.
+// WorkRequest is the JSON payload accepted by the worker HTTP server.
 type WorkRequest struct {
 	WorkID    string `json:"work_id"`
 	SessionID string `json:"session_id,omitempty"`
 }
 
-// WorkResponse is the JSON payload returned by the waker HTTP server.
+// WorkResponse is the JSON payload returned by the worker HTTP server.
 type WorkResponse struct {
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
 }
 
-// Waker runs a lightweight HTTP server inside a Substrate actor container.
+// Worker runs a lightweight HTTP server inside a Substrate actor container.
 // On /dispatch, it executes 'ant beta:worker run --work-id <work_id> --session-id <session_id>'.
-type Waker struct {
+type Worker struct {
 	logger    *slog.Logger
 	antBinary string
 }
 
-// NewWaker creates a new Waker instance.
-func NewWaker(logger *slog.Logger) *Waker {
+// NewWorker creates a new Worker instance.
+func NewWorker(logger *slog.Logger) *Worker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Waker{
+	return &Worker{
 		logger:    logger,
 		antBinary: "ant",
 	}
 }
 
-// Handler returns the http.Handler for the waker server.
-func (w *Waker) Handler() http.Handler {
+// Handler returns the http.Handler for the worker server.
+func (w *Worker) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dispatch", w.handleDispatch)
 	mux.HandleFunc("/start", w.handleDispatch) // backwards compatibility alias
@@ -56,7 +56,7 @@ func (w *Waker) Handler() http.Handler {
 }
 
 // handleDispatch parses the work ID / session ID and starts 'ant beta:worker run'.
-func (w *Waker) handleDispatch(rw http.ResponseWriter, req *http.Request) {
+func (w *Worker) handleDispatch(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost && req.Method != http.MethodPut {
 		http.Error(rw, `{"error": "method not allowed, use POST"}`, http.StatusMethodNotAllowed)
 		return
@@ -98,7 +98,7 @@ func (w *Waker) handleDispatch(rw http.ResponseWriter, req *http.Request) {
 }
 
 // handleHealthz returns OK status.
-func (w *Waker) handleHealthz(rw http.ResponseWriter, req *http.Request) {
+func (w *Worker) handleHealthz(rw http.ResponseWriter, req *http.Request) {
 	rw.Header().Set("Content-Type", "application/json")
 	rw.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(rw).Encode(WorkResponse{
@@ -107,7 +107,7 @@ func (w *Waker) handleHealthz(rw http.ResponseWriter, req *http.Request) {
 }
 
 // StartWork executes 'ant beta:worker run --work-id <workID> --session-id <sessionID>' synchronously.
-func (w *Waker) StartWork(ctx context.Context, workID, sessionID string) error {
+func (w *Worker) StartWork(ctx context.Context, workID, sessionID string) error {
 	if workID == "" || sessionID == "" {
 		return errors.New("work_id and session_id are required")
 	}
@@ -135,9 +135,9 @@ func (w *Waker) StartWork(ctx context.Context, workID, sessionID string) error {
 }
 
 // Run starts the HTTP server on addr.
-func (w *Waker) Run(addr string) error {
+func (w *Worker) Run(addr string) error {
 	if addr == "" {
-		addr = DefaultWakerAddr
+		addr = DefaultWorkerAddr
 	}
 	return http.ListenAndServe(addr, w.Handler())
 }

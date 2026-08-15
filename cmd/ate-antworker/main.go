@@ -1,4 +1,4 @@
-// Command ate-ant provides CLI utilities to generate deployment manifests
+// Command ate-antworker provides CLI utilities to generate deployment manifests
 // and manage Anthropic workers on Agent Substrate.
 package main
 
@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/agent-substrate/anthropic/internal/worker"
+	"github.com/agent-substrate/claude-managed-agents/internal/worker"
 	"github.com/spf13/cobra"
 )
 
@@ -18,10 +18,10 @@ func newRootCommand() *cobra.Command {
 	var req worker.DispatchRequest
 
 	root := &cobra.Command{
-		Use:           "ate-ant",
+		Use:           "ate-antworker",
 		Short:         "Deploy and manage Anthropic workers on Agent Substrate",
-		Long: `ate-ant dispatches Anthropic work items to Substrate actors.
-When executed without subcommands, it serves the dispatch command (for 'ant beta:worker poll --on-work ate-ant').`,
+		Long: `ate-antworker dispatches Anthropic work items to Substrate actors.
+When executed without subcommands, it serves the dispatch command (for 'ant beta:worker poll --on-work ate-antworker').`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -32,14 +32,14 @@ When executed without subcommands, it serves the dispatch command (for 'ant beta
 	registerDispatchFlags(root, &cfg, &req)
 
 	root.AddCommand(newManifestCommand())
-	root.AddCommand(newWakerCommand())
+	root.AddCommand(newWorkerCommand())
 	root.AddCommand(newDispatchCommand())
 
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("ate-ant version %s\n", version)
+			fmt.Printf("ate-antworker version %s\n", version)
 		},
 	})
 
@@ -47,10 +47,10 @@ When executed without subcommands, it serves the dispatch command (for 'ant beta
 }
 
 func main() {
-	if len(os.Args) > 0 && filepath.Base(os.Args[0]) == "ate-ant-dispatch" {
+	if len(os.Args) > 0 && filepath.Base(os.Args[0]) == "ate-antworker-dispatch" {
 		cmd := newDispatchCommand()
 		if err := cmd.Execute(); err != nil {
-			fmt.Fprintf(os.Stderr, "ate-ant-dispatch: %v\n", err)
+			fmt.Fprintf(os.Stderr, "ate-antworker-dispatch: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -58,7 +58,7 @@ func main() {
 
 	root := newRootCommand()
 	if err := root.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "ate-ant: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ate-antworker: %v\n", err)
 		os.Exit(1)
 	}
 }
