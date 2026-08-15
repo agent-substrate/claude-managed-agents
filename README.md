@@ -1,12 +1,11 @@
 # Claude Managed Agents on Agent Substrate
 
-This project enables Claude Managed Agents to run code execution, bash commands, file operations, and skills inside secure, isolated sandboxes running on your Agent Substrate cluster.
-
 Deploy [Anthropic Managed Agents Self-Hosted Sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes) workers on [Agent Substrate](https://github.com/agent-substrate/substrate).
 
-## Overview
+This project enables Claude Managed Agents to run bash commands, file operations, code execution, and skills inside secure, isolated sandboxes running on your Agent Substrate cluster.
 
-This project connects Claude Managed Agents to secure, isolated sandboxes running on Agent Substrate.
+
+## Overview
 
 ### Components
 
