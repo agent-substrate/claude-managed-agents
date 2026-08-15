@@ -165,7 +165,6 @@ func sendPrompt(ctx context.Context, client *anthropic.Client, sessionID, prompt
 // streamEvents renders the session's events until it stops for good, recording
 // any session error it reports.
 func streamEvents(stream *ssestream.Stream[anthropic.BetaManagedAgentsStreamSessionEventsUnion], sessionErr *string) {
-events:
 	for stream.Next() {
 		event := stream.Current()
 
@@ -197,15 +196,15 @@ events:
 			// confirmation or a custom tool result. Any stop reason other than
 			// requires_action means it has stopped for good.
 			if v.StopReason.Type != "requires_action" {
-				break events
+				return
 			}
 
 		case anthropic.BetaManagedAgentsSessionStatusTerminatedEvent:
-			break events
+			return
 
 		case anthropic.BetaManagedAgentsSessionErrorEvent:
 			*sessionErr = v.Error.Message
-			break events
+			return
 
 		default:
 			// do nothing
