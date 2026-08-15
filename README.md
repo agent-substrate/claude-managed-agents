@@ -6,9 +6,9 @@ Deploy [Anthropic Managed Agents Self-Hosted Sandbox](https://platform.claude.co
 
 ## Overview
 
-This project connects Claude Managed Agents to secure, isolated sandboxes running on your Agent Substrate cluster.
+This project connects Claude Managed Agents to secure, isolated sandboxes running on Agent Substrate.
 
-### Key Components
+### Components
 
 - **Poller**: An always-on service in your cluster that fetches incoming events and appends them to the work queue.
 - **Work Queue**: A durable Redis queue holding polled events until the work has actually completed.
