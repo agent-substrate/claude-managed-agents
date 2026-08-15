@@ -26,15 +26,9 @@ import (
 )
 
 // Errors returned by the queue.
-var (
-	// ErrDuplicate is returned by Enqueue when deduplication is enabled and an
-	// event with the same work ID was already enqueued within the dedup window.
-	ErrDuplicate = errors.New("queue: duplicate work item")
-
-	// ErrLeaseLost is returned by Ack and Extend when the lease is no longer
-	// held, because it expired and the event was reclaimed.
-	ErrLeaseLost = errors.New("queue: lease no longer held")
-)
+// ErrLeaseLost is returned by Ack and Extend when the claim is no longer held,
+// because it lapsed and the event was reclaimed.
+var ErrLeaseLost = errors.New("queue: claim no longer held")
 
 // Event is a single Anthropic work item waiting to be dispatched to an actor.
 //

@@ -28,7 +28,7 @@ func TestDispatchCommandHelp(t *testing.T) {
 		"--work-id",
 		"--session-id",
 		"--redis-addr",
-		"--queue-prefix",
+		"--redis-password",
 	} {
 		if !strings.Contains(out, expected) {
 			t.Errorf("dispatch help output missing %q:\n%s", expected, out)

@@ -22,8 +22,6 @@ func TestConsumeCommandHelp(t *testing.T) {
 	for _, expected := range []string{
 		"Consume drains the durable Redis queue",
 		"--redis-addr",
-		"--queue-prefix",
-		"--max-attempts",
 		"--ateapi-addr",
 		"--namespace",
 	} {

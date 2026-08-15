@@ -34,7 +34,7 @@ func newTestQueue(t *testing.T) (*queue.RedisQueue, *miniredis.Miniredis) {
 // its prefix (e.g. "pending").
 func depth(t *testing.T, server *miniredis.Miniredis, list string) int {
 	t.Helper()
-	entries, err := server.List(queue.DefaultPrefix + ":" + list)
+	entries, err := server.List(queue.KeyPrefix + ":" + list)
 	if err != nil {
 		// A list Redis has never held reads as empty.
 		return 0
@@ -292,25 +292,5 @@ func TestEnqueueWork(t *testing.T) {
 
 	if err := EnqueueWork(ctx, q, DispatchRequest{SessionID: "sesn_1"}, discardLogger()); err == nil {
 		t.Error("EnqueueWork without a work ID succeeded, want an error")
-	}
-}
-
-func TestEnqueueWorkIgnoresDuplicates(t *testing.T) {
-	ctx := context.Background()
-	server := miniredis.RunT(t)
-	client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
-	defer client.Close()
-
-	q := queue.NewRedis(queue.RedisConfig{Client: client, DedupTTL: time.Hour})
-	req := DispatchRequest{WorkID: "work_1", SessionID: "sesn_1"}
-
-	for i := range 2 {
-		if err := EnqueueWork(ctx, q, req, discardLogger()); err != nil {
-			t.Fatalf("EnqueueWork #%d: %v", i+1, err)
-		}
-	}
-
-	if got := depth(t, server, "pending"); got != 1 {
-		t.Errorf("pending = %d, want 1: a redelivered work item should not queue twice", got)
 	}
 }

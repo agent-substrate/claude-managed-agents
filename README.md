@@ -23,7 +23,7 @@ This project connects Claude Managed Agents to secure, isolated sandboxes runnin
 3. **Claim**: A consumer takes the work item together with its session, so no other consumer can enter that sandbox.
 4. **Run**: The consumer resumes the sandbox actor, the worker runs the work item, Substrate suspends the actor and persists its snapshot, and only then is the item acknowledged.
 
-If anything interrupts step 4, the lease expires and the work item returns to `pending` to be retried; after `--max-attempts` it lands on `dead`.
+If anything interrupts step 4, the claim lapses and the work item returns to `ate-antworker:pending` to be retried; after 3 attempts it lands on `ate-antworker:dead`.
 
 ```
                 ╭───────────────────────────────────╮
@@ -155,10 +155,11 @@ go run ./examples/agent \
 
 Polled events are persisted before any actor is resumed, so a work item is not
 lost if the poller pod is evicted, the consumer crashes mid-run, or the actor
-cannot be woken. A claimed item stays in `<prefix>:inflight`, owned by a single
-key — `<prefix>:session:<id>`, whose value names the item holding it and whose
-TTL the consumer renews while it works. When renewals stop, maintenance requeues
-the item, or moves it to `<prefix>:dead` once `--max-attempts` is used up. Expiry is the only retry
+cannot be woken. A claimed item stays in `ate-antworker:inflight`, owned by a
+single key — `ate-antworker:session:<id>`, whose value names the item holding it
+and whose TTL the consumer renews while it works. When renewals stop,
+maintenance requeues the item, or moves it to `ate-antworker:dead` after three
+attempts. Expiry is the only retry
 path, so a failed work item waits out its lease (5 minutes) instead of retrying
 immediately.
 

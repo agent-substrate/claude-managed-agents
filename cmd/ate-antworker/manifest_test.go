@@ -14,13 +14,10 @@ func testConfig() Config {
 	return Config{
 		Namespace:       "ate-antworker",
 		Template:        "ate-antworker-actor-template",
-		WorkerPool:      "ate-antworker-workerpool",
 		WorkerImage:     "gcr.io/test/worker@sha256:1111",
 		AteomImage:      "gcr.io/test/ateom@sha256:2222",
-		PauseImage:      DefaultPauseImage,
 		SnapshotsBucket: "gs://test-bucket/snapshots/",
 		Replicas:        3,
-		WorkerReplicas:  1,
 		EnvironmentID:   "env_test_123",
 		EnvironmentKey:  "key_test_123",
 	}
@@ -133,7 +130,7 @@ func TestBuildManifests(t *testing.T) {
 		t.Errorf("secret env id = %q", secret.StringData["ANTHROPIC_ENVIRONMENT_ID"])
 	}
 
-	pool := find[*atev1alpha1.WorkerPool](t, objs, "ate-antworker-workerpool")
+	pool := find[*atev1alpha1.WorkerPool](t, objs, DefaultWorkerPool)
 	if pool.Spec.Replicas != 3 {
 		t.Errorf("workerpool = %+v", pool)
 	}

@@ -235,11 +235,11 @@ func TestMaintainRetriesUnclaimedWork(t *testing.T) {
 
 func TestMaintainDeadLettersAfterMaxAttempts(t *testing.T) {
 	ctx := context.Background()
-	q, _ := newTestQueue(t, RedisConfig{MaxAttempts: 2})
+	q, _ := newTestQueue(t, RedisConfig{})
 
 	mustEnqueue(t, q, "work_1", "sesn_1")
 
-	for range 2 {
+	for range maxAttempts {
 		lease := mustClaim(t, q)
 		killConsumer(t, q, lease)
 		if err := q.Maintain(ctx); err != nil {
@@ -259,8 +259,8 @@ func TestMaintainDeadLettersAfterMaxAttempts(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &dead); err != nil {
 		t.Fatalf("decoding dead event: %v", err)
 	}
-	if dead.WorkID != "work_1" || dead.Attempts != 2 {
-		t.Errorf("dead event = %+v, want work_1 with 2 attempts", dead)
+	if dead.WorkID != "work_1" || dead.Attempts != maxAttempts {
+		t.Errorf("dead event = %+v, want work_1 with %d attempts", dead, maxAttempts)
 	}
 }
 
@@ -353,22 +353,6 @@ func TestClaimLapsesOnItsOwn(t *testing.T) {
 	server.FastForward(leaseTTL + time.Minute)
 	if server.Exists(q.sessionKey("sesn_1")) {
 		t.Error("session hold outlived the lease")
-	}
-}
-
-func TestEnqueueDeduplicates(t *testing.T) {
-	ctx := context.Background()
-	q, _ := newTestQueue(t, RedisConfig{DedupTTL: time.Hour})
-
-	mustEnqueue(t, q, "work_1", "sesn_1")
-
-	err := q.Enqueue(ctx, Event{WorkID: "work_1", SessionID: "sesn_1"})
-	if !errors.Is(err, ErrDuplicate) {
-		t.Fatalf("second Enqueue = %v, want ErrDuplicate", err)
-	}
-
-	if pending, _, _ := depths(t, q); pending != 1 {
-		t.Errorf("pending = %d, want 1", pending)
 	}
 }
 

@@ -11,16 +11,19 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// Redis queue defaults.
-const (
-	DefaultAddr        = "ate-antworker-redis:6379"
-	DefaultPrefix      = "ate-antworker"
-	DefaultMaxAttempts = 3
-)
+// DefaultAddr is where the generated manifests put Redis.
+const DefaultAddr = "ate-antworker-redis:6379"
+
+// KeyPrefix namespaces every key the queue uses: <prefix>:pending and friends.
+const KeyPrefix = "ate-antworker"
 
 // Queue pacing. These describe how the queue talks to Redis, not a deployment
 // choice, so they are fixed.
 const (
+	// maxAttempts is how many times an event is retried before it moves to the
+	// dead-letter list.
+	maxAttempts = 3
+
 	// leaseTTL is how long a claimed event stays leased. Consumers renew it
 	// while the work runs; when renewals stop, the event becomes reclaimable
 	// this long afterwards. It doubles as the lifetime of the session's claim.
@@ -43,33 +46,17 @@ type RedisConfig struct {
 	Addr string
 	// Password authenticates to Redis. Empty means no auth.
 	Password string
-	// DB selects the Redis logical database.
-	DB int
-	// Prefix namespaces every key used by the queue. Defaults to DefaultPrefix.
-	Prefix string
-	// MaxAttempts is how many times an event is retried before it moves to the
-	// dead-letter list. Defaults to DefaultMaxAttempts.
-	MaxAttempts int
-	// DedupTTL, when positive, drops events whose work ID was already enqueued
-	// within this window. Disabled by default.
-	DedupTTL time.Duration
 
 	Logger *slog.Logger
 
-	// Client overrides the Redis client (e.g. in tests). When set, Addr,
-	// Password and DB are ignored and Close does not close the client.
+	// Client overrides the Redis client (e.g. in tests). When set, Addr and
+	// Password are ignored and Close does not close the client.
 	Client redis.UniversalClient
 }
 
 func (c *RedisConfig) defaults() {
 	if c.Addr == "" {
 		c.Addr = DefaultAddr
-	}
-	if c.Prefix == "" {
-		c.Prefix = DefaultPrefix
-	}
-	if c.MaxAttempts <= 0 {
-		c.MaxAttempts = DefaultMaxAttempts
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -95,12 +82,9 @@ func (c *RedisConfig) defaults() {
 // Acknowledging removes the entry from the in-flight list by value, which is
 // unambiguous because every payload carries a unique event ID.
 type RedisQueue struct {
-	client      redis.UniversalClient
-	ownsClient  bool
-	log         *slog.Logger
-	prefix      string
-	maxAttempts int
-	dedupTTL    time.Duration
+	client     redis.UniversalClient
+	ownsClient bool
+	log        *slog.Logger
 }
 
 // NewRedis creates the queue. It does not contact Redis; use Ping to verify
@@ -114,18 +98,14 @@ func NewRedis(cfg RedisConfig) *RedisQueue {
 		client = redis.NewClient(&redis.Options{
 			Addr:     cfg.Addr,
 			Password: cfg.Password,
-			DB:       cfg.DB,
 		})
 		ownsClient = true
 	}
 
 	return &RedisQueue{
-		client:      client,
-		ownsClient:  ownsClient,
-		log:         cfg.Logger,
-		prefix:      cfg.Prefix,
-		maxAttempts: cfg.MaxAttempts,
-		dedupTTL:    cfg.DedupTTL,
+		client:     client,
+		ownsClient: ownsClient,
+		log:        cfg.Logger,
 	}
 }
 
@@ -142,7 +122,7 @@ func (q *RedisQueue) Close() error {
 	return nil
 }
 
-func (q *RedisQueue) key(suffix string) string { return q.prefix + ":" + suffix }
+func (q *RedisQueue) key(suffix string) string { return KeyPrefix + ":" + suffix }
 
 func (q *RedisQueue) pendingKey() string         { return q.key("pending") }
 func (q *RedisQueue) inflightKey() string        { return q.key("inflight") }
@@ -157,16 +137,6 @@ func (q *RedisQueue) Enqueue(ctx context.Context, ev Event) error {
 	if ev.ID == "" {
 		ev.ID = newID()
 	}
-	if q.dedupTTL > 0 {
-		fresh, err := q.client.SetNX(ctx, q.key("seen:"+ev.WorkID), ev.ID, q.dedupTTL).Result()
-		if err != nil {
-			return fmt.Errorf("queue: deduplicating %s: %w", ev.WorkID, err)
-		}
-		if !fresh {
-			return ErrDuplicate
-		}
-	}
-
 	payload, err := json.Marshal(ev)
 	if err != nil {
 		return fmt.Errorf("queue: encoding event: %w", err)
@@ -356,7 +326,7 @@ func (q *RedisQueue) reclaim(ctx context.Context, ev Event, payload string) erro
 	next.Attempts++
 
 	dead := "0"
-	if next.Attempts >= q.maxAttempts {
+	if next.Attempts >= maxAttempts {
 		dead = "1"
 	}
 

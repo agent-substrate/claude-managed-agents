@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/agent-substrate/claude-managed-agents/internal/queue"
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
 	"github.com/spf13/cobra"
 	appsv1 "k8s.io/api/apps/v1"
@@ -30,7 +29,6 @@ const (
 	DefaultConsumerName     = "ate-antworker-consumer"
 	DefaultRedisName        = "ate-antworker-redis"
 	DefaultSecretName       = "ate-antworker-creds"
-	DefaultWorkdir          = "/workspace"
 	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
 	DefaultAtenetRouterAddr = "atenet-router.ate-system.svc.cluster.local:80"
 	DefaultRedisImage       = "redis:7.4-alpine"
@@ -42,17 +40,13 @@ const (
 type Config struct {
 	Namespace        string `json:"namespace"`
 	Template         string `json:"template"`
-	WorkerPool       string `json:"worker_pool"`
 	WorkerImage      string `json:"worker_image"`
 	AteomImage       string `json:"ateom_image"`
-	PauseImage       string `json:"pause_image"`
 	SnapshotsBucket  string `json:"snapshots_bucket"`
 	Replicas         int32  `json:"replicas"`
-	WorkerReplicas   int32  `json:"worker_replicas"`
 	EnvironmentID    string `json:"environment_id"`
 	EnvironmentKey   string `json:"environment_key"`
 	APIKey           string `json:"api_key"`
-	Workdir          string `json:"workdir"`
 	AteapiAddr       string `json:"ateapi_addr"`
 	AtenetRouterAddr string `json:"atenet_router_addr"`
 
@@ -60,9 +54,6 @@ type Config struct {
 	// single-replica Redis is generated alongside the workers.
 	RedisAddr     string `json:"redis_addr"`
 	RedisPassword string `json:"redis_password"`
-	RedisImage    string `json:"redis_image"`
-	RedisStorage  string `json:"redis_storage"`
-	QueuePrefix   string `json:"queue_prefix"`
 
 	ConsumerReplicas int32 `json:"consumer_replicas"`
 }
@@ -75,35 +66,14 @@ func (c *Config) Defaults() {
 	if c.Template == "" {
 		c.Template = DefaultTemplate
 	}
-	if c.WorkerPool == "" {
-		c.WorkerPool = DefaultWorkerPool
-	}
-	if c.PauseImage == "" {
-		c.PauseImage = DefaultPauseImage
-	}
 	if c.Replicas == 0 {
 		c.Replicas = 10
-	}
-	if c.WorkerReplicas == 0 {
-		c.WorkerReplicas = 1
-	}
-	if c.Workdir == "" {
-		c.Workdir = DefaultWorkdir
 	}
 	if c.AteapiAddr == "" {
 		c.AteapiAddr = DefaultAteapiAddr
 	}
 	if c.AtenetRouterAddr == "" {
 		c.AtenetRouterAddr = DefaultAtenetRouterAddr
-	}
-	if c.RedisImage == "" {
-		c.RedisImage = DefaultRedisImage
-	}
-	if c.RedisStorage == "" {
-		c.RedisStorage = DefaultRedisStorage
-	}
-	if c.QueuePrefix == "" {
-		c.QueuePrefix = queue.DefaultPrefix
 	}
 	if c.ConsumerReplicas == 0 {
 		// Each consumer runs one work item at a time, so replicas are the
@@ -172,24 +142,17 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 
 	cmd.Flags().StringVar(&cfg.Namespace, "namespace", DefaultNamespace, "Kubernetes namespace to deploy into")
 	cmd.Flags().StringVar(&cfg.Template, "template", DefaultTemplate, "Substrate ActorTemplate name")
-	cmd.Flags().StringVar(&cfg.WorkerPool, "workerpool", "", "Substrate WorkerPool name (defaults to <template>-workerpool)")
 	cmd.Flags().StringVar(&cfg.WorkerImage, "worker-image", "", "digest-pinned worker container image (repo@sha256:...)")
 	cmd.Flags().StringVar(&cfg.AteomImage, "ateom-image", "", "digest-pinned ateom image for the worker pool (e.g. ateom-gvisor)")
-	cmd.Flags().StringVar(&cfg.PauseImage, "pause-image", DefaultPauseImage, "digest-pinned pause image for the sandbox container")
 	cmd.Flags().StringVar(&cfg.SnapshotsBucket, "snapshots-bucket", "", "object-storage bucket (with prefix) for actor snapshots (e.g. gs://bucket/snapshots/)")
 	cmd.Flags().Int32Var(&cfg.Replicas, "replicas", 10, "number of pre-warmed worker pool pods")
-	cmd.Flags().Int32Var(&cfg.WorkerReplicas, "worker-replicas", 1, "number of worker daemon deployment replicas")
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (e.g. env_...)")
 	cmd.Flags().StringVar(&cfg.EnvironmentKey, "anthropic-env-key", "", "Anthropic environment key")
 	cmd.Flags().StringVar(&cfg.APIKey, "anthropic-api-key", "", "Anthropic API key")
-	cmd.Flags().StringVar(&cfg.Workdir, "workdir", DefaultWorkdir, "working directory for tool execution")
 	cmd.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", DefaultAtenetRouterAddr, "Substrate atenet HTTP router endpoint")
 	cmd.Flags().StringVar(&cfg.RedisAddr, "redis-addr", "", "existing Redis host:port for the work queue (default: generate a single-replica Redis)")
 	cmd.Flags().StringVar(&cfg.RedisPassword, "redis-password", "", "Redis password, stored in the credentials Secret")
-	cmd.Flags().StringVar(&cfg.RedisImage, "redis-image", DefaultRedisImage, "container image for the generated Redis")
-	cmd.Flags().StringVar(&cfg.RedisStorage, "redis-storage", DefaultRedisStorage, "persistent volume size for the generated Redis")
-	cmd.Flags().StringVar(&cfg.QueuePrefix, "queue-prefix", queue.DefaultPrefix, "prefix for the queue's Redis keys")
 	cmd.Flags().Int32Var(&cfg.ConsumerReplicas, "consumer-replicas", 8, "number of queue consumer replicas; each runs one work item at a time")
 
 	_ = cmd.MarkFlagRequired("worker-image")
@@ -260,7 +223,7 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 			Kind:       "WorkerPool",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cfg.WorkerPool,
+			Name:      DefaultWorkerPool,
 			Namespace: cfg.Namespace,
 			Labels: map[string]string{
 				"workload": cfg.Template,
@@ -305,7 +268,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 			Namespace: cfg.Namespace,
 		},
 		Spec: atev1alpha1.ActorTemplateSpec{
-			PauseImage: cfg.PauseImage,
+			PauseImage: DefaultPauseImage,
 			WorkerSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"workload": cfg.Template,
@@ -398,7 +361,7 @@ func BuildRedisStatefulSet(cfg Config) *appsv1.StatefulSet {
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
 						Name:  "redis",
-						Image: cfg.RedisImage,
+						Image: DefaultRedisImage,
 						Args:  args,
 						Env:   env,
 						Ports: []corev1.ContainerPort{{
@@ -425,7 +388,7 @@ func BuildRedisStatefulSet(cfg Config) *appsv1.StatefulSet {
 					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 					Resources: corev1.VolumeResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse(cfg.RedisStorage),
+							corev1.ResourceStorage: resource.MustParse(DefaultRedisStorage),
 						},
 					},
 				},
@@ -459,7 +422,6 @@ func BuildConsumerDeployment(cfg Config) *appsv1.Deployment {
 						Command: []string{
 							"ate-antworker", "consume",
 							"--redis-addr", cfg.QueueAddr(),
-							"--queue-prefix", cfg.QueuePrefix,
 							"--ateapi-addr", cfg.AteapiAddr,
 							"--atenet-router-addr", cfg.AtenetRouterAddr,
 							"--namespace", cfg.Namespace,
@@ -482,7 +444,7 @@ func BuildConsumerDeployment(cfg Config) *appsv1.Deployment {
 // BuildWorkerDeployment constructs the Kubernetes Deployment for the worker daemon.
 func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 	labels := map[string]string{"app": DefaultDeploymentName}
-	replicas := cfg.WorkerReplicas
+	replicas := int32(1)
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -503,8 +465,7 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 							"ant", "beta:worker", "poll",
 							// The hook only queues the work item; the consumer
 							// Deployment resumes the actor and runs the work item.
-							"--on-work", fmt.Sprintf("ate-antworker dispatch --redis-addr %s --queue-prefix %s",
-								cfg.QueueAddr(), cfg.QueuePrefix),
+							"--on-work", "ate-antworker dispatch --redis-addr " + cfg.QueueAddr(),
 						},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
@@ -513,16 +474,6 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 								},
 							},
 						}},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "workspace",
-							MountPath: cfg.Workdir,
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "workspace",
-						VolumeSource: corev1.VolumeSource{
-							EmptyDir: &corev1.EmptyDirVolumeSource{},
-						},
 					}},
 				},
 			},

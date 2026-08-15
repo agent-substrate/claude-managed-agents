@@ -219,15 +219,7 @@ func EnqueueWork(ctx context.Context, q *queue.RedisQueue, req DispatchRequest, 
 		SessionID: req.SessionID,
 	}
 
-	err := q.Enqueue(ctx, ev)
-	if errors.Is(err, queue.ErrDuplicate) {
-		logger.Info("Work item already queued; skipping",
-			slog.String("work_id", ev.WorkID),
-			slog.String("session_id", ev.Session()),
-		)
-		return nil
-	}
-	if err != nil {
+	if err := q.Enqueue(ctx, ev); err != nil {
 		return fmt.Errorf("enqueueing work item %s: %w", ev.WorkID, err)
 	}
 
