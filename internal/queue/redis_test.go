@@ -69,14 +69,12 @@ func mustClaim(t *testing.T, q *RedisQueue) *Lease {
 	return lease
 }
 
-// expireLease rewrites a lease record so its deadline is in the past, standing
-// in for a consumer that stopped renewing.
-func expireLease(t *testing.T, q *RedisQueue, lease *Lease) {
+// killConsumer drops the claim on a leased event, standing in for a consumer
+// that stopped renewing it — crashed, partitioned, or simply gone.
+func killConsumer(t *testing.T, q *RedisQueue, lease *Lease) {
 	t.Helper()
-	ctx := context.Background()
-	if err := q.client.HSet(ctx, q.leasesKey(), lease.Event.ID,
-		encodeLease(lease.token, time.Now().Add(-time.Minute))).Err(); err != nil {
-		t.Fatalf("expiring lease: %v", err)
+	if err := q.client.Del(context.Background(), q.sessionKey(lease.Event.Session())).Err(); err != nil {
+		t.Fatalf("dropping claim: %v", err)
 	}
 }
 
@@ -208,22 +206,22 @@ func TestClaimBacksOffWhenEverySessionIsBusy(t *testing.T) {
 	}
 }
 
-func TestMaintainRetriesExpiredLease(t *testing.T) {
+func TestMaintainRetriesUnclaimedWork(t *testing.T) {
 	ctx := context.Background()
 	q, _ := newTestQueue(t, RedisConfig{})
 
 	mustEnqueue(t, q, "work_1", "sesn_1")
 	lease := mustClaim(t, q)
 
-	// A live lease is left alone.
+	// A live claim is left alone.
 	if err := q.Maintain(ctx); err != nil {
 		t.Fatalf("Maintain: %v", err)
 	}
 	if pending, inflight, _ := depths(t, q); pending != 0 || inflight != 1 {
-		t.Fatalf("pending = %d in-flight = %d, want the item still leased", pending, inflight)
+		t.Fatalf("pending = %d in-flight = %d, want the item still claimed", pending, inflight)
 	}
 
-	expireLease(t, q, lease)
+	killConsumer(t, q, lease)
 
 	if err := q.Maintain(ctx); err != nil {
 		t.Fatalf("Maintain: %v", err)
@@ -232,11 +230,6 @@ func TestMaintainRetriesExpiredLease(t *testing.T) {
 	retried := mustClaim(t, q)
 	if retried.Event.WorkID != "work_1" || retried.Event.Attempts != 1 {
 		t.Errorf("retried %+v, want work_1 having used one attempt", retried.Event)
-	}
-
-	// Reclaiming also frees the session the dead consumer was holding.
-	if retried.token == lease.token {
-		t.Error("retry reused the old lease token")
 	}
 }
 
@@ -248,7 +241,7 @@ func TestMaintainDeadLettersAfterMaxAttempts(t *testing.T) {
 
 	for range 2 {
 		lease := mustClaim(t, q)
-		expireLease(t, q, lease)
+		killConsumer(t, q, lease)
 		if err := q.Maintain(ctx); err != nil {
 			t.Fatalf("Maintain: %v", err)
 		}
@@ -271,88 +264,58 @@ func TestMaintainDeadLettersAfterMaxAttempts(t *testing.T) {
 	}
 }
 
-func TestMaintainAdoptsOrphanedInFlightEntry(t *testing.T) {
+func TestMaintainRetriesWorkWhoseSessionMovedOn(t *testing.T) {
 	ctx := context.Background()
 	q, _ := newTestQueue(t, RedisConfig{})
 
 	mustEnqueue(t, q, "work_1", "sesn_1")
-	lease := mustClaim(t, q)
+	mustEnqueue(t, q, "work_2", "sesn_1")
 
-	// Simulate a consumer that died between the move and recording its lease.
-	if err := q.client.HDel(ctx, q.leasesKey(), lease.Event.ID).Err(); err != nil {
-		t.Fatalf("deleting lease: %v", err)
-	}
+	first := mustClaim(t, q)
+	killConsumer(t, q, first)
 
-	if err := q.Maintain(ctx); err != nil {
-		t.Fatalf("Maintain: %v", err)
-	}
-	if pending, inflight, _ := depths(t, q); pending != 0 || inflight != 1 {
-		t.Fatalf("pending = %d in-flight = %d, want the entry adopted with a fresh deadline, not retried yet", pending, inflight)
-	}
-
-	// The adopted entry then expires like any other.
-	raw, err := q.client.HGet(ctx, q.leasesKey(), lease.Event.ID).Result()
-	if err != nil {
-		t.Fatalf("reading adopted lease: %v", err)
-	}
-	token, _, err := decodeLease(raw)
-	if err != nil {
-		t.Fatalf("decoding adopted lease: %v", err)
-	}
-	if err := q.client.HSet(ctx, q.leasesKey(), lease.Event.ID,
-		encodeLease(token, time.Now().Add(-time.Minute))).Err(); err != nil {
-		t.Fatalf("expiring adopted lease: %v", err)
+	// The session is free again, so the next work item takes it while work_1 is
+	// still sitting in flight. work_1 must still count as abandoned: its session
+	// key exists, but it names work_2.
+	second := mustClaim(t, q)
+	if second.Event.WorkID != "work_2" {
+		t.Fatalf("claimed %s, want work_2", second.Event.WorkID)
 	}
 
 	if err := q.Maintain(ctx); err != nil {
 		t.Fatalf("Maintain: %v", err)
 	}
-	if pending, inflight, _ := depths(t, q); pending != 1 || inflight != 0 {
-		t.Errorf("pending = %d in-flight = %d, want the adopted entry retried", pending, inflight)
+
+	pending, inflight, _ := depths(t, q)
+	if pending != 1 || inflight != 1 {
+		t.Fatalf("pending = %d in-flight = %d, want work_1 requeued and work_2 still claimed", pending, inflight)
 	}
 }
 
-func TestMaintainPrunesOrphanLeaseRecords(t *testing.T) {
+func TestExtendKeepsTheClaimAlive(t *testing.T) {
 	ctx := context.Background()
-	q, _ := newTestQueue(t, RedisConfig{})
-
-	if err := q.client.HSet(ctx, q.leasesKey(), "ghost", encodeLease("t", time.Now())).Err(); err != nil {
-		t.Fatalf("seeding lease: %v", err)
-	}
-	if err := q.Maintain(ctx); err != nil {
-		t.Fatalf("Maintain: %v", err)
-	}
-
-	n, err := q.client.HLen(ctx, q.leasesKey()).Result()
-	if err != nil {
-		t.Fatalf("HLen: %v", err)
-	}
-	if n != 0 {
-		t.Errorf("lease records = %d, want 0", n)
-	}
-}
-
-func TestExtendKeepsLeaseAndSessionAlive(t *testing.T) {
-	ctx := context.Background()
-	q, _ := newTestQueue(t, RedisConfig{})
+	q, server := newTestQueue(t, RedisConfig{})
 
 	mustEnqueue(t, q, "work_1", "sesn_1")
 	lease := mustClaim(t, q)
 
-	expireLease(t, q, lease)
+	// Renewing before the TTL lapses keeps the work item claimed.
+	server.FastForward(leaseTTL - time.Minute)
 	if err := q.Extend(ctx, lease); err != nil {
 		t.Fatalf("Extend: %v", err)
 	}
+	server.FastForward(leaseTTL - time.Minute)
 
 	if err := q.Maintain(ctx); err != nil {
 		t.Fatalf("Maintain: %v", err)
 	}
 	if _, inflight, _ := depths(t, q); inflight != 1 {
-		t.Errorf("in-flight = %d, want the extended lease left alone", inflight)
+		t.Errorf("in-flight = %d, want the renewed claim left alone", inflight)
 	}
 
-	// Once the work item is reclaimed, the old holder can no longer extend it.
-	expireLease(t, q, lease)
+	// Once the claim lapses and the work item is reclaimed, the old holder can
+	// no longer renew it.
+	killConsumer(t, q, lease)
 	if err := q.Maintain(ctx); err != nil {
 		t.Fatalf("Maintain: %v", err)
 	}
@@ -379,7 +342,7 @@ func TestAckFreesTheSession(t *testing.T) {
 	}
 }
 
-func TestSessionIsReleasedWhenTheLeaseExpires(t *testing.T) {
+func TestClaimLapsesOnItsOwn(t *testing.T) {
 	q, server := newTestQueue(t, RedisConfig{})
 
 	mustEnqueue(t, q, "work_1", "sesn_1")

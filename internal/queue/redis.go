@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -81,16 +79,21 @@ func (c *RedisConfig) defaults() {
 // RedisQueue is a durable work queue backed by Redis lists.
 //
 // Enqueue LPUSHes onto <prefix>:pending. A consumer claims the oldest entry by
-// atomically moving it to <prefix>:inflight (BLMOVE ... RIGHT LEFT), taking the
-// event's session with SET NX on <prefix>:session:<id> and recording a lease in
-// <prefix>:leases. An entry whose session is already taken goes back to the end
-// of the pending list untouched.
+// atomically moving it to <prefix>:inflight (BLMOVE ... RIGHT LEFT) and taking
+// the event's session with SET NX on <prefix>:session:<id>, whose value is the
+// claiming event's ID and whose TTL is the lease. An entry whose session is
+// already taken goes back to the end of the pending list untouched.
+//
+// That one key is the whole ownership record: an in-flight entry is still owned
+// exactly while its session key names it. A consumer keeps it alive by renewing
+// the TTL, so a consumer that stops — crashed, partitioned, or failed — lets
+// Redis expire the key for us, and Maintain requeues whatever it finds
+// unclaimed. That is the single retry path, so an unfinished work item needs no
+// cooperation from the consumer that dropped it. Events that exhaust their
+// attempts land on <prefix>:dead.
 //
 // Acknowledging removes the entry from the in-flight list by value, which is
-// unambiguous because every payload carries a unique event ID. Maintain reclaims
-// entries whose lease expired: that is the single retry path, so an unfinished
-// work item needs no cooperation from the consumer that dropped it. Events that
-// exhaust their attempts land on <prefix>:dead.
+// unambiguous because every payload carries a unique event ID.
 type RedisQueue struct {
 	client      redis.UniversalClient
 	ownsClient  bool
@@ -143,7 +146,6 @@ func (q *RedisQueue) key(suffix string) string { return q.prefix + ":" + suffix 
 
 func (q *RedisQueue) pendingKey() string         { return q.key("pending") }
 func (q *RedisQueue) inflightKey() string        { return q.key("inflight") }
-func (q *RedisQueue) leasesKey() string          { return q.key("leases") }
 func (q *RedisQueue) deadKey() string            { return q.key("dead") }
 func (q *RedisQueue) sessionKey(s string) string { return q.key("session:" + s) }
 
@@ -208,15 +210,10 @@ func (q *RedisQueue) Claim(ctx context.Context) (*Lease, error) {
 			return nil, fmt.Errorf("queue: decoding event, moved to dead list: %w", err)
 		}
 
-		lease := &Lease{
-			Event:    ev,
-			Deadline: time.Now().Add(leaseTTL),
-			payload:  payload,
-			token:    newID(),
-		}
-
-		// Take the session: one work item per sandbox at a time.
-		free, err := q.client.SetNX(ctx, q.sessionKey(ev.Session()), lease.token, leaseTTL).Result()
+		// Take the session, which is also this entry's claim on itself: one
+		// work item per sandbox at a time, held for as long as the TTL is
+		// renewed.
+		free, err := q.client.SetNX(ctx, q.sessionKey(ev.Session()), ev.ID, leaseTTL).Result()
 		if err != nil {
 			return nil, fmt.Errorf("queue: claiming session %s: %w", ev.Session(), err)
 		}
@@ -228,12 +225,7 @@ func (q *RedisQueue) Claim(ctx context.Context) (*Lease, error) {
 			deferred++
 			continue
 		}
-
-		if err := q.client.HSet(ctx, q.leasesKey(), ev.ID, encodeLease(lease.token, lease.Deadline)).Err(); err != nil {
-			// Leave the entry in flight; Maintain adopts and retries it.
-			return nil, fmt.Errorf("queue: recording lease for %s: %w", ev.WorkID, err)
-		}
-		return lease, nil
+		return &Lease{Event: ev, payload: payload}, nil
 	}
 
 	// Everything seen belongs to a session that is already running a work item.
@@ -241,19 +233,18 @@ func (q *RedisQueue) Claim(ctx context.Context) (*Lease, error) {
 	return nil, nil
 }
 
-// ackScript removes an in-flight entry, its lease, and its hold on the session.
-// It reports how many entries were removed, which is 0 when the lease was
-// already reclaimed.
+// ackScript removes an in-flight entry and releases the session it holds. It
+// reports how many entries were removed, which is 0 when the entry was already
+// reclaimed.
 //
-// KEYS: inflight, leases, session. ARGV: payload, event ID, token.
+// KEYS: inflight, session. ARGV: payload, event ID.
 var ackScript = redis.NewScript(`
 local removed = redis.call('LREM', KEYS[1], 1, ARGV[1])
 if removed == 0 then
   return 0
 end
-redis.call('HDEL', KEYS[2], ARGV[2])
-if redis.call('GET', KEYS[3]) == ARGV[3] then
-  redis.call('DEL', KEYS[3])
+if redis.call('GET', KEYS[2]) == ARGV[2] then
+  redis.call('DEL', KEYS[2])
 end
 return removed
 `)
@@ -264,8 +255,8 @@ func (q *RedisQueue) Ack(ctx context.Context, lease *Lease) error {
 		return errors.New("queue: nil lease")
 	}
 	removed, err := ackScript.Run(ctx, q.client,
-		[]string{q.inflightKey(), q.leasesKey(), q.sessionKey(lease.Event.Session())},
-		lease.payload, lease.Event.ID, lease.token,
+		[]string{q.inflightKey(), q.sessionKey(lease.Event.Session())},
+		lease.payload, lease.Event.ID,
 	).Int64()
 	if err != nil {
 		return fmt.Errorf("queue: acknowledging %s: %w", lease.Event.WorkID, err)
@@ -276,127 +267,91 @@ func (q *RedisQueue) Ack(ctx context.Context, lease *Lease) error {
 	return nil
 }
 
-// extendScript pushes out a lease deadline and the matching session hold, but
-// only for the current holder.
+// extendScript pushes out the session TTL, but only while it still names this
+// event.
 //
-// KEYS: leases, session. ARGV: event ID, token, new deadline millis, TTL millis.
+// KEYS: session. ARGV: event ID, TTL millis.
 var extendScript = redis.NewScript(`
-local cur = redis.call('HGET', KEYS[1], ARGV[1])
-if not cur then
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
   return 0
 end
-local prefix = ARGV[2] .. '|'
-if string.sub(cur, 1, string.len(prefix)) ~= prefix then
-  return 0
-end
-redis.call('HSET', KEYS[1], ARGV[1], prefix .. ARGV[3])
-if redis.call('GET', KEYS[2]) == ARGV[2] then
-  redis.call('PEXPIRE', KEYS[2], ARGV[4])
-end
+redis.call('PEXPIRE', KEYS[1], ARGV[2])
 return 1
 `)
 
-// Extend keeps a lease and its session alive while the work is still running.
-// Consumers call it on a heartbeat; when the calls stop, the event is reclaimed.
+// Extend keeps a claim alive while the work is still running. Consumers call it
+// on a heartbeat; when the calls stop, the claim expires and Maintain requeues
+// the event.
 func (q *RedisQueue) Extend(ctx context.Context, lease *Lease) error {
 	if lease == nil {
 		return errors.New("queue: nil lease")
 	}
-	deadline := time.Now().Add(leaseTTL)
 
 	held, err := extendScript.Run(ctx, q.client,
-		[]string{q.leasesKey(), q.sessionKey(lease.Event.Session())},
-		lease.Event.ID, lease.token, deadline.UnixMilli(), leaseTTL.Milliseconds(),
+		[]string{q.sessionKey(lease.Event.Session())},
+		lease.Event.ID, leaseTTL.Milliseconds(),
 	).Int64()
 	if err != nil {
-		return fmt.Errorf("queue: extending lease for %s: %w", lease.Event.WorkID, err)
+		return fmt.Errorf("queue: extending claim on %s: %w", lease.Event.WorkID, err)
 	}
 	if held == 0 {
 		return ErrLeaseLost
 	}
-	lease.Deadline = deadline
 	return nil
 }
 
-// reclaimScript retries an in-flight entry whose lease expired, or dead-letters
-// it, and frees the session it was holding.
+// reclaimScript retries an unclaimed in-flight entry, or dead-letters it. It
+// never touches the session key: an entry only reaches here once the key stopped
+// naming it, so the key is either gone or already owned by a newer claim.
 //
-// KEYS: inflight, leases, session, pending, dead.
-// ARGV: old payload, event ID, token, new payload, dead flag ("1" or "0").
+// KEYS: inflight, pending, dead.
+// ARGV: old payload, new payload, dead flag ("1" or "0").
 var reclaimScript = redis.NewScript(`
 if redis.call('LREM', KEYS[1], 1, ARGV[1]) == 0 then
   return 0
 end
-redis.call('HDEL', KEYS[2], ARGV[2])
-if redis.call('GET', KEYS[3]) == ARGV[3] then
-  redis.call('DEL', KEYS[3])
-end
-if ARGV[5] == '1' then
-  redis.call('LPUSH', KEYS[5], ARGV[4])
+if ARGV[3] == '1' then
+  redis.call('LPUSH', KEYS[3], ARGV[2])
 else
-  redis.call('LPUSH', KEYS[4], ARGV[4])
+  redis.call('LPUSH', KEYS[2], ARGV[2])
 end
 return 1
 `)
 
-// Maintain reclaims events whose lease expired, retrying them or dead-lettering
-// them once they run out of attempts. It is the only retry path, so consumers
-// must call it periodically.
+// Maintain requeues in-flight events that nothing claims any more, and
+// dead-letters those that ran out of attempts. It is the only retry path, so
+// consumers must call it periodically.
 //
-// An in-flight entry with no lease record belongs to a consumer that died
-// between claiming and recording it. It is adopted with a fresh deadline so the
-// next pass retries it through the normal expiry path, rather than being
-// reclaimed underneath a consumer that is merely slow.
+// An event is unclaimed once its session key stops naming it: the consumer let
+// the TTL lapse, or the session has since been claimed by a different event.
+// Both mean the same thing — no live consumer is working on this entry.
 func (q *RedisQueue) Maintain(ctx context.Context) error {
 	payloads, err := q.client.LRange(ctx, q.inflightKey(), 0, -1).Result()
 	if err != nil {
 		return fmt.Errorf("queue: listing in-flight events: %w", err)
 	}
-	leases, err := q.client.HGetAll(ctx, q.leasesKey()).Result()
-	if err != nil {
-		return fmt.Errorf("queue: listing leases: %w", err)
-	}
-
-	now := time.Now()
-	live := make(map[string]bool, len(payloads))
 
 	for _, payload := range payloads {
 		var ev Event
 		if err := json.Unmarshal([]byte(payload), &ev); err != nil {
 			continue
 		}
-		live[ev.ID] = true
 
-		raw, ok := leases[ev.ID]
-		if !ok {
-			if err := q.client.HSet(ctx, q.leasesKey(), ev.ID,
-				encodeLease("adopted", now.Add(leaseTTL))).Err(); err != nil {
-				return fmt.Errorf("queue: adopting in-flight event %s: %w", ev.WorkID, err)
-			}
+		owner, err := q.client.Get(ctx, q.sessionKey(ev.Session())).Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return fmt.Errorf("queue: reading session %s: %w", ev.Session(), err)
+		}
+		if owner == ev.ID {
 			continue
 		}
-
-		token, deadline, err := decodeLease(raw)
-		if err != nil || now.Before(deadline) {
-			continue
-		}
-		if err := q.reclaim(ctx, ev, payload, token); err != nil {
+		if err := q.reclaim(ctx, ev, payload); err != nil {
 			return err
-		}
-	}
-
-	// Drop lease records whose event is no longer in flight.
-	for id := range leases {
-		if !live[id] {
-			if err := q.client.HDel(ctx, q.leasesKey(), id).Err(); err != nil {
-				return fmt.Errorf("queue: pruning lease %s: %w", id, err)
-			}
 		}
 	}
 	return nil
 }
 
-func (q *RedisQueue) reclaim(ctx context.Context, ev Event, payload, token string) error {
+func (q *RedisQueue) reclaim(ctx context.Context, ev Event, payload string) error {
 	next := ev
 	next.Attempts++
 
@@ -411,8 +366,8 @@ func (q *RedisQueue) reclaim(ctx context.Context, ev Event, payload, token strin
 	}
 
 	moved, err := reclaimScript.Run(ctx, q.client,
-		[]string{q.inflightKey(), q.leasesKey(), q.sessionKey(ev.Session()), q.pendingKey(), q.deadKey()},
-		payload, ev.ID, token, retry, dead,
+		[]string{q.inflightKey(), q.pendingKey(), q.deadKey()},
+		payload, retry, dead,
 	).Int64()
 	if err != nil {
 		return fmt.Errorf("queue: reclaiming %s: %w", ev.WorkID, err)
@@ -430,27 +385,10 @@ func (q *RedisQueue) reclaim(ctx context.Context, ev Event, payload, token strin
 		)
 		return nil
 	}
-	q.log.Info("Lease expired on unfinished work item; requeued",
+	q.log.Info("Claim lapsed on unfinished work item; requeued",
 		slog.String("work_id", ev.WorkID),
 		slog.String("session_id", ev.Session()),
 		slog.Int("attempts", next.Attempts),
 	)
 	return nil
-}
-
-// encodeLease renders a lease record as "<token>|<deadline unix millis>".
-func encodeLease(token string, deadline time.Time) string {
-	return token + "|" + strconv.FormatInt(deadline.UnixMilli(), 10)
-}
-
-func decodeLease(raw string) (token string, deadline time.Time, err error) {
-	token, millis, ok := strings.Cut(raw, "|")
-	if !ok {
-		return "", time.Time{}, fmt.Errorf("queue: malformed lease record %q", raw)
-	}
-	ms, err := strconv.ParseInt(millis, 10, 64)
-	if err != nil {
-		return "", time.Time{}, fmt.Errorf("queue: malformed lease deadline %q: %w", raw, err)
-	}
-	return token, time.UnixMilli(ms), nil
 }

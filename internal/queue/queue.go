@@ -66,16 +66,13 @@ func (e Event) Session() string {
 }
 
 // Lease is a claimed event, held by one consumer along with its session, until
-// it is acknowledged or the lease expires.
+// it is acknowledged or the claim lapses.
 type Lease struct {
-	Event    Event
-	Deadline time.Time
+	Event Event
 
 	// payload is the exact serialized entry sitting in the in-flight list.
 	// Removing it by value is what acknowledges the event.
 	payload string
-	// token identifies the holder of both the lease and the session.
-	token string
 }
 
 // newID returns a random identifier for an event or lease token.

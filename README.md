@@ -155,9 +155,10 @@ go run ./examples/agent \
 
 Polled events are persisted before any actor is resumed, so a work item is not
 lost if the poller pod is evicted, the consumer crashes mid-run, or the actor
-cannot be woken. A claimed item stays in `<prefix>:inflight` under a lease until
-it completes; when renewals stop, maintenance reclaims and retries it, or moves
-it to `<prefix>:dead` once `--max-attempts` is used up. Expiry is the only retry
+cannot be woken. A claimed item stays in `<prefix>:inflight`, owned by a single
+key — `<prefix>:session:<id>`, whose value names the item holding it and whose
+TTL the consumer renews while it works. When renewals stop, maintenance requeues
+the item, or moves it to `<prefix>:dead` once `--max-attempts` is used up. Expiry is the only retry
 path, so a failed work item waits out its lease (5 minutes) instead of retrying
 immediately.
 
