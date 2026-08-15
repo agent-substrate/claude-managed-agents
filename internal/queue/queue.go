@@ -1,8 +1,8 @@
 // Package queue provides a durable work queue for the Anthropic work items
 // fetched by 'ant beta:worker poll'.
 //
-// The poller hook ('ate-antworker dispatch') enqueues an event and returns
-// immediately; a consumer ('ate-antworker consume') claims the event, resumes
+// The poller hook ('ate-antworker queue') enqueues an event and returns
+// immediately; a consumer ('ate-antworker dispatch') claims the event, resumes
 // the Substrate actor, runs the work, and acknowledges it. Because the event
 // outlives the short-lived hook process, a crash between the poll and the work
 // no longer loses the work item.

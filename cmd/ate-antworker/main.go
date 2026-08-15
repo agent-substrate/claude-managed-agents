@@ -22,8 +22,8 @@ func newRootCommand() *cobra.Command {
 
 	root.AddCommand(newManifestCommand())
 	root.AddCommand(newWorkerCommand())
+	root.AddCommand(newQueueCommand())
 	root.AddCommand(newDispatchCommand())
-	root.AddCommand(newConsumeCommand())
 
 	root.AddCommand(&cobra.Command{
 		Use:   "version",

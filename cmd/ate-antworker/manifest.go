@@ -420,7 +420,7 @@ func BuildConsumerDeployment(cfg Config) *appsv1.Deployment {
 						Name:  DefaultConsumerName,
 						Image: cfg.WorkerImage,
 						Command: []string{
-							"ate-antworker", "consume",
+							"ate-antworker", "dispatch",
 							"--redis-addr", cfg.QueueAddr(),
 							"--ateapi-addr", cfg.AteapiAddr,
 							"--atenet-router-addr", cfg.AtenetRouterAddr,
@@ -465,7 +465,7 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 							"ant", "beta:worker", "poll",
 							// The hook only queues the work item; the consumer
 							// Deployment resumes the actor and runs the work item.
-							"--on-work", "ate-antworker dispatch --redis-addr " + cfg.QueueAddr(),
+							"--on-work", "ate-antworker queue --redis-addr " + cfg.QueueAddr(),
 						},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{

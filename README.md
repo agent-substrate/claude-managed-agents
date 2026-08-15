@@ -33,7 +33,7 @@ If anything interrupts step 4, the claim lapses and the work item returns to `at
 │ Agent Substrate on Kubernetes   ▼                                  │
 │    ╭──────────────────────────────────────────────────────────╮    │
 │    │ Poller Deployment                                        │    │
-│    │   ant beta:worker poll --on-work "ate-antworker dispatch"│    │
+│    │   ant beta:worker poll --on-work "ate-antworker queue"   │    │
 │    ╰────────────────────────────┬─────────────────────────────╯    │
 │                                 │ 2. enqueue, then return          │
 │                                 ▼                                  │
@@ -48,7 +48,7 @@ If anything interrupts step 4, the claim lapses and the work item returns to `at
 │                                 ▼                                  │
 │    ╭──────────────────────────────────────────────────────────╮    │
 │    │ Consumer Deployment   (N replicas, one work item each)   │    │
-│    │   ate-antworker consume                                  │    │
+│    │   ate-antworker dispatch                                 │    │
 │    ╰────────────────────────────┬─────────────────────────────╯    │
 │                                 │ 4. resume, run, suspend, ack     │
 │                                 ╰──────────────╮                   │
@@ -65,8 +65,8 @@ If anything interrupts step 4, the claim lapses and the work item returns to `at
 
 `ate-antworker` provides the following:
 
-1. **`ate-antworker dispatch`**: Hook target for **`ant beta:worker poll --on-work 'ate-antworker dispatch'`**. Appends the work item to the durable queue and returns.
-2. **`ate-antworker consume`**: Drains the queue (claims item and its session $\rightarrow$ wakes actor $\rightarrow$ runs the work $\rightarrow$ suspends actor $\rightarrow$ acknowledges item).
+1. **`ate-antworker queue`**: Hook target for **`ant beta:worker poll --on-work 'ate-antworker queue'`**. Appends the work item to the durable queue and returns.
+2. **`ate-antworker dispatch`**: Drains the queue (claims item and its session $\rightarrow$ wakes actor $\rightarrow$ runs the work $\rightarrow$ suspends actor $\rightarrow$ acknowledges item).
 3. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
 
 ---
@@ -198,18 +198,18 @@ podman run -d --name ate-antworker-redis -p 6379:6379 redis:7.4-alpine \
 ant beta:worker poll \
   --environment-id "$ANTHROPIC_ENVIRONMENT_ID" \
   --environment-key "$ANTHROPIC_ENVIRONMENT_KEY" \
-  --on-work "ate-antworker dispatch --redis-addr localhost:6379"
+  --on-work "ate-antworker queue --redis-addr localhost:6379"
 
 # 4. In another shell, run the consumer
-ate-antworker consume \
+ate-antworker dispatch \
   --redis-addr localhost:6379 \
   --ateapi-addr localhost:8443 \
   --atenet-router-addr localhost:8080 \
   --insecure
 ```
 
-Every polled event goes through the queue: `ate-antworker dispatch` never
-contacts an actor itself, so the poller cannot be the thing that loses work.
+Every polled event goes through the queue: `ate-antworker queue` never contacts
+an actor itself, so the poller cannot be the thing that loses work.
 
 ## Manifest Reference
 
@@ -221,8 +221,8 @@ contacts an actor itself, so the poller cannot be the thing that loses work.
 | `ate-antworker-redis` | `Service` + `StatefulSet` | Durable work queue, with append-only persistence (omitted when `--redis-addr` points at an existing Redis) |
 | `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of microVM/gVisor runners for sandbox actors (10 replicas) |
 | `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
-| `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work "ate-antworker dispatch"` |
-| `ate-antworker-consumer` | `Deployment` | Queue consumers running `ate-antworker consume` (8 replicas) |
+| `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work "ate-antworker queue"` |
+| `ate-antworker-consumer` | `Deployment` | Queue consumers running `ate-antworker dispatch` (8 replicas) |
 
 ## Roadmap
 

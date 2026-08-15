@@ -2,70 +2,64 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"time"
+	"errors"
+	"os/signal"
+	"syscall"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/worker"
 	"github.com/spf13/cobra"
 )
 
-// enqueueTimeout bounds how long the poller hook may spend queueing a work item.
-const enqueueTimeout = 10 * time.Second
-
-func runDispatch(ctx context.Context, req worker.DispatchRequest, qopts queueOptions) error {
-	// Read from environment variables if not passed via flags
-	if req.WorkID == "" {
-		req.WorkID = os.Getenv("ANTHROPIC_WORK_ID")
-	}
-	if req.SessionID == "" {
-		req.SessionID = os.Getenv("ANTHROPIC_SESSION_ID")
-	}
-
-	if req.WorkID == "" {
-		return fmt.Errorf("work ID is required (set ANTHROPIC_WORK_ID or pass --work-id)")
-	}
-
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	// Persist the work item and return: resuming the actor is the consumer's
-	// job, so this process dying cannot drop the work item.
-	ctx, cancel := context.WithTimeout(ctx, enqueueTimeout)
-	defer cancel()
-
-	q, err := qopts.Open(ctx)
-	if err != nil {
-		return err
-	}
-	defer q.Close()
-
-	return worker.EnqueueWork(ctx, q, req, nil)
-}
-
 func newDispatchCommand() *cobra.Command {
-	var req worker.DispatchRequest
-	var qopts queueOptions
+	cfg := worker.Config{}
+	var ropts redisOptions
 
 	cmd := &cobra.Command{
 		Use:   "dispatch",
-		Short: "Queue a single Anthropic work item for dispatch to a Substrate actor",
-		Long: `Dispatch acts as a hook target for 'ant beta:worker poll --on-work'.
-It receives work details via environment variables or flags, appends the work
-item to the durable queue, and returns immediately.
+		Short: "Dispatch queued Anthropic work items to Substrate actors",
+		Long: `Dispatch drains the durable Redis queue filled by 'ate-antworker queue'.
 
-'ate-antworker consume' claims the work item from there, resumes the Substrate
-actor, and runs it, so a work item survives this process dying between the poll
-and the work being done.`,
+For each work item it takes an exclusive lock on the session, ensures the
+Substrate actor exists, wakes it via the Substrate router, waits for the work to
+finish, suspends the actor, and only then acknowledges the item. A work item that
+fails is retried, and one whose consumer dies is reclaimed when its lease
+expires, so no polled work item is lost.
+
+Run it as its own Deployment, scaled with replicas.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDispatch(cmd.Context(), req, qopts)
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+
+			q, err := ropts.Open(ctx)
+			if err != nil {
+				return err
+			}
+			defer q.Close()
+
+			consumer, err := worker.NewConsumer(worker.ConsumerConfig{
+				Queue:    q,
+				Dispatch: cfg,
+			})
+			if err != nil {
+				return err
+			}
+
+			// A clean shutdown is not a failure.
+			if err := consumer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				return err
+			}
+			return nil
 		},
 	}
 
-	registerQueueFlags(cmd, &qopts)
-	cmd.Flags().StringVar(&req.WorkID, "work-id", "", "Anthropic work ID (or $ANTHROPIC_WORK_ID)")
-	cmd.Flags().StringVar(&req.SessionID, "session-id", "", "Anthropic session ID (or $ANTHROPIC_SESSION_ID)")
+	registerRedisFlags(cmd, &ropts)
+
+	cmd.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", worker.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
+	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", worker.DefaultAtenetRouterAddr, "Substrate atenet HTTP router endpoint")
+	cmd.Flags().StringVar(&cfg.Namespace, "namespace", worker.DefaultNamespace, "Substrate atespace / namespace")
+	cmd.Flags().StringVar(&cfg.Template, "template", worker.DefaultTemplate, "Substrate ActorTemplate name")
+	cmd.Flags().BoolVar(&cfg.Insecure, "insecure", false, "Use plaintext gRPC connection to ateapi")
+
 	return cmd
 }
