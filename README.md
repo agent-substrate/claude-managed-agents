@@ -57,8 +57,8 @@ To prevent this conflict:
 
 `ate-antworker` provides the following:
 
-1. **`ate-antworker`** (root): Hook target for **`ant beta:worker poll --on-work ate-antworker`**. Wakes/resumes the session actor, runs the work synchronously, and suspends the actor.
-2. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
+1. **`ate-antworker`** (root): Hook target for **`ant beta:worker poll --on-work ate-antworker`**. Wakes/resumes the session actor and runs the work synchronously.
+2. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run` and suspending the actor once the response has been returned.
 3. **`ate-antworker manifest`**: Generates Kubernetes and Substrate manifests.
 
 ---
@@ -95,7 +95,7 @@ go install github.com/agent-substrate/claude-managed-agents/cmd/ate-antworker@la
 
 # Generate deployment YAML and apply to Kubernetes
 ate-antworker manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:409cd490041895e565ef8672eb4cd8f95c5702dae34759822683cfb55f9ba4b2 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:634d388fdb7e37a50c3fc1cbbe5e19aa054a8009ff20be320f88b53c33d8feb4 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \

@@ -15,6 +15,11 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -65,17 +70,27 @@ type WorkResponse struct {
 //   - The upstream poller (`poll`) continues to maintain the single, real lease with Anthropic until
 //     the actor finishes and is suspended.
 type Worker struct {
-	logger       *slog.Logger
+	cfg          Config
 	antBinary    string
 	localBaseURL string
 	proxy        http.Handler
+	ateConn      *grpc.ClientConn
 }
 
 // NewWorker creates a new Worker instance with an Anthropic reverse proxy.
-func NewWorker(logger *slog.Logger) *Worker {
-	if logger == nil {
-		logger = slog.Default()
+// It initializes cfg.AteClient if not already provided.
+func NewWorker(cfg Config) (*Worker, error) {
+	cfg.Defaults()
+	var ateConn *grpc.ClientConn
+	if cfg.AteClient == nil {
+		client, conn, err := DialAteAPI(cfg.AteapiAddr, cfg.Insecure)
+		if err != nil {
+			return nil, fmt.Errorf("dialing ateapi at %s: %w", cfg.AteapiAddr, err)
+		}
+		cfg.AteClient = client
+		ateConn = conn
 	}
+
 	targetURL, _ := url.Parse("https://api.anthropic.com")
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 	originalDirector := proxy.Director
@@ -83,12 +98,32 @@ func NewWorker(logger *slog.Logger) *Worker {
 		originalDirector(req)
 		req.Host = targetURL.Host
 	}
-	return &Worker{
-		logger:       logger,
-		antBinary:    "ant",
-		localBaseURL: "http://127.0.0.1:80",
-		proxy:        proxy,
+	localBaseURL := "http://127.0.0.1" + cfg.Addr
+	if !strings.HasPrefix(cfg.Addr, ":") {
+		localBaseURL = "http://" + cfg.Addr
 	}
+	return &Worker{
+		cfg:          cfg,
+		antBinary:    "ant",
+		localBaseURL: localBaseURL,
+		proxy:        proxy,
+		ateConn:      ateConn,
+	}, nil
+}
+
+// Close releases any background connections maintained by Worker.
+func (w *Worker) Close() error {
+	if w.ateConn != nil {
+		return w.ateConn.Close()
+	}
+	return nil
+}
+
+func (w *Worker) logger() *slog.Logger {
+	if w != nil && w.cfg.Logger != nil {
+		return w.cfg.Logger
+	}
+	return slog.Default()
 }
 
 // Handler returns the http.Handler for the worker server.
@@ -107,7 +142,7 @@ func (w *Worker) Handler() http.Handler {
 func (w *Worker) handleEnvironments(rw http.ResponseWriter, req *http.Request) {
 	if strings.HasSuffix(req.URL.Path, "/heartbeat") {
 		nowStr := time.Now().UTC().Format(time.RFC3339)
-		w.logger.Info("Intercepted local worker heartbeat, responding success",
+		w.logger().Info("Intercepted local worker heartbeat, responding success",
 			slog.String("path", req.URL.Path),
 			slog.String("last_heartbeat", nowStr),
 		)
@@ -130,6 +165,7 @@ func (w *Worker) handleProxy(rw http.ResponseWriter, req *http.Request) {
 }
 
 // handleWork parses the session ID and starts 'ant beta:worker run'.
+// Once the response has been returned to the client, it suspends the actor.
 func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost && req.Method != http.MethodPut {
 		http.Error(rw, `{"error": "method not allowed, use POST"}`, http.StatusMethodNotAllowed)
@@ -165,6 +201,12 @@ func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 			Output: stdout,
 			Error:  errMsg,
 		})
+		if flusher, ok := rw.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if err := w.suspendActor(sessionID); err != nil {
+			w.logger().Error("Failed to suspend actor after error response", slog.Any("error", err))
+		}
 		return
 	}
 
@@ -174,6 +216,44 @@ func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 		Status: "completed",
 		Output: stdout,
 	})
+	if flusher, ok := rw.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	if err := w.suspendActor(sessionID); err != nil {
+		w.logger().Error("Failed to suspend actor after success response", slog.Any("error", err))
+	}
+}
+
+func (w *Worker) suspendActor(sessionID string) error {
+	actorName := ActorName(sessionID)
+	actorRef := &ateapipb.ObjectRef{
+		Atespace: w.cfg.Namespace,
+		Name:     actorName,
+	}
+
+	w.logger().Info("Suspending actor after returning response",
+		slog.String("session_id", sessionID),
+		slog.String("actor", actorName),
+		slog.String("namespace", w.cfg.Namespace),
+	)
+
+	if w.cfg.AteClient == nil {
+		return fmt.Errorf("ateapi client not initialized")
+	}
+
+	suspendCtx, cancel := context.WithTimeout(context.Background(), DefaultSuspendTimeout)
+	defer cancel()
+
+	_, err := w.cfg.AteClient.SuspendActor(suspendCtx, &ateapipb.SuspendActorRequest{Actor: actorRef})
+	if err != nil && status.Code(err) != codes.NotFound {
+		w.logger().Error("Failed to suspend actor",
+			slog.String("actor", actorName),
+			slog.Any("error", err),
+		)
+		return fmt.Errorf("suspending actor %s: %w", actorName, err)
+	}
+	w.logger().Info("Actor suspended successfully", slog.String("actor", actorName))
+	return nil
 }
 
 // handleHealthz returns OK status.
@@ -220,7 +300,7 @@ func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string,
 		env = append(env, "ANTHROPIC_ENVIRONMENT_KEY="+req.EnvironmentKey)
 	}
 
-	w.logger.Info("Running ant worker process",
+	w.logger().Info("Running ant worker process",
 		slog.String("binary", bin),
 		slog.Any("args", args),
 		slog.String("session_id", sessionID),
@@ -236,7 +316,7 @@ func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string,
 	err = cmd.Run()
 	stdout = outBuf.String()
 	stderr = errBuf.String()
-	w.logger.Info("ant worker process finished",
+	w.logger().Info("ant worker process finished",
 		slog.String("session_id", sessionID),
 		slog.String("stdout", stdout),
 		slog.String("stderr", stderr),
@@ -245,13 +325,11 @@ func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string,
 	return stdout, stderr, err
 }
 
-// Run starts the HTTP server on addr with 10-minute timeouts.
-func (w *Worker) Run(addr string) error {
+// Run starts the HTTP server using w.cfg.Addr with 10-minute timeouts.
+func (w *Worker) Run() error {
+	addr := w.cfg.Addr
 	if addr == "" {
 		addr = DefaultWorkerAddr
-	}
-	if strings.HasPrefix(addr, ":") {
-		w.localBaseURL = "http://127.0.0.1" + addr
 	}
 	server := &http.Server{
 		Addr:         addr,

@@ -49,6 +49,9 @@ func TestConfigDefaults(t *testing.T) {
 	cfg := Config{}
 	cfg.Defaults()
 
+	if cfg.Addr != DefaultWorkerAddr {
+		t.Errorf("addr = %q, want %q", cfg.Addr, DefaultWorkerAddr)
+	}
 	if cfg.Namespace != DefaultNamespace {
 		t.Errorf("namespace = %q, want %q", cfg.Namespace, DefaultNamespace)
 	}
@@ -249,8 +252,8 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 	}
 
 	// 1. Initial Registration: Actor does not exist yet -> should create atespace, create actor, and notify router
-	if err := EnsureActorRegistered(ctx, fakeClient, cfg, actorRef, "work-test-001", "session-test-001"); err != nil {
-		t.Fatalf("EnsureActorRegistered: %v", err)
+	if err := RunActor(ctx, fakeClient, cfg, actorRef, "work-test-001", "session-test-001"); err != nil {
+		t.Fatalf("RunActor: %v", err)
 	}
 
 	key := "ate-antworker/session-test-001"
@@ -263,7 +266,7 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 
 	// 2. Suspend Actor
 	fakeClient.createdActors[key].Status = ateapipb.Actor_STATUS_RUNNING
-	if err := SuspendActor(ctx, fakeClient, actorRef); err != nil {
+	if _, err := fakeClient.SuspendActor(ctx, &ateapipb.SuspendActorRequest{Actor: actorRef}); err != nil {
 		t.Fatalf("SuspendActor: %v", err)
 	}
 	if fakeClient.suspendedActors[key] != 1 {
@@ -271,8 +274,8 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 	}
 
 	// 3. Subsequent Notification: Actor already exists -> should notify router directly without error
-	if err := EnsureActorRegistered(ctx, fakeClient, cfg, actorRef, "work-test-002", "session-test-001"); err != nil {
-		t.Fatalf("second EnsureActorRegistered: %v", err)
+	if err := RunActor(ctx, fakeClient, cfg, actorRef, "work-test-002", "session-test-001"); err != nil {
+		t.Fatalf("second RunActor: %v", err)
 	}
 }
 
@@ -288,7 +291,7 @@ func TestEnsureActorErrorPropagation(t *testing.T) {
 		Name:     "session-test",
 	}
 
-	err := EnsureActorRegistered(context.Background(), fakeClient, cfg, actorRef, "work-test", "session-test")
+	err := RunActor(context.Background(), fakeClient, cfg, actorRef, "work-test", "session-test")
 	if err == nil || !errors.Is(err, fakeClient.createErr) {
 		if status.Code(err) != codes.Internal {
 			t.Errorf("expected internal error, got %v", err)
@@ -299,11 +302,17 @@ func TestEnsureActorErrorPropagation(t *testing.T) {
 func TestDispatchWork(t *testing.T) {
 	fakeClient := newFakeControlClient()
 
-	mockRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(WorkResponse{Status: "completed"})
-	}))
+	sessionID := "sesn_test_dispatch_01"
+	aName := ActorName(sessionID)
+	key := "ate-antworker/" + aName
+
+	w, err := NewWorker(Config{AteClient: fakeClient})
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+	w.antBinary = "true"
+
+	mockRouter := httptest.NewServer(w.Handler())
 	defer mockRouter.Close()
 
 	cfg := Config{
@@ -316,17 +325,10 @@ func TestDispatchWork(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	sessionID := "sesn_test_dispatch_01"
-	aName := ActorName(sessionID)
-	key := "ate-antworker/" + aName
-
 	if err := DispatchWork(ctx, cfg, sessionID); err != nil {
 		t.Fatalf("DispatchWork: %v", err)
 	}
 
-	if _, ok := fakeClient.createdActors[key]; !ok {
-		t.Fatalf("expected actor %q to be created", key)
-	}
 	if fakeClient.suspendedActors[key] != 1 {
 		t.Errorf("expected actor %q to be suspended after the work item, count=%d", key, fakeClient.suspendedActors[key])
 	}

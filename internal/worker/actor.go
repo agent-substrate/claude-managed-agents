@@ -34,6 +34,7 @@ const (
 
 // Config defines the configuration for Substrate actor dispatching.
 type Config struct {
+	Addr             string
 	AteapiAddr       string
 	AtenetRouterAddr string
 	Namespace        string
@@ -49,6 +50,15 @@ type Config struct {
 
 // Defaults fills in default values for unset fields.
 func (c *Config) Defaults() {
+	if c.Addr == "" {
+		c.Addr = DefaultWorkerAddr
+	}
+	if c.Namespace == "" {
+		c.Namespace = os.Getenv("ATESPACE")
+	}
+	if c.Namespace == "" {
+		c.Namespace = os.Getenv("NAMESPACE")
+	}
 	if c.Namespace == "" {
 		c.Namespace = DefaultNamespace
 	}
@@ -56,7 +66,13 @@ func (c *Config) Defaults() {
 		c.Template = DefaultTemplate
 	}
 	if c.AteapiAddr == "" {
+		c.AteapiAddr = os.Getenv("ATEAPI_ADDR")
+	}
+	if c.AteapiAddr == "" {
 		c.AteapiAddr = DefaultAteapiAddr
+	}
+	if c.AtenetRouterAddr == "" {
+		c.AtenetRouterAddr = os.Getenv("ATENET_ROUTER_ADDR")
 	}
 	if c.AtenetRouterAddr == "" {
 		c.AtenetRouterAddr = DefaultAtenetRouterAddr
@@ -74,7 +90,7 @@ func (c *Config) Defaults() {
 
 // DispatchWork receives a single Anthropic session (e.g. from 'ant beta:worker poll --on-work')
 // and dispatches it to the corresponding Substrate actor via the atenet router.
-// It waits for the work item to finish and suspends the actor before returning.
+// It waits for the work item to finish.
 func DispatchWork(ctx context.Context, cfg Config, sessionID string) error {
 	cfg.Defaults()
 	logger := cfg.Logger
@@ -112,7 +128,7 @@ func DispatchWork(ctx context.Context, cfg Config, sessionID string) error {
 	}
 
 	// Ensure actor exists and run the work item synchronously via worker daemon
-	if err := EnsureActorRegistered(ctx, ateClient, cfg, actorRef, sessionID, sessionID); err != nil {
+	if err := RunActor(ctx, ateClient, cfg, actorRef, sessionID, sessionID); err != nil {
 		return fmt.Errorf("dispatching work to actor: %w", err)
 	}
 
@@ -120,19 +136,12 @@ func DispatchWork(ctx context.Context, cfg Config, sessionID string) error {
 		slog.String("session_id", sessionID),
 		slog.String("actor", aName),
 	)
-
-	// Work item finished; suspend actor to free WorkerPool slot
-	logger.Info("Suspending actor", slog.String("actor", aName))
-	if err := SuspendActor(ctx, ateClient, actorRef); err != nil {
-		return fmt.Errorf("suspending actor after work item completed: %w", err)
-	}
-	logger.Info("Actor suspended successfully", slog.String("actor", aName))
 	return nil
 }
 
-// EnsureActorRegistered ensures the atespace and actor exist in Substrate,
+// RunActor ensures the atespace and actor exist in Substrate,
 // and notifies the actor via the Substrate atenet router (which automatically wakes/resumes it).
-func EnsureActorRegistered(ctx context.Context, ateClient ateapipb.ControlClient, cfg Config, actorRef *ateapipb.ObjectRef, workID, sessionID string) error {
+func RunActor(ctx context.Context, ateClient ateapipb.ControlClient, cfg Config, actorRef *ateapipb.ObjectRef, workID, sessionID string) error {
 	_, err := ateClient.GetActor(ctx, &ateapipb.GetActorRequest{Actor: actorRef})
 	if err == nil {
 		return NotifyActorWork(ctx, cfg, actorRef, workID, sessionID)
@@ -166,18 +175,6 @@ func EnsureActorRegistered(ctx context.Context, ateClient ateapipb.ControlClient
 	}
 
 	return err
-}
-
-// SuspendActor suspends the specified actor in Substrate.
-func SuspendActor(ctx context.Context, ateClient ateapipb.ControlClient, actorRef *ateapipb.ObjectRef) error {
-	suspendCtx, cancel := context.WithTimeout(ctx, DefaultSuspendTimeout)
-	defer cancel()
-
-	_, err := ateClient.SuspendActor(suspendCtx, &ateapipb.SuspendActorRequest{Actor: actorRef})
-	if err != nil && status.Code(err) != codes.NotFound {
-		return err
-	}
-	return nil
 }
 
 // EnsureAtespace creates the Atespace if it doesn't already exist.
