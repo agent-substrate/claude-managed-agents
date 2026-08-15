@@ -148,8 +148,15 @@ export ANTHROPIC_ENVIRONMENT_ID="env_..."
 go run ./examples/agent \
   --prompt "Run 'uname -a' in bash and show the output."
 
-# 3. Reuse the agent it created, instead of making a new one each run
-export ANTHROPIC_AGENT_ID="agent_..."
+# 3. Reuse the agent it created, instead of creating one on every run
+go run ./examples/agent \
+  --agent "agent_..." \
+  --prompt "Show the kernel version."
+
+# 4. Continue an earlier session — its sandbox and history are still there
+go run ./examples/agent \
+  --session "sesn_..." \
+  --prompt "Now show the free disk space."
 ```
 
 ## Work Queue
