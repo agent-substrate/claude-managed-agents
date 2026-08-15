@@ -13,7 +13,7 @@ This project connects Claude Managed Agents to secure, isolated sandboxes runnin
 - **Poller**: An always-on service in your cluster that fetches incoming events and appends them to the work queue.
 - **Work Queue**: A durable Redis queue holding polled events until the work has actually completed.
 - **Consumers**: Deployment that drains the queue, resumes the sandbox actor for each event, and acknowledges the event when the work is done.
-- **Worker Pool**: A set of pre-warmed microVM/gVisor runners ready to launch sandboxes.
+- **Worker Pool**: A set of microVM/gVisor runners that sandbox actors are scheduled onto.
 - **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across work items.
 
 ### How It Works
@@ -56,8 +56,8 @@ If anything interrupts step 4, the claim lapses and the work item returns to `at
 │                                                ▼                   │
 │    ╭─────────────────────────╮  ╭─────────────────────────────╮    │
 │    │ Substrate WorkerPool    │  │ Sandbox Actor (per session) │    │
-│    │ pre-warmed microVM /    ├─►│ ate-antworker worker        │    │
-│    │ gVisor runners          │  │ ant beta:worker run         │    │
+│    │ microVM / gVisor        ├─►│ ate-antworker worker        │    │
+│    │ runners                 │  │ ant beta:worker run         │    │
 │    ╰─────────────────────────╯  ╰─────────────────────────────╯    │
 ╰────────────────────────────────────────────────────────────────────╯
 ```
@@ -125,7 +125,7 @@ ate-antworker manifest ... \
 
 ### 3. Verify Deployment
 
-Check that the worker poller Deployment and Substrate pre-warmed worker pool are running:
+Check that the worker poller Deployment and Substrate worker pool are running:
 
 ```bash
 kubectl get pods -n ate-antworker
@@ -165,10 +165,10 @@ immediately.
 
 Each consumer runs one work item at a time and a claim takes the whole session,
 so concurrency is the replica count and no two work items ever share a sandbox.
-Set the pool with `--consumer-replicas` (8 by default, under the pre-warmed
-WorkerPool size). On SIGTERM a consumer stops claiming and finishes the item it
-is on, so give the pod a `terminationGracePeriodSeconds` longer than a typical
-work item if you want it to finish rather than be reclaimed.
+Set the pool with `--consumer-replicas` (8 by default, under the WorkerPool
+size). On SIGTERM a consumer stops claiming and finishes the item it is on, so
+give the pod a `terminationGracePeriodSeconds` longer than a typical work item
+if you want it to finish rather than be reclaimed.
 
 Inspect the queue with `redis-cli`:
 
@@ -221,7 +221,7 @@ contacts an actor itself, so the poller cannot be the thing that loses work.
 | `ate-antworker` | `Namespace` | Target Kubernetes namespace |
 | `ate-antworker-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_ENVIRONMENT_KEY`, and `REDIS_PASSWORD` |
 | `ate-antworker-redis` | `Service` + `StatefulSet` | Durable work queue, with append-only persistence (omitted when `--redis-addr` points at an existing Redis) |
-| `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pre-warmed worker pool (10 replicas) |
+| `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of microVM/gVisor runners for sandbox actors (10 replicas) |
 | `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
 | `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work "ate-antworker dispatch"` |
 | `ate-antworker-consumer` | `Deployment` | Queue consumers running `ate-antworker consume` (2 replicas) |
