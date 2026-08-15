@@ -18,37 +18,48 @@ This project connects Claude Managed Agents to secure, isolated sandboxes runnin
 
 ### How It Works
 
-1. **Poll a new Task**: The poller fetches a new task queued by Claude Managed Agents.
-2. **Queue**: The poller appends the event to the durable queue and returns immediately.
-3. **Dispatch**: A consumer claims the event and dispatches the work to a dedicated sandbox actor.
-4. **Run**: Inside the session-tenant sandbox, the worker runs the requested work.
-5. **Suspend**: When the execution completes, Substrate suspends the actor and persists its snapshot, and the consumer acknowledges the event.
+1. **Poll**: The poller fetches a work item queued by Claude Managed Agents.
+2. **Queue**: The poller appends it to the durable Redis queue and returns immediately, without touching an actor.
+3. **Claim**: A consumer takes the work item together with its session, so no other consumer can enter that sandbox.
+4. **Run**: The consumer resumes the sandbox actor, the worker runs the work item, Substrate suspends the actor and persists its snapshot, and only then is the item acknowledged.
+
+If anything interrupts step 4, the lease expires and the work item returns to `pending` to be retried; after `--max-attempts` it lands on `dead`.
 
 ```
-              ╭─────────────────────────────────╮
-              │      Claude Managed Agents      │
-              ╰─────────────────▲───────────────╯
-                                │ 1. Poll Work
-╭───────────────────────────────┴─────────────────────────────────────╮
-│                Agent Substrate on Kubernetes Cluster                │
-│                                                                     │
-│  ╭──────────────────────────╮        ╭────────────────────────────╮ │
-│  │ ate-antworker Poller     │ 2. LPUSH  Redis Work Queue          │ │
-│  │ (Poller Deployment)      ├───────►│ (durable, append-only)     │ │
-│  ╰──────────────────────────╯        ╰──────────────┬─────────────╯ │
-│                                                     │ 3. Claim      │
-│  ╭──────────────────────────╮                       ▼               │
-│  │ ate-antworker Consumers  │◄──────────────────────╯               │
-│  │ (Consumer Deployment)    │ 4. Dispatches Session                 │
-│  ╰──────────────────────────╯─────────────────────╮                 │
-│                                                   ▼                 │
-│  ╭──────────────────────╮                ╭───────────────────────╮  │
-│  │ Substrate WorkerPool ├─ 5. Resumes ──►│ Sandbox Actor         │  │
-│  ╰──────────────────────╯                │ (ate-antworker)       │  │
-│                                          │ • Runs worker task    │  │
-│                                          │ • Persists snapshot   │  │
-│                                          ╰───────────────────────╯  │
-╰─────────────────────────────────────────────────────────────────────╯
+                ╭───────────────────────────────────╮
+                │       Claude Managed Agents       │
+                ╰─────────────────┬─────────────────╯
+                                  │ 1. poll work item
+╭─────────────────────────────────┼──────────────────────────────────╮
+│ Agent Substrate on Kubernetes   ▼                                  │
+│    ╭──────────────────────────────────────────────────────────╮    │
+│    │ Poller Deployment                                        │    │
+│    │   ant beta:worker poll --on-work "ate-antworker dispatch"│    │
+│    ╰────────────────────────────┬─────────────────────────────╯    │
+│                                 │ 2. enqueue, then return          │
+│                                 ▼                                  │
+│    ╭──────────────────────────────────────────────────────────╮    │
+│    │ Redis work queue   (StatefulSet, appendonly)             │    │
+│    │                                                          │    │
+│    │   pending ──claim──► inflight ──ack──► done              │    │
+│    │      ▲                   │                               │    │
+│    │      ╰── lease expired ──┴── attempts used ──► dead      │    │
+│    ╰────────────────────────────┬─────────────────────────────╯    │
+│                                 │ 3. claim work item + its session │
+│                                 ▼                                  │
+│    ╭──────────────────────────────────────────────────────────╮    │
+│    │ Consumer Deployment   (N replicas, one work item each)   │    │
+│    │   ate-antworker consume                                  │    │
+│    ╰────────────────────────────┬─────────────────────────────╯    │
+│                                 │ 4. resume, run, suspend, ack     │
+│                                 ╰──────────────╮                   │
+│                                                ▼                   │
+│    ╭─────────────────────────╮  ╭─────────────────────────────╮    │
+│    │ Substrate WorkerPool    │  │ Sandbox Actor (per session) │    │
+│    │ pre-warmed microVM /    ├─►│ ate-antworker worker        │    │
+│    │ gVisor runners          │  │ ant beta:worker run         │    │
+│    ╰─────────────────────────╯  ╰─────────────────────────────╯    │
+╰────────────────────────────────────────────────────────────────────╯
 ```
 
 ## Commands
