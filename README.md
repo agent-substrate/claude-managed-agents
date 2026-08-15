@@ -84,7 +84,7 @@ go install github.com/agent-substrate/claude-managed-agents/cmd/ate-antworker@la
 
 # Generate deployment YAML and apply to Kubernetes
 ate-antworker manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:9dc6e71542d35ce6cb499b5cad9f7baf9e7fa46130515f7b3765fd23c6f39998 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:065b4c166a29f685fe1c86e82945c179d1c58cd53e8c322ea5ed80328eb18a11 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \

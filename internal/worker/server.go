@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -31,19 +33,57 @@ type WorkResponse struct {
 
 // Worker runs a lightweight HTTP server inside a Substrate actor container.
 // On /work, it executes 'ant beta:worker run --session-id <session_id>'.
+//
+// Heartbeat Conflict Workaround:
+// ------------------------------
+// In Anthropic Managed Agents, the poller deployment runs `ant beta:worker poll --on-work ate-antworker`.
+// When a work item is claimed, `poll` maintains an upstream heartbeat loop with Anthropic to keep
+// the work lease alive while `--on-work` executes.
+//
+// Inside the Substrate actor microVM, `StartWork` runs `ant beta:worker run --work-id <id> --session-id <id>`.
+// However, `ant beta:worker run` ALSO attempts to heartbeat the same `work-id` and sends
+// `expected_last_heartbeat=NO_HEARTBEAT` on its first heartbeat (~10 seconds in).
+//
+// Because the poller already sent a heartbeat to Anthropic, Anthropic returns:
+//
+//	412 Precondition Failed: Heartbeat precondition failed: expected NO_HEARTBEAT, actual was <timestamp>
+//
+// This causes `ant beta:worker run` to believe another worker stole its lease, cancel its context,
+// and shut down prematurely (~15 seconds after starting). In multi-turn sessions, this leaves subsequent
+// tool calls stranded with no runner attached.
+//
+// To resolve this, Worker acts as a local reverse proxy for https://api.anthropic.com and starts
+// `ant beta:worker run` with `--base-url http://127.0.0.1:<port>`:
+//   - Heartbeats (`POST /v1/environments/.../work/.../heartbeat`) are intercepted locally and acknowledged
+//     with HTTP 200 OK (`{"state":"active","lease_extended":true,"ttl_seconds":300}`).
+//   - All real session event streams and tool execution results (`/v1/sessions/...`) are transparently
+//     proxied to https://api.anthropic.com.
+//   - The upstream poller (`poll`) continues to maintain the single, real lease with Anthropic until
+//     the actor finishes and is suspended.
 type Worker struct {
-	logger    *slog.Logger
-	antBinary string
+	logger       *slog.Logger
+	antBinary    string
+	localBaseURL string
+	proxy        http.Handler
 }
 
-// NewWorker creates a new Worker instance.
+// NewWorker creates a new Worker instance with an Anthropic reverse proxy.
 func NewWorker(logger *slog.Logger) *Worker {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	targetURL, _ := url.Parse("https://api.anthropic.com")
+	proxy := httputil.NewSingleHostReverseProxy(targetURL)
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.Host = targetURL.Host
+	}
 	return &Worker{
-		logger:    logger,
-		antBinary: "ant",
+		logger:       logger,
+		antBinary:    "ant",
+		localBaseURL: "http://127.0.0.1:80",
+		proxy:        proxy,
 	}
 }
 
@@ -53,7 +93,33 @@ func (w *Worker) Handler() http.Handler {
 	mux.HandleFunc("/work", w.handleWork)
 	mux.HandleFunc("/healthz", w.handleHealthz)
 	mux.HandleFunc("/readyz", w.handleHealthz)
+	mux.HandleFunc("/v1/environments/", w.handleEnvironments)
+	mux.HandleFunc("/v1/", w.handleProxy)
 	return mux
+}
+
+// handleEnvironments intercepts worker heartbeats to avoid 412 conflicts with the poller.
+// Non-heartbeat environment requests are forwarded to Anthropic via the reverse proxy.
+func (w *Worker) handleEnvironments(rw http.ResponseWriter, req *http.Request) {
+	if strings.HasSuffix(req.URL.Path, "/heartbeat") {
+		w.logger.Info("Intercepted local worker heartbeat, responding success",
+			slog.String("path", req.URL.Path),
+		)
+		rw.Header().Set("Content-Type", "application/json")
+		rw.WriteHeader(http.StatusOK)
+		_, _ = rw.Write([]byte(`{"state":"active","lease_extended":true,"ttl_seconds":300}`))
+		return
+	}
+	w.handleProxy(rw, req)
+}
+
+// handleProxy reverse-proxies other /v1/ requests (such as session events and tool results) to Anthropic.
+func (w *Worker) handleProxy(rw http.ResponseWriter, req *http.Request) {
+	if w.proxy != nil {
+		w.proxy.ServeHTTP(rw, req)
+		return
+	}
+	http.NotFound(rw, req)
 }
 
 // handleWork parses the session ID and starts 'ant beta:worker run'.
@@ -81,23 +147,16 @@ func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 
 	stdout, stderr, err := w.StartWork(req.Context(), sessionID)
 	if err != nil {
+		errMsg := err.Error()
+		if stderr != "" {
+			errMsg = stderr
+		}
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(rw).Encode(WorkResponse{
 			Status: "error",
 			Output: stdout,
-			Error:  err.Error(),
-		})
-		return
-	}
-
-	if stderr != "" {
-		rw.Header().Set("Content-Type", "application/json")
-		rw.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(rw).Encode(WorkResponse{
-			Status: "error",
-			Output: stdout,
-			Error:  stderr,
+			Error:  errMsg,
 		})
 		return
 	}
@@ -130,12 +189,18 @@ func (w *Worker) StartWork(ctx context.Context, sessionID string) (stdout string
 		bin = "ant"
 	}
 
+	baseURL := w.localBaseURL
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:80"
+	}
+
 	args := []string{
 		"beta:worker", "run",
 		"--work-id", sessionID,
 		"--session-id", sessionID,
 		"--unrestricted-paths",
 		"--max-idle", "10m",
+		"--base-url", baseURL,
 	}
 	if envID := os.Getenv("ANTHROPIC_ENVIRONMENT_ID"); envID != "" {
 		args = append(args, "--environment-id", envID)
@@ -173,6 +238,9 @@ func (w *Worker) StartWork(ctx context.Context, sessionID string) (stdout string
 func (w *Worker) Run(addr string) error {
 	if addr == "" {
 		addr = DefaultWorkerAddr
+	}
+	if strings.HasPrefix(addr, ":") {
+		w.localBaseURL = "http://127.0.0.1" + addr
 	}
 	server := &http.Server{
 		Addr:         addr,
