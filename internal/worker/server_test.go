@@ -25,14 +25,14 @@ func TestWorkerHTTPHandler(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// 2. Dispatch session via JSON payload to /dispatch
-	payload, _ := json.Marshal(WorkRequest{WorkID: "work_test_123", SessionID: "sesn_test_123"})
-	resp, err = http.Post(server.URL+"/dispatch", "application/json", bytes.NewReader(payload))
+	// 2. Dispatch work item via JSON payload to /work
+	payload, _ := json.Marshal(WorkRequest{SessionID: "sesn_01UgEbQopdaDjL8DxCvjMwat"})
+	resp, err = http.Post(server.URL+"/work", "application/json", bytes.NewReader(payload))
 	if err != nil {
-		t.Fatalf("POST /dispatch: %v", err)
+		t.Fatalf("POST /work: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("POST /dispatch status = %d, want 200", resp.StatusCode)
+		t.Errorf("POST /work status = %d, want 200", resp.StatusCode)
 	}
 	var startResp WorkResponse
 	_ = json.NewDecoder(resp.Body).Decode(&startResp)
@@ -41,44 +41,38 @@ func TestWorkerHTTPHandler(t *testing.T) {
 		t.Errorf("unexpected dispatch response: %+v", startResp)
 	}
 
-	// 3. Missing work ID should return 400
-	resp, err = http.Post(server.URL+"/dispatch", "application/json", bytes.NewReader([]byte("{}")))
+	// 3. Missing session ID should return 400
+	resp, err = http.Post(server.URL+"/work", "application/json", bytes.NewReader([]byte("{}")))
 	if err != nil {
-		t.Fatalf("POST /dispatch empty: %v", err)
+		t.Fatalf("POST /work empty: %v", err)
 	}
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("POST /dispatch empty status = %d, want 400", resp.StatusCode)
+		t.Errorf("POST /work empty status = %d, want 400", resp.StatusCode)
 	}
 	resp.Body.Close()
 
-	// 4. Missing work ID with only session ID should return 400
-	payload, _ = json.Marshal(WorkRequest{SessionID: "sesn_test_123"})
-	resp, err = http.Post(server.URL+"/dispatch", "application/json", bytes.NewReader(payload))
+	// 4. Work item with session_id alone should succeed
+	payload, _ = json.Marshal(WorkRequest{SessionID: "sesn_01UgEbQopdaDjL8DxCvjMwat"})
+	resp, err = http.Post(server.URL+"/work", "application/json", bytes.NewReader(payload))
 	if err != nil {
-		t.Fatalf("POST /dispatch with only session_id: %v", err)
+		t.Fatalf("POST /work with session_id: %v", err)
 	}
-	// 5. Missing session ID with only work ID should return 400
-	payload, _ = json.Marshal(WorkRequest{WorkID: "work_test_123"})
-	resp, err = http.Post(server.URL+"/dispatch", "application/json", bytes.NewReader(payload))
-	if err != nil {
-		t.Fatalf("POST /dispatch with only work_id: %v", err)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("POST /work with session_id status = %d, want 200", resp.StatusCode)
 	}
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("POST /dispatch with only work_id status = %d, want 400", resp.StatusCode)
-	}
+	_ = json.NewDecoder(resp.Body).Decode(&startResp)
 	resp.Body.Close()
+	if startResp.Status != "completed" {
+		t.Errorf("unexpected dispatch response: %+v", startResp)
+	}
 }
 
 func TestWorkerStartWorkMissingIDs(t *testing.T) {
 	w := NewWorker(nil)
-	if err := w.StartWork(t.Context(), "", "sesn_123"); err == nil {
-		t.Error("expected error when workID is empty, got nil")
-	}
-	if err := w.StartWork(t.Context(), "work_123", ""); err == nil {
+	w.antBinary = "true"
+
+	if _, _, err := w.StartWork(t.Context(), WorkRequest{SessionID: ""}); err == nil {
 		t.Error("expected error when sessionID is empty, got nil")
-	}
-	if err := w.StartWork(t.Context(), "", ""); err == nil {
-		t.Error("expected error when both IDs are empty, got nil")
 	}
 }
 
@@ -86,7 +80,32 @@ func TestWorkerStartWorkExecution(t *testing.T) {
 	w := NewWorker(nil)
 	w.antBinary = "true"
 
-	if err := w.StartWork(t.Context(), "work_test_123", "sesn_test_123"); err != nil {
+	if _, _, err := w.StartWork(t.Context(), WorkRequest{
+		SessionID:      "sesn_test_123",
+		EnvironmentID:  "env_test_123",
+		EnvironmentKey: "key_test_123",
+	}); err != nil {
 		t.Fatalf("StartWork: %v", err)
+	}
+}
+
+func TestWorkerHeartbeatInterception(t *testing.T) {
+	w := NewWorker(nil)
+	server := httptest.NewServer(w.Handler())
+	defer server.Close()
+
+	resp, err := http.Post(server.URL+"/v1/environments/env_123/work/sesn_123/heartbeat", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST heartbeat: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("POST heartbeat status = %d, want 200", resp.StatusCode)
+	}
+	var res map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	resp.Body.Close()
+
+	if res["state"] != "active" || res["lease_extended"] != true {
+		t.Errorf("unexpected heartbeat response: %v", res)
 	}
 }

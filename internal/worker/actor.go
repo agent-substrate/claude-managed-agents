@@ -26,26 +26,22 @@ import (
 const (
 	DefaultNamespace        = "ate-antworker"
 	DefaultTemplate         = "ate-antworker-actor-template"
-	DefaultWorkdir          = "/workspace"
 	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
 	DefaultAtenetRouterAddr = "atenet-router.ate-system.svc.cluster.local:80"
 	DefaultSuspendTimeout   = 30 * time.Second
-	DefaultIdleTimeout      = 30 * time.Second
+	DefaultWorkTimeout      = 10 * time.Minute
 )
 
 // Config defines the configuration for Substrate actor dispatching.
 type Config struct {
-	EnvironmentID    string
-	EnvironmentKey   string
-	APIKey           string
 	AteapiAddr       string
 	AtenetRouterAddr string
 	Namespace        string
 	Template         string
-	Workdir          string
 	Insecure         bool
-	IdleTimeout      time.Duration
 	Logger           *slog.Logger
+	EnvironmentID    string
+	EnvironmentKey   string
 
 	// AteClient can be provided to override the default gRPC client (e.g. in tests).
 	AteClient ateapipb.ControlClient
@@ -59,59 +55,32 @@ func (c *Config) Defaults() {
 	if c.Template == "" {
 		c.Template = DefaultTemplate
 	}
-	if c.Workdir == "" {
-		if _, err := os.Stat(DefaultWorkdir); err == nil {
-			c.Workdir = DefaultWorkdir
-		} else {
-			c.Workdir = "."
-		}
-	}
 	if c.AteapiAddr == "" {
 		c.AteapiAddr = DefaultAteapiAddr
 	}
 	if c.AtenetRouterAddr == "" {
 		c.AtenetRouterAddr = DefaultAtenetRouterAddr
 	}
-	if c.IdleTimeout <= 0 {
-		c.IdleTimeout = DefaultIdleTimeout
+	if c.EnvironmentID == "" {
+		c.EnvironmentID = os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
+	}
+	if c.EnvironmentKey == "" {
+		c.EnvironmentKey = os.Getenv("ANTHROPIC_ENVIRONMENT_KEY")
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
 }
 
-// Validate ensures required configuration fields are set.
-func (c *Config) Validate() error {
-	c.Defaults()
-	if c.EnvironmentID == "" {
-		return errors.New("EnvironmentID is required")
-	}
-	return nil
-}
-
-// DispatchRequest contains the work item details to dispatch to a Substrate actor.
-type DispatchRequest struct {
-	WorkID         string        `json:"work_id"`
-	SessionID      string        `json:"session_id"`
-	EnvironmentID  string        `json:"environment_id,omitempty"`
-	EnvironmentKey string        `json:"environment_key,omitempty"`
-	Wait           bool          `json:"wait"`
-	IdleTimeout    time.Duration `json:"idle_timeout,omitempty"`
-}
-
-// DispatchWork receives a single Anthropic work item (e.g. from 'ant beta:worker poll --on-work')
+// DispatchWork receives a single Anthropic session (e.g. from 'ant beta:worker poll --on-work')
 // and dispatches it to the corresponding Substrate actor via the atenet router.
-// If req.Wait is true, it waits for turn completion and suspends the actor before returning.
-func DispatchWork(ctx context.Context, cfg Config, req DispatchRequest) error {
+// It waits for the work item to finish and suspends the actor before returning.
+func DispatchWork(ctx context.Context, cfg Config, sessionID string) error {
 	cfg.Defaults()
 	logger := cfg.Logger
 
-	if req.WorkID == "" {
-		return fmt.Errorf("work_id is required")
-	}
-	sessionID := req.SessionID
 	if sessionID == "" {
-		sessionID = req.WorkID
+		return fmt.Errorf("session_id is required")
 	}
 
 	aName := ActorName(sessionID)
@@ -121,11 +90,9 @@ func DispatchWork(ctx context.Context, cfg Config, req DispatchRequest) error {
 	}
 
 	logger.Info("Dispatching work item to Substrate actor",
-		slog.String("work_id", req.WorkID),
 		slog.String("session_id", sessionID),
 		slog.String("actor", aName),
 		slog.String("namespace", cfg.Namespace),
-		slog.Bool("wait", req.Wait),
 	)
 
 	var (
@@ -144,25 +111,20 @@ func DispatchWork(ctx context.Context, cfg Config, req DispatchRequest) error {
 		defer conn.Close()
 	}
 
-	// Ensure actor exists and execute turn synchronously via worker daemon
-	if err := EnsureActorRegistered(ctx, ateClient, cfg, actorRef, req.WorkID, sessionID); err != nil {
+	// Ensure actor exists and run the work item synchronously via worker daemon
+	if err := EnsureActorRegistered(ctx, ateClient, cfg, actorRef, sessionID, sessionID); err != nil {
 		return fmt.Errorf("dispatching work to actor: %w", err)
 	}
 
 	logger.Info("Work item completed successfully on actor",
-		slog.String("work_id", req.WorkID),
 		slog.String("session_id", sessionID),
 		slog.String("actor", aName),
 	)
 
-	if !req.Wait {
-		return nil
-	}
-
-	// Turn completed; suspend actor to free WorkerPool slot
-	logger.Info("Turn completed; suspending actor", slog.String("actor", aName))
+	// Work item finished; suspend actor to free WorkerPool slot
+	logger.Info("Suspending actor", slog.String("actor", aName))
 	if err := SuspendActor(ctx, ateClient, actorRef); err != nil {
-		return fmt.Errorf("suspending actor after turn completion: %w", err)
+		return fmt.Errorf("suspending actor after work item completed: %w", err)
 	}
 	logger.Info("Actor suspended successfully", slog.String("actor", aName))
 	return nil
@@ -282,11 +244,12 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 	if !strings.HasPrefix(routerAddr, "http://") && !strings.HasPrefix(routerAddr, "https://") {
 		routerAddr = "http://" + routerAddr
 	}
-	url := fmt.Sprintf("%s/dispatch", routerAddr)
+	url := fmt.Sprintf("%s/work", routerAddr)
 
-	payload := map[string]string{
-		"work_id":    workID,
-		"session_id": sessionID,
+	payload := WorkRequest{
+		SessionID:      sessionID,
+		EnvironmentID:  cfg.EnvironmentID,
+		EnvironmentKey: cfg.EnvironmentKey,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -307,18 +270,25 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 			return false, err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-envoy-upstream-rq-timeout-ms", "0")
+		req.Header.Set("x-envoy-upstream-rq-per-try-timeout-ms", "0")
 		req.Host = fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorRef.Name, actorRef.Atespace)
 
-		client := &http.Client{}
+		client := &http.Client{
+			Timeout: DefaultWorkTimeout,
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("posting to router at %s (host %s): %w", url, req.Host, err)
 			return false, nil
 		}
-		resp.Body.Close()
+		defer resp.Body.Close()
 
-		if resp.StatusCode >= 400 {
-			lastErr = fmt.Errorf("worker daemon via router at %s returned status %d", url, resp.StatusCode)
+		var workResp WorkResponse
+		_ = json.NewDecoder(resp.Body).Decode(&workResp)
+
+		if resp.StatusCode >= 400 || workResp.Status == "error" {
+			lastErr = fmt.Errorf("worker daemon via router at %s returned status %d: %s (output: %s)", url, resp.StatusCode, workResp.Error, workResp.Output)
 			return false, nil
 		}
 
@@ -326,8 +296,7 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 			slog.String("actor", actorRef.Name),
 			slog.String("work_id", workID),
 			slog.String("session_id", sessionID),
-			slog.String("router", cfg.AtenetRouterAddr),
-			slog.String("host", req.Host),
+			slog.String("status", workResp.Status),
 		)
 		return true, nil
 	})

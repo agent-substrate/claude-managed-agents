@@ -14,13 +14,10 @@ func testConfig() Config {
 	return Config{
 		Namespace:       "ate-antworker",
 		Template:        "ate-antworker-actor-template",
-		WorkerPool:      "ate-antworker-workerpool",
 		WorkerImage:     "gcr.io/test/worker@sha256:1111",
 		AteomImage:      "gcr.io/test/ateom@sha256:2222",
-		PauseImage:      DefaultPauseImage,
 		SnapshotsBucket: "gs://test-bucket/snapshots/",
 		Replicas:        3,
-		WorkerReplicas:  1,
 		EnvironmentID:   "env_test_123",
 		EnvironmentKey:  "key_test_123",
 	}
@@ -98,6 +95,24 @@ func TestValidate(t *testing.T) {
 	}
 }
 
+// find returns the generated object of type T with the given name.
+func find[T any](t *testing.T, objs []any, name string) T {
+	t.Helper()
+	for _, obj := range objs {
+		typed, ok := obj.(T)
+		if !ok {
+			continue
+		}
+		if meta, ok := obj.(interface{ GetName() string }); ok && meta.GetName() != name {
+			continue
+		}
+		return typed
+	}
+	var zero T
+	t.Fatalf("no %T named %q in generated manifests", zero, name)
+	return zero
+}
+
 func TestBuildManifests(t *testing.T) {
 	cfg := testConfig()
 	objs := BuildManifests(cfg)
@@ -105,33 +120,30 @@ func TestBuildManifests(t *testing.T) {
 		t.Fatalf("got %d manifests, want 5", len(objs))
 	}
 
-	ns := objs[0].(*corev1.Namespace)
+	ns := find[*corev1.Namespace](t, objs, "ate-antworker")
 	if ns.Name != "ate-antworker" {
 		t.Errorf("namespace = %q, want ate-antworker", ns.Name)
 	}
 
-	secret := objs[1].(*corev1.Secret)
-	if secret.Name != DefaultSecretName {
-		t.Errorf("secret name = %q, want %q", secret.Name, DefaultSecretName)
-	}
+	secret := find[*corev1.Secret](t, objs, DefaultSecretName)
 	if secret.StringData["ANTHROPIC_ENVIRONMENT_ID"] != "env_test_123" {
 		t.Errorf("secret env id = %q", secret.StringData["ANTHROPIC_ENVIRONMENT_ID"])
 	}
 
-	pool := objs[2].(*atev1alpha1.WorkerPool)
-	if pool.Name != "ate-antworker-workerpool" || pool.Spec.Replicas != 3 {
+	pool := find[*atev1alpha1.WorkerPool](t, objs, DefaultWorkerPool)
+	if pool.Spec.Replicas != 3 {
 		t.Errorf("workerpool = %+v", pool)
 	}
 
-	template := objs[3].(*atev1alpha1.ActorTemplate)
+	template := find[*atev1alpha1.ActorTemplate](t, objs, cfg.Template)
 	if len(template.Spec.Containers) != 1 || template.Spec.Containers[0].Image != cfg.WorkerImage {
 		t.Errorf("template containers = %+v", template.Spec.Containers)
 	}
 	if len(template.Spec.Containers[0].Command) < 2 || template.Spec.Containers[0].Command[0] != "ate-antworker" || template.Spec.Containers[0].Command[1] != "worker" {
 		t.Errorf("template container command = %v, want ['ate-antworker', 'worker', ...]", template.Spec.Containers[0].Command)
 	}
-	if len(template.Spec.Containers[0].Env) != 2 {
-		t.Errorf("template container env count = %d, want 2", len(template.Spec.Containers[0].Env))
+	if len(template.Spec.Containers[0].Env) != 0 {
+		t.Errorf("template container env count = %d, want 0", len(template.Spec.Containers[0].Env))
 	}
 	if template.Spec.Containers[0].Readyz == nil || template.Spec.Containers[0].Readyz.HTTPGet == nil || template.Spec.Containers[0].Readyz.HTTPGet.Path != "/healthz" || template.Spec.Containers[0].Readyz.HTTPGet.Port != 80 {
 		t.Errorf("template container readyz = %+v, want path '/healthz' and port 80", template.Spec.Containers[0].Readyz)
@@ -140,16 +152,18 @@ func TestBuildManifests(t *testing.T) {
 		t.Errorf("snapshots location = %q", template.Spec.SnapshotsConfig.Location)
 	}
 
-	deployment := objs[4].(*appsv1.Deployment)
-	if deployment.Name != DefaultDeploymentName {
-		t.Errorf("deployment name = %q", deployment.Name)
-	}
+	deployment := find[*appsv1.Deployment](t, objs, DefaultDeploymentName)
 	if len(deployment.Spec.Template.Spec.Containers) != 1 {
 		t.Fatalf("deployment containers count = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
 	}
 	workerContainer := deployment.Spec.Template.Spec.Containers[0]
 	if len(workerContainer.Command) < 3 || workerContainer.Command[0] != "ant" || workerContainer.Command[1] != "beta:worker" || workerContainer.Command[2] != "poll" {
 		t.Errorf("deployment container command = %v, want ['ant', 'beta:worker', 'poll', ...]", workerContainer.Command)
+	}
+
+	poll := strings.Join(workerContainer.Command, " ")
+	if !strings.Contains(poll, "--on-work ate-antworker") {
+		t.Errorf("poller command = %v, want --on-work ate-antworker", workerContainer.Command)
 	}
 }
 
@@ -187,7 +201,7 @@ func TestBuildManifestsWithAPIKey(t *testing.T) {
 	cfg.APIKey = "sk-ant-api03-test-key"
 
 	objs := BuildManifests(cfg)
-	secret := objs[1].(*corev1.Secret)
+	secret := find[*corev1.Secret](t, objs, DefaultSecretName)
 	if secret.StringData["ANTHROPIC_API_KEY"] != "sk-ant-api03-test-key" {
 		t.Errorf("secret ANTHROPIC_API_KEY = %q", secret.StringData["ANTHROPIC_API_KEY"])
 	}
@@ -195,14 +209,8 @@ func TestBuildManifestsWithAPIKey(t *testing.T) {
 		t.Errorf("expected no ANTHROPIC_ENVIRONMENT_KEY in secret")
 	}
 
-	template := objs[3].(*atev1alpha1.ActorTemplate)
-	foundAPIKey := false
-	for _, env := range template.Spec.Containers[0].Env {
-		if env.Name == "ANTHROPIC_API_KEY" && *env.Value == "sk-ant-api03-test-key" {
-			foundAPIKey = true
-		}
-	}
-	if !foundAPIKey {
-		t.Errorf("expected ANTHROPIC_API_KEY in ActorTemplate env: %+v", template.Spec.Containers[0].Env)
+	template := find[*atev1alpha1.ActorTemplate](t, objs, cfg.Template)
+	if len(template.Spec.Containers[0].Env) != 0 {
+		t.Errorf("expected no env in ActorTemplate: %+v", template.Spec.Containers[0].Env)
 	}
 }

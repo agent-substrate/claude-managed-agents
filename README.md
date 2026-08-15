@@ -1,55 +1,54 @@
 # Claude Managed Agents on Agent Substrate
 
-This project enables Claude Managed Agents to run code execution, bash commands, file operations, and skills inside secure, isolated sandboxes running on your Agent Substrate cluster.
-
 Deploy [Anthropic Managed Agents Self-Hosted Sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes) workers on [Agent Substrate](https://github.com/agent-substrate/substrate).
+
+This project enables Claude Managed Agents to run bash commands, file operations, code execution, and skills inside secure, isolated sandboxes running on your Agent Substrate cluster.
 
 ## Overview
 
-This project connects Claude Managed Agents to secure, isolated sandboxes running on your Agent Substrate cluster.
+### Components
 
-### Key Components
-
-- **Poller**: An always-on service in your cluster that fetches incoming events.
-- **Worker Pool**: A set of pre-warmed microVM/gVisor runners ready to launch sandboxes.
-- **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across turns.
+- **Poller Deployment**: An always-on service in your cluster running `ant beta:worker poll --on-work ate-antworker`. It fetches incoming work items and synchronously dispatches them.
+- **Worker Pool**: A set of microVM/gVisor runners that sandbox actors are scheduled onto.
+- **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across turns via snapshots.
 
 ### How It Works
 
-1. **Poll a new Task**: The poller fetches a new task queued by Claude Managed Agents.
-2. **Dispatch**: The poller dispatch the work to a dedicated sandbox actor.
-3. **Run**: Inside the session-tenant sandbox, the worker runs the requested work.
-4. **Suspend**: When the execution completes, Substrate automatically suspends the actor and persists its snapshot.
+1. **Poll**: The poller fetches a work item from Claude Managed Agents.
+2. **Dispatch**: The poller hook invokes `ate-antworker`, which resumes or registers the corresponding session actor via the Substrate atenet router.
+3. **Execute**: The worker daemon inside the microVM runs `ant beta:worker run`, executing tool calls and streaming results back to Anthropic.
+4. **Suspend**: When the work item completes, the actor is suspended to save a snapshot to object storage and free the worker pool slot.
 
 ```
-              ╭─────────────────────────────────╮
-              │      Claude Managed Agents      │
-              ╰─────────────────▲───────────────╯
-                                │ Poll Work
-╭───────────────────────────────┴─────────────────────────────────────╮
-│                Agent Substrate on Kubernetes Cluster                │
-│                                                                     │
-│  ╭──────────────────────────╮                                       │
-│  │ ate-antworker Poller     │ 2. Dispatches Session                 │
-│  │ (Poller Deployment)      ├─────────────────────╮                 │
-│  ╰──────────────────────────╯                     │                 │
-│                                                   ▼                 │
-│  ╭──────────────────────╮                ╭───────────────────────╮  │
-│  │ Substrate WorkerPool ├─ 3. Resumes ──►│ Sandbox Actor         │  │
-│  ╰──────────────────────╯                │ (ate-antworker)       │  │
-│                                          │ • Runs worker task    │  │
-│                                          │ • Persists snapshot   │  │
-│                                          ╰───────────────────────╯  │
-╰─────────────────────────────────────────────────────────────────────╯
+                ╭───────────────────────────────────╮
+                │       Claude Managed Agents       │
+                ╰─────────────────┬─────────────────╯
+                                  │ 1. poll work item
+╭─────────────────────────────────┼──────────────────────────────────╮
+│ Agent Substrate on Kubernetes   ▼                                  │
+│    ╭──────────────────────────────────────────────────────────╮    │
+│    │ Poller Deployment                                        │    │
+│    │   ant beta:worker poll --on-work ate-antworker           │    │
+│    ╰────────────────────────────┬─────────────────────────────╯    │
+│                                 │ 2. dispatch to actor             │
+│                                 ▼                                  │
+│    ╭─────────────────────────╮  ╭─────────────────────────────╮    │
+│    │ Substrate WorkerPool    │  │ Sandbox Actor (per session) │    │
+│    │ microVM / gVisor        ├─►│ ate-antworker worker        │    │
+│    │ runners                 │  │ ant beta:worker run         │    │
+│    ╰─────────────────────────╯  ╰─────────────────────────────╯    │
+│                                 3. run tools, stream results       │
+│                                 4. suspend actor to snapshot       │
+╰────────────────────────────────────────────────────────────────────╯
 ```
 
 ## Commands
 
-`ate-antworker` provides three subcommands:
+`ate-antworker` provides the following:
 
-1. **`ate-antworker manifest`**: Generates Kubernetes deployment YAML for the worker pool, sandbox template, and poller Deployment.
-2. **`ate-antworker dispatch`**: Hook target for **`ant beta:worker poll --on-work 'ate-antworker dispatch'`** (wakes actor $\rightarrow$ executes turn $\rightarrow$ suspends actor).
-3. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
+1. **`ate-antworker`** (root): Hook target for **`ant beta:worker poll --on-work ate-antworker`**. Wakes/resumes the session actor, runs the work synchronously, and suspends the actor.
+2. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
+3. **`ate-antworker manifest`**: Generates Kubernetes and Substrate manifests.
 
 ---
 
@@ -85,7 +84,7 @@ go install github.com/agent-substrate/claude-managed-agents/cmd/ate-antworker@la
 
 # Generate deployment YAML and apply to Kubernetes
 ate-antworker manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/anthropic-worker@sha256:73b3f624137c4334c5f351799ec8d943a60beea7b037a958aca9858bb44852d1 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:409cd490041895e565ef8672eb4cd8f95c5702dae34759822683cfb55f9ba4b2 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
@@ -95,7 +94,7 @@ ate-antworker manifest \
 
 ### 3. Verify Deployment
 
-Check that the worker poller Deployment and Substrate pre-warmed worker pool are running:
+Check that the worker poller Deployment and Substrate worker pool are running:
 
 ```bash
 kubectl get pods -n ate-antworker
@@ -119,31 +118,40 @@ export ANTHROPIC_ENVIRONMENT_ID="env_..."
 # 2. Run example
 go run ./examples/agent \
   --prompt "Run 'uname -a' in bash and show the output."
+
+# 3. Reuse the agent it created, instead of creating one on every run
+go run ./examples/agent \
+  --agent "agent_..." \
+  --prompt "Show the kernel version."
 ```
 
 ## Running Locally
 
-To run the poller and dispatcher locally for development or testing:
+To shell into the container locally with your Anthropic environment variables:
 
 ```bash
-# 1. Port-forward ateapi and router
-kubectl port-forward svc/api 8443:443 -n ate-system &
-kubectl port-forward svc/atenet-router 8080:80 -n ate-system &
-
-# 2. Run poller with ate-antworker dispatch
-ant beta:worker poll \
-  --environment-id "$ANTHROPIC_ENVIRONMENT_ID" \
-  --environment-key "$ANTHROPIC_ENVIRONMENT_KEY" \
-  --on-work "ate-antworker dispatch --ateapi-addr localhost:8443 --atenet-router-addr localhost:8080 --insecure"
+podman run -it --rm \
+  --entrypoint bash \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -e ANTHROPIC_ENVIRONMENT_ID="$ANTHROPIC_ENVIRONMENT_ID" \
+  -e ANTHROPIC_ENVIRONMENT_KEY="$ANTHROPIC_ENVIRONMENT_KEY" \
+  gcr.io/$GOOGLE_CLOUD_PROJECT/ate-antworker:latest
 ```
+
+Inside the container:
+- **Run worker manually**: `ant beta:worker run --work-id "<work-id>" --session-id "<session-id>"`
 
 ## Manifest Reference
 
-| Resource | Kind | Purpose |
+| Resource | Kind | Description |
 | --- | --- | --- |
 | `ate-antworker` | `Atespace` (`ate.dev/v1alpha1`) | Substrate tenant atespace for actors |
 | `ate-antworker` | `Namespace` | Target Kubernetes namespace |
-| `ate-antworker-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and `ANTHROPIC_ENVIRONMENT_KEY` |
-| `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pre-warmed microVM/gVisor runner pool (10 replicas) |
+| `ate-antworker-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_ENVIRONMENT_KEY` |
+| `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of microVM/gVisor runners for sandbox actors (10 replicas) |
 | `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
-| `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work "ate-antworker dispatch"` |
+| `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work ate-antworker` |
+
+## Roadmap
+
+- **Distribute prebuilt images** so deploying is one `kubectl apply` with no build step.

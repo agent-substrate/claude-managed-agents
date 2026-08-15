@@ -42,7 +42,6 @@ RUN set -eux; \
 
 # Copy compiled binaries from builder
 COPY --from=builder /out/ate-antworker /usr/local/bin/ate-antworker
-RUN ln -s /usr/local/bin/ate-antworker /usr/local/bin/ate-antworker-dispatch
 
 # Set default working directory
 WORKDIR /workspace

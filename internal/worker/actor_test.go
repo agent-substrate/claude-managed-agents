@@ -45,16 +45,9 @@ func TestActorName(t *testing.T) {
 	}
 }
 
-func TestConfigValidate(t *testing.T) {
+func TestConfigDefaults(t *testing.T) {
 	cfg := Config{}
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for empty Config, got nil")
-	}
-
-	cfg.EnvironmentID = "env_123"
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("unexpected error for valid Config: %v", err)
-	}
+	cfg.Defaults()
 
 	if cfg.Namespace != DefaultNamespace {
 		t.Errorf("namespace = %q, want %q", cfg.Namespace, DefaultNamespace)
@@ -62,11 +55,14 @@ func TestConfigValidate(t *testing.T) {
 	if cfg.Template != DefaultTemplate {
 		t.Errorf("template = %q, want %q", cfg.Template, DefaultTemplate)
 	}
-	if cfg.Workdir != DefaultWorkdir && cfg.Workdir != "." {
-		t.Errorf("workdir = %q, want %q or '.'", cfg.Workdir, DefaultWorkdir)
-	}
 	if cfg.AteapiAddr != DefaultAteapiAddr {
 		t.Errorf("ateapiAddr = %q, want %q", cfg.AteapiAddr, DefaultAteapiAddr)
+	}
+	if cfg.AtenetRouterAddr != DefaultAtenetRouterAddr {
+		t.Errorf("atenetRouterAddr = %q, want %q", cfg.AtenetRouterAddr, DefaultAtenetRouterAddr)
+	}
+	if cfg.Logger == nil {
+		t.Error("logger = nil, want a default logger")
 	}
 }
 
@@ -239,9 +235,6 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 	defer mockRouter.Close()
 
 	cfg := Config{
-		EnvironmentID:    "env_test_123",
-		EnvironmentKey:   "key_test_123",
-		APIKey:           "key_test_123",
 		AteClient:        fakeClient,
 		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
 		Namespace:        "ate-antworker",
@@ -287,12 +280,7 @@ func TestEnsureActorErrorPropagation(t *testing.T) {
 	fakeClient := newFakeControlClient()
 	fakeClient.createErr = status.Error(codes.Internal, "internal substrate error")
 
-	cfg := Config{
-		EnvironmentID:  "env_test_123",
-		EnvironmentKey: "key_test_123",
-		APIKey:         "key_test_123",
-		AteClient:      fakeClient,
-	}
+	cfg := Config{AteClient: fakeClient}
 	cfg.Defaults()
 
 	actorRef := &ateapipb.ObjectRef{
@@ -314,7 +302,7 @@ func TestDispatchWork(t *testing.T) {
 	mockRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "completed"})
+		_ = json.NewEncoder(w).Encode(WorkResponse{Status: "completed"})
 	}))
 	defer mockRouter.Close()
 
@@ -332,13 +320,7 @@ func TestDispatchWork(t *testing.T) {
 	aName := ActorName(sessionID)
 	key := "ate-antworker/" + aName
 
-	req := DispatchRequest{
-		WorkID:    "work_test_dispatch_01",
-		SessionID: sessionID,
-		Wait:      true,
-	}
-
-	if err := DispatchWork(ctx, cfg, req); err != nil {
+	if err := DispatchWork(ctx, cfg, sessionID); err != nil {
 		t.Fatalf("DispatchWork: %v", err)
 	}
 
@@ -346,47 +328,6 @@ func TestDispatchWork(t *testing.T) {
 		t.Fatalf("expected actor %q to be created", key)
 	}
 	if fakeClient.suspendedActors[key] != 1 {
-		t.Errorf("expected actor %q to be suspended after turn, count=%d", key, fakeClient.suspendedActors[key])
-	}
-}
-
-func TestDispatchWorkNoWait(t *testing.T) {
-	fakeClient := newFakeControlClient()
-
-	mockRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "started"})
-	}))
-	defer mockRouter.Close()
-
-	cfg := Config{
-		AteClient:        fakeClient,
-		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
-		Namespace:        "ate-antworker",
-		Template:         "ate-antworker-actor-template",
-	}
-
-	ctx := context.Background()
-	sessionID := "sesn_test_dispatch_nowait"
-	aName := ActorName(sessionID)
-	key := "ate-antworker/" + aName
-
-	req := DispatchRequest{
-		WorkID:    "work_test_nowait",
-		SessionID: sessionID,
-		Wait:      false,
-	}
-
-	if err := DispatchWork(ctx, cfg, req); err != nil {
-		t.Fatalf("DispatchWork (no wait): %v", err)
-	}
-
-	if _, ok := fakeClient.createdActors[key]; !ok {
-		t.Fatalf("expected actor %q to be created", key)
-	}
-	// With wait=false, it shouldn't suspend
-	if fakeClient.suspendedActors[key] != 0 {
-		t.Errorf("expected 0 suspensions with wait=false, got %d", fakeClient.suspendedActors[key])
+		t.Errorf("expected actor %q to be suspended after the work item, count=%d", key, fakeClient.suspendedActors[key])
 	}
 }

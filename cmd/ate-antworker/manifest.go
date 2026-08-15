@@ -25,7 +25,6 @@ const (
 	DefaultWorkerPool       = "ate-antworker-workerpool"
 	DefaultDeploymentName   = "ate-antworker"
 	DefaultSecretName       = "ate-antworker-creds"
-	DefaultWorkdir          = "/workspace"
 	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
 	DefaultAtenetRouterAddr = "atenet-router.ate-system.svc.cluster.local:80"
 )
@@ -34,17 +33,13 @@ const (
 type Config struct {
 	Namespace        string `json:"namespace"`
 	Template         string `json:"template"`
-	WorkerPool       string `json:"worker_pool"`
 	WorkerImage      string `json:"worker_image"`
 	AteomImage       string `json:"ateom_image"`
-	PauseImage       string `json:"pause_image"`
 	SnapshotsBucket  string `json:"snapshots_bucket"`
 	Replicas         int32  `json:"replicas"`
-	WorkerReplicas   int32  `json:"worker_replicas"`
 	EnvironmentID    string `json:"environment_id"`
 	EnvironmentKey   string `json:"environment_key"`
 	APIKey           string `json:"api_key"`
-	Workdir          string `json:"workdir"`
 	AteapiAddr       string `json:"ateapi_addr"`
 	AtenetRouterAddr string `json:"atenet_router_addr"`
 }
@@ -57,20 +52,8 @@ func (c *Config) Defaults() {
 	if c.Template == "" {
 		c.Template = DefaultTemplate
 	}
-	if c.WorkerPool == "" {
-		c.WorkerPool = DefaultWorkerPool
-	}
-	if c.PauseImage == "" {
-		c.PauseImage = DefaultPauseImage
-	}
 	if c.Replicas == 0 {
 		c.Replicas = 10
-	}
-	if c.WorkerReplicas == 0 {
-		c.WorkerReplicas = 1
-	}
-	if c.Workdir == "" {
-		c.Workdir = DefaultWorkdir
 	}
 	if c.AteapiAddr == "" {
 		c.AteapiAddr = DefaultAteapiAddr
@@ -128,17 +111,13 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 
 	cmd.Flags().StringVar(&cfg.Namespace, "namespace", DefaultNamespace, "Kubernetes namespace to deploy into")
 	cmd.Flags().StringVar(&cfg.Template, "template", DefaultTemplate, "Substrate ActorTemplate name")
-	cmd.Flags().StringVar(&cfg.WorkerPool, "workerpool", "", "Substrate WorkerPool name (defaults to <template>-workerpool)")
 	cmd.Flags().StringVar(&cfg.WorkerImage, "worker-image", "", "digest-pinned worker container image (repo@sha256:...)")
 	cmd.Flags().StringVar(&cfg.AteomImage, "ateom-image", "", "digest-pinned ateom image for the worker pool (e.g. ateom-gvisor)")
-	cmd.Flags().StringVar(&cfg.PauseImage, "pause-image", DefaultPauseImage, "digest-pinned pause image for the sandbox container")
 	cmd.Flags().StringVar(&cfg.SnapshotsBucket, "snapshots-bucket", "", "object-storage bucket (with prefix) for actor snapshots (e.g. gs://bucket/snapshots/)")
 	cmd.Flags().Int32Var(&cfg.Replicas, "replicas", 10, "number of pre-warmed worker pool pods")
-	cmd.Flags().Int32Var(&cfg.WorkerReplicas, "worker-replicas", 1, "number of worker daemon deployment replicas")
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (e.g. env_...)")
 	cmd.Flags().StringVar(&cfg.EnvironmentKey, "anthropic-env-key", "", "Anthropic environment key")
 	cmd.Flags().StringVar(&cfg.APIKey, "anthropic-api-key", "", "Anthropic API key")
-	cmd.Flags().StringVar(&cfg.Workdir, "workdir", DefaultWorkdir, "working directory for tool execution")
 	cmd.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", DefaultAtenetRouterAddr, "Substrate atenet HTTP router endpoint")
 
@@ -152,6 +131,7 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 // BuildManifests constructs all Kubernetes and Substrate objects in apply order.
 func BuildManifests(cfg Config) []any {
 	cfg.Defaults()
+
 	return []any{
 		BuildNamespace(cfg),
 		BuildSecret(cfg),
@@ -200,7 +180,7 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 			Kind:       "WorkerPool",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cfg.WorkerPool,
+			Name:      DefaultWorkerPool,
 			Namespace: cfg.Namespace,
 			Labels: map[string]string{
 				"workload": cfg.Template,
@@ -215,26 +195,6 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 
 // BuildActorTemplate constructs the Substrate ActorTemplate CRD.
 func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
-	var envVars []atev1alpha1.EnvVar
-	if cfg.EnvironmentID != "" {
-		envVars = append(envVars, atev1alpha1.EnvVar{
-			Name:  "ANTHROPIC_ENVIRONMENT_ID",
-			Value: &cfg.EnvironmentID,
-		})
-	}
-	if cfg.EnvironmentKey != "" {
-		envVars = append(envVars, atev1alpha1.EnvVar{
-			Name:  "ANTHROPIC_ENVIRONMENT_KEY",
-			Value: &cfg.EnvironmentKey,
-		})
-	}
-	if cfg.APIKey != "" {
-		envVars = append(envVars, atev1alpha1.EnvVar{
-			Name:  "ANTHROPIC_API_KEY",
-			Value: &cfg.APIKey,
-		})
-	}
-
 	return &atev1alpha1.ActorTemplate{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: atev1alpha1.GroupVersion.String(),
@@ -245,7 +205,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 			Namespace: cfg.Namespace,
 		},
 		Spec: atev1alpha1.ActorTemplateSpec{
-			PauseImage: cfg.PauseImage,
+			PauseImage: DefaultPauseImage,
 			WorkerSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"workload": cfg.Template,
@@ -255,7 +215,6 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 				Name:    "worker",
 				Image:   cfg.WorkerImage,
 				Command: []string{"ate-antworker", "worker"},
-				Env:     envVars,
 				Readyz: &atev1alpha1.ContainerReadyz{
 					HTTPGet: &atev1alpha1.HTTPGetAction{
 						Path: "/healthz",
@@ -273,7 +232,8 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 // BuildWorkerDeployment constructs the Kubernetes Deployment for the worker daemon.
 func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 	labels := map[string]string{"app": DefaultDeploymentName}
-	replicas := cfg.WorkerReplicas
+	replicas := int32(1)
+
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -301,16 +261,6 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 								},
 							},
 						}},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "workspace",
-							MountPath: cfg.Workdir,
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "workspace",
-						VolumeSource: corev1.VolumeSource{
-							EmptyDir: &corev1.EmptyDirVolumeSource{},
-						},
 					}},
 				},
 			},
