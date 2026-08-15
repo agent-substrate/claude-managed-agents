@@ -14,8 +14,8 @@ import (
 var version = "0.1.0"
 
 func newRootCommand() *cobra.Command {
-	cfg := worker.Config{}
 	var req worker.DispatchRequest
+	var qopts queueOptions
 
 	root := &cobra.Command{
 		Use:           "ate-antworker",
@@ -25,15 +25,16 @@ When executed without subcommands, it serves the dispatch command (for 'ant beta
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDispatch(cmd.Context(), cfg, req)
+			return runDispatch(cmd.Context(), req, qopts)
 		},
 	}
 
-	registerDispatchFlags(root, &cfg, &req)
+	registerDispatchFlags(root, &req, &qopts)
 
 	root.AddCommand(newManifestCommand())
 	root.AddCommand(newWorkerCommand())
 	root.AddCommand(newDispatchCommand())
+	root.AddCommand(newConsumeCommand())
 
 	root.AddCommand(&cobra.Command{
 		Use:   "version",

@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/agent-substrate/claude-managed-agents/internal/queue"
+	"github.com/alicebob/miniredis/v2"
 )
 
 func TestDispatchCommandHelp(t *testing.T) {
@@ -23,13 +27,46 @@ func TestDispatchCommandHelp(t *testing.T) {
 		"Dispatch acts as a hook target for 'ant beta:worker poll --on-work'",
 		"--work-id",
 		"--session-id",
-		"--wait",
-		"--ateapi-addr",
-		"--atenet-router-addr",
+		"--redis-addr",
+		"--queue-prefix",
 	} {
 		if !strings.Contains(out, expected) {
 			t.Errorf("dispatch help output missing %q:\n%s", expected, out)
 		}
+	}
+}
+
+func TestDispatchQueuesWorkItem(t *testing.T) {
+	server := miniredis.RunT(t)
+
+	cmd := newDispatchCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{
+		"--work-id", "work_test_1",
+		"--session-id", "sesn_test_1",
+		"--redis-addr", server.Addr(),
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("dispatch with a queue: %v", err)
+	}
+
+	// The hook must only enqueue: no actor is touched, so this succeeds with no
+	// Substrate cluster reachable at all.
+	q := queue.NewRedis(queue.RedisConfig{Addr: server.Addr()})
+	defer q.Close()
+
+	lease, err := q.Claim(context.Background())
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("no work item was queued")
+	}
+	if lease.Event.WorkID != "work_test_1" || lease.Event.SessionID != "sesn_test_1" {
+		t.Errorf("queued %+v, want work_test_1/sesn_test_1", lease.Event)
 	}
 }
 
