@@ -133,7 +133,7 @@ func streamEvents(stream *ssestream.Stream[anthropic.BetaManagedAgentsStreamSess
 
 		switch v := event.AsAny().(type) {
 		case anthropic.BetaManagedAgentsAgentThinkingEvent:
-			fmt.Printf("\n  🧠 thinking...\n")
+			fmt.Printf("\n🧠 thinking...\n")
 
 		case anthropic.BetaManagedAgentsAgentToolUseEvent,
 			anthropic.BetaManagedAgentsAgentCustomToolUseEvent,
@@ -177,9 +177,9 @@ func streamEvents(stream *ssestream.Stream[anthropic.BetaManagedAgentsStreamSess
 }
 
 func printToolUse(rawJSON string) {
-	fmt.Printf("\n  ⚒ tool call\n%s\n", rawJSON)
+	fmt.Printf("\n⚒ tool call\n%s\n", rawJSON)
 }
 
 func printToolResult(rawJSON string) {
-	fmt.Printf("\n  ↳ tool result\n%s\n", rawJSON)
+	fmt.Printf("\n↳ tool result\n%s\n", rawJSON)
 }
