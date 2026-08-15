@@ -9,14 +9,14 @@ This project enables Claude Managed Agents to run bash commands, file operations
 ### Components
 
 - **Poller Deployment**: An always-on service in your cluster running `ant beta:worker poll --on-work ate-antworker`. It fetches incoming work items and synchronously dispatches them.
-- **Worker Pool**: A set of microVM/gVisor runners that sandbox actors are scheduled onto.
+- **Worker Pool**: A pool of worker runners that sandbox actors are scheduled onto.
 - **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across turns via snapshots.
 
 ### How It Works
 
 1. **Poll**: The poller fetches a work item from Claude Managed Agents.
 2. **Dispatch**: The poller hook invokes `ate-antworker`, which resumes or registers the corresponding session actor via the Substrate atenet router.
-3. **Execute**: The worker daemon inside the microVM runs `ant beta:worker run`, executing tool calls and streaming results back to Anthropic.
+3. **Run**: The worker daemon inside the sandbox runs `ant beta:worker run`, executing tool calls and streaming results back to Anthropic.
 4. **Suspend**: When the work item completes, the actor is suspended to save a snapshot to object storage and free the worker pool slot.
 
 ```
@@ -33,10 +33,10 @@ This project enables Claude Managed Agents to run bash commands, file operations
 │                                 │ 2. dispatch to actor             │
 │                                 ▼                                  │
 │    ╭─────────────────────────╮  ╭─────────────────────────────╮    │
-│    │ Substrate WorkerPool    │  │ Sandbox Actor (per session) │    │
-│    │ microVM / gVisor        ├─►│ ate-antworker worker        │    │
-│    │ runners                 │  │ ant beta:worker run         │    │
-│    ╰─────────────────────────╯  ╰─────────────────────────────╯    │
+│    │ Substrate WorkerPool    ├─►│ Sandbox Actor (per session) │    │
+│    ╰─────────────────────────╯  │   ate-antworker worker      │    │
+│                                 │   ant beta:worker run       │    │
+│                                 ╰─────────────────────────────╯    │
 │                                 3. run tools, stream results       │
 │                                 4. suspend actor to snapshot       │
 ╰────────────────────────────────────────────────────────────────────╯
