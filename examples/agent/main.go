@@ -69,14 +69,8 @@ func main() {
 
 	sendPrompt(ctx, &client, session.ID, prompt)
 
-	var sessionErr string
-	streamEvents(stream, &sessionErr)
-
-	if err := stream.Err(); err != nil {
-		log.Fatalf("stream error: %v", err)
-	}
-	if sessionErr != "" {
-		log.Fatalf("session error: %s", sessionErr)
+	if err := streamEvents(stream); err != nil {
+		log.Fatal(err)
 	}
 }
 
@@ -162,9 +156,10 @@ func sendPrompt(ctx context.Context, client *anthropic.Client, sessionID, prompt
 	}
 }
 
-// streamEvents renders the session's events until it stops for good, recording
-// any session error it reports.
-func streamEvents(stream *ssestream.Stream[anthropic.BetaManagedAgentsStreamSessionEventsUnion], sessionErr *string) {
+// streamEvents renders the session's events until it stops for good, returning
+// whatever ended it: an error the session reported, an error reading the
+// stream, or nil once the agent is done.
+func streamEvents(stream *ssestream.Stream[anthropic.BetaManagedAgentsStreamSessionEventsUnion]) error {
 	for stream.Next() {
 		event := stream.Current()
 
@@ -196,20 +191,21 @@ func streamEvents(stream *ssestream.Stream[anthropic.BetaManagedAgentsStreamSess
 			// confirmation or a custom tool result. Any stop reason other than
 			// requires_action means it has stopped for good.
 			if v.StopReason.Type != "requires_action" {
-				return
+				return nil
 			}
 
 		case anthropic.BetaManagedAgentsSessionStatusTerminatedEvent:
-			return
+			return nil
 
 		case anthropic.BetaManagedAgentsSessionErrorEvent:
-			*sessionErr = v.Error.Message
-			return
+			return fmt.Errorf("session error: %s", v.Error.Message)
 
 		default:
 			// do nothing
 		}
 	}
+
+	return stream.Err()
 }
 
 func printToolUse(rawJSON string) {
