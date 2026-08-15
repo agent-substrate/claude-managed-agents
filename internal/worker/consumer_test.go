@@ -53,7 +53,6 @@ func runConsumers(t *testing.T, n int, cfg ConsumerConfig) {
 	t.Helper()
 
 	cfg.Logger = discardLogger()
-	cfg.Dispatch.EnvironmentID = "env_test"
 	cfg.Dispatch.Logger = cfg.Logger
 
 	ctx, cancel := context.WithCancel(context.Background())

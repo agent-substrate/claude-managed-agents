@@ -155,10 +155,6 @@ func (q *RedisQueue) Enqueue(ctx context.Context, ev Event) error {
 	if ev.ID == "" {
 		ev.ID = newID()
 	}
-	if ev.EnqueuedAt.IsZero() {
-		ev.EnqueuedAt = time.Now().UTC()
-	}
-
 	if q.dedupTTL > 0 {
 		fresh, err := q.client.SetNX(ctx, q.key("seen:"+ev.WorkID), ev.ID, q.dedupTTL).Result()
 		if err != nil {

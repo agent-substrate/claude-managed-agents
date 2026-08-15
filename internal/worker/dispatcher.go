@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -26,25 +25,18 @@ import (
 const (
 	DefaultNamespace        = "ate-antworker"
 	DefaultTemplate         = "ate-antworker-actor-template"
-	DefaultWorkdir          = "/workspace"
 	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
 	DefaultAtenetRouterAddr = "atenet-router.ate-system.svc.cluster.local:80"
 	DefaultSuspendTimeout   = 30 * time.Second
-	DefaultIdleTimeout      = 30 * time.Second
 )
 
 // Config defines the configuration for Substrate actor dispatching.
 type Config struct {
-	EnvironmentID    string
-	EnvironmentKey   string
-	APIKey           string
 	AteapiAddr       string
 	AtenetRouterAddr string
 	Namespace        string
 	Template         string
-	Workdir          string
 	Insecure         bool
-	IdleTimeout      time.Duration
 	Logger           *slog.Logger
 
 	// AteClient can be provided to override the default gRPC client (e.g. in tests).
@@ -59,44 +51,22 @@ func (c *Config) Defaults() {
 	if c.Template == "" {
 		c.Template = DefaultTemplate
 	}
-	if c.Workdir == "" {
-		if _, err := os.Stat(DefaultWorkdir); err == nil {
-			c.Workdir = DefaultWorkdir
-		} else {
-			c.Workdir = "."
-		}
-	}
 	if c.AteapiAddr == "" {
 		c.AteapiAddr = DefaultAteapiAddr
 	}
 	if c.AtenetRouterAddr == "" {
 		c.AtenetRouterAddr = DefaultAtenetRouterAddr
 	}
-	if c.IdleTimeout <= 0 {
-		c.IdleTimeout = DefaultIdleTimeout
-	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
 }
 
-// Validate ensures required configuration fields are set.
-func (c *Config) Validate() error {
-	c.Defaults()
-	if c.EnvironmentID == "" {
-		return errors.New("EnvironmentID is required")
-	}
-	return nil
-}
-
 // DispatchRequest contains the work item details to dispatch to a Substrate actor.
 type DispatchRequest struct {
-	WorkID         string        `json:"work_id"`
-	SessionID      string        `json:"session_id"`
-	EnvironmentID  string        `json:"environment_id,omitempty"`
-	EnvironmentKey string        `json:"environment_key,omitempty"`
-	Wait           bool          `json:"wait"`
-	IdleTimeout    time.Duration `json:"idle_timeout,omitempty"`
+	WorkID    string `json:"work_id"`
+	SessionID string `json:"session_id"`
+	Wait      bool   `json:"wait"`
 }
 
 // DispatchWork receives a single Anthropic work item (e.g. from 'ant beta:worker poll --on-work')

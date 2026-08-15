@@ -60,7 +60,6 @@ Run it as its own Deployment, scaled with replicas.`,
 	cmd.Flags().StringVar(&cfg.Namespace, "namespace", worker.DefaultNamespace, "Substrate atespace / namespace")
 	cmd.Flags().StringVar(&cfg.Template, "template", worker.DefaultTemplate, "Substrate ActorTemplate name")
 	cmd.Flags().BoolVar(&cfg.Insecure, "insecure", false, "Use plaintext gRPC connection to ateapi")
-	cmd.Flags().DurationVar(&cfg.IdleTimeout, "idle-timeout", worker.DefaultIdleTimeout, "Max idle duration before considering the work item complete")
 
 	return cmd
 }

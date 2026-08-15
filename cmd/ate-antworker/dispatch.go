@@ -13,12 +13,6 @@ import (
 // enqueueTimeout bounds how long the poller hook may spend queueing a work item.
 const enqueueTimeout = 10 * time.Second
 
-func registerDispatchFlags(cmd *cobra.Command, req *worker.DispatchRequest, qopts *queueOptions) {
-	registerQueueFlags(cmd, qopts)
-	cmd.Flags().StringVar(&req.WorkID, "work-id", "", "Anthropic work ID (or $ANTHROPIC_WORK_ID)")
-	cmd.Flags().StringVar(&req.SessionID, "session-id", "", "Anthropic session ID (or $ANTHROPIC_SESSION_ID)")
-}
-
 func runDispatch(ctx context.Context, req worker.DispatchRequest, qopts queueOptions) error {
 	// Read from environment variables if not passed via flags
 	if req.WorkID == "" {
@@ -26,9 +20,6 @@ func runDispatch(ctx context.Context, req worker.DispatchRequest, qopts queueOpt
 	}
 	if req.SessionID == "" {
 		req.SessionID = os.Getenv("ANTHROPIC_SESSION_ID")
-	}
-	if req.EnvironmentID == "" {
-		req.EnvironmentID = os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
 	}
 
 	if req.WorkID == "" {
@@ -73,6 +64,8 @@ and the work being done.`,
 		},
 	}
 
-	registerDispatchFlags(cmd, &req, &qopts)
+	registerQueueFlags(cmd, &qopts)
+	cmd.Flags().StringVar(&req.WorkID, "work-id", "", "Anthropic work ID (or $ANTHROPIC_WORK_ID)")
+	cmd.Flags().StringVar(&req.SessionID, "session-id", "", "Anthropic session ID (or $ANTHROPIC_SESSION_ID)")
 	return cmd
 }

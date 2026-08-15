@@ -49,7 +49,6 @@ func NewWorker(logger *slog.Logger) *Worker {
 func (w *Worker) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/dispatch", w.handleDispatch)
-	mux.HandleFunc("/start", w.handleDispatch) // backwards compatibility alias
 	mux.HandleFunc("/healthz", w.handleHealthz)
 	mux.HandleFunc("/readyz", w.handleHealthz)
 	return mux

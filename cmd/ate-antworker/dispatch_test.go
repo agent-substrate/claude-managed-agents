@@ -70,17 +70,22 @@ func TestDispatchQueuesWorkItem(t *testing.T) {
 	}
 }
 
-func TestRootCommandMissingWorkID(t *testing.T) {
+func TestDispatchMissingWorkID(t *testing.T) {
 	t.Setenv("ANTHROPIC_WORK_ID", "")
 	t.Setenv("ANTHROPIC_SESSION_ID", "")
-	cmd := newRootCommand()
+	cmd := newDispatchCommand()
 
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{})
 
-	if err := cmd.Execute(); err == nil {
-		t.Error("expected error when work ID is missing on root command, got nil")
+	// It must fail on the missing work ID, before ever reaching Redis.
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected an error when the work ID is missing, got nil")
+	}
+	if !strings.Contains(err.Error(), "work ID is required") {
+		t.Errorf("error = %v, want it to name the missing work ID", err)
 	}
 }

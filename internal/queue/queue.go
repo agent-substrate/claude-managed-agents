@@ -50,8 +50,6 @@ type Event struct {
 	WorkID    string `json:"work_id"`
 	SessionID string `json:"session_id,omitempty"`
 
-	EnqueuedAt time.Time `json:"enqueued_at"`
-
 	// Attempts counts how many times the event was claimed and left unfinished.
 	// Exhausting them moves the event to the dead-letter list.
 	Attempts int `json:"attempts"`

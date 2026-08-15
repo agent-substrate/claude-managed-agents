@@ -146,8 +146,7 @@ func (c *Consumer) handle(ctx context.Context, lease *queue.Lease) {
 		SessionID: ev.Session(),
 		// Wait for the work to finish and suspend the actor, freeing its
 		// WorkerPool slot.
-		Wait:        true,
-		IdleTimeout: c.cfg.Dispatch.IdleTimeout,
+		Wait: true,
 	})
 	if err != nil {
 		log.Error("Queued work item failed; leaving it to be reclaimed",

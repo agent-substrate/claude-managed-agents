@@ -45,16 +45,9 @@ func TestActorName(t *testing.T) {
 	}
 }
 
-func TestConfigValidate(t *testing.T) {
+func TestConfigDefaults(t *testing.T) {
 	cfg := Config{}
-	if err := cfg.Validate(); err == nil {
-		t.Error("expected error for empty Config, got nil")
-	}
-
-	cfg.EnvironmentID = "env_123"
-	if err := cfg.Validate(); err != nil {
-		t.Errorf("unexpected error for valid Config: %v", err)
-	}
+	cfg.Defaults()
 
 	if cfg.Namespace != DefaultNamespace {
 		t.Errorf("namespace = %q, want %q", cfg.Namespace, DefaultNamespace)
@@ -62,11 +55,14 @@ func TestConfigValidate(t *testing.T) {
 	if cfg.Template != DefaultTemplate {
 		t.Errorf("template = %q, want %q", cfg.Template, DefaultTemplate)
 	}
-	if cfg.Workdir != DefaultWorkdir && cfg.Workdir != "." {
-		t.Errorf("workdir = %q, want %q or '.'", cfg.Workdir, DefaultWorkdir)
-	}
 	if cfg.AteapiAddr != DefaultAteapiAddr {
 		t.Errorf("ateapiAddr = %q, want %q", cfg.AteapiAddr, DefaultAteapiAddr)
+	}
+	if cfg.AtenetRouterAddr != DefaultAtenetRouterAddr {
+		t.Errorf("atenetRouterAddr = %q, want %q", cfg.AtenetRouterAddr, DefaultAtenetRouterAddr)
+	}
+	if cfg.Logger == nil {
+		t.Error("logger = nil, want a default logger")
 	}
 }
 
@@ -239,9 +235,6 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 	defer mockRouter.Close()
 
 	cfg := Config{
-		EnvironmentID:    "env_test_123",
-		EnvironmentKey:   "key_test_123",
-		APIKey:           "key_test_123",
 		AteClient:        fakeClient,
 		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
 		Namespace:        "ate-antworker",
@@ -287,12 +280,7 @@ func TestEnsureActorErrorPropagation(t *testing.T) {
 	fakeClient := newFakeControlClient()
 	fakeClient.createErr = status.Error(codes.Internal, "internal substrate error")
 
-	cfg := Config{
-		EnvironmentID:  "env_test_123",
-		EnvironmentKey: "key_test_123",
-		APIKey:         "key_test_123",
-		AteClient:      fakeClient,
-	}
+	cfg := Config{AteClient: fakeClient}
 	cfg.Defaults()
 
 	actorRef := &ateapipb.ObjectRef{

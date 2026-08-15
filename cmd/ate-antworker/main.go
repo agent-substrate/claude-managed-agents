@@ -5,31 +5,20 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/agent-substrate/claude-managed-agents/internal/worker"
 	"github.com/spf13/cobra"
 )
 
 var version = "0.1.0"
 
 func newRootCommand() *cobra.Command {
-	var req worker.DispatchRequest
-	var qopts queueOptions
-
 	root := &cobra.Command{
 		Use:           "ate-antworker",
 		Short:         "Deploy and manage Anthropic workers on Agent Substrate",
-		Long: `ate-antworker dispatches Anthropic work items to Substrate actors.
-When executed without subcommands, it serves the dispatch command (for 'ant beta:worker poll --on-work ate-antworker').`,
+		Long:          `ate-antworker queues Anthropic work items and runs them on Substrate actors.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDispatch(cmd.Context(), req, qopts)
-		},
 	}
-
-	registerDispatchFlags(root, &req, &qopts)
 
 	root.AddCommand(newManifestCommand())
 	root.AddCommand(newWorkerCommand())
@@ -48,17 +37,7 @@ When executed without subcommands, it serves the dispatch command (for 'ant beta
 }
 
 func main() {
-	if len(os.Args) > 0 && filepath.Base(os.Args[0]) == "ate-antworker-dispatch" {
-		cmd := newDispatchCommand()
-		if err := cmd.Execute(); err != nil {
-			fmt.Fprintf(os.Stderr, "ate-antworker-dispatch: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	root := newRootCommand()
-	if err := root.Execute(); err != nil {
+	if err := newRootCommand().Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "ate-antworker: %v\n", err)
 		os.Exit(1)
 	}
