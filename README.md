@@ -103,7 +103,7 @@ go install github.com/agent-substrate/claude-managed-agents/cmd/ate-antworker@la
 
 # Generate deployment YAML and apply to Kubernetes
 ate-antworker manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/anthropic-worker@sha256:73b3f624137c4334c5f351799ec8d943a60beea7b037a958aca9858bb44852d1 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:31b8bf93926ac28208b2659e3aa98b0199b695f241a823df2b9df511095a4c29 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
@@ -152,11 +152,6 @@ go run ./examples/agent \
 go run ./examples/agent \
   --agent "agent_..." \
   --prompt "Show the kernel version."
-
-# 4. Continue an earlier session — its sandbox and history are still there
-go run ./examples/agent \
-  --session "sesn_..." \
-  --prompt "Now show the free disk space."
 ```
 
 ## Work Queue
@@ -193,33 +188,19 @@ managed or replicated Redis for a stronger guarantee.
 
 ## Running Locally
 
-To run the poller, queue, and dispatcher locally for development or testing:
+To shell into the container locally with your Anthropic environment variables:
 
 ```bash
-# 1. Port-forward ateapi and router
-kubectl port-forward svc/api 8443:443 -n ate-system &
-kubectl port-forward svc/atenet-router 8080:80 -n ate-system &
-
-# 2. Start a local Redis
-podman run -d --name ate-antworker-redis -p 6379:6379 redis:7.4-alpine \
-  redis-server --appendonly yes
-
-# 3. Run poller; the hook only queues work
-ant beta:worker poll \
-  --environment-id "$ANTHROPIC_ENVIRONMENT_ID" \
-  --environment-key "$ANTHROPIC_ENVIRONMENT_KEY" \
-  --on-work "ate-antworker queue --redis-addr localhost:6379"
-
-# 4. In another shell, run the dispatcher
-ate-antworker dispatch \
-  --redis-addr localhost:6379 \
-  --ateapi-addr localhost:8443 \
-  --atenet-router-addr localhost:8080 \
-  --insecure
+podman run -it --rm \
+  --entrypoint bash \
+  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  -e ANTHROPIC_ENVIRONMENT_ID="$ANTHROPIC_ENVIRONMENT_ID" \
+  -e ANTHROPIC_ENVIRONMENT_KEY="$ANTHROPIC_ENVIRONMENT_KEY" \
+  gcr.io/dberkov-gke-dev3/ate-antworker@sha256:31b8bf93926ac28208b2659e3aa98b0199b695f241a823df2b9df511095a4c29
 ```
 
-Every polled event goes through the queue: `ate-antworker queue` never contacts
-an actor itself, so the poller cannot be the thing that loses work.
+Inside the container:
+- **Run worker manually**: `ant beta:worker run --work-id "<work-id>" --session-id "<session-id>"`
 
 ## Manifest Reference
 

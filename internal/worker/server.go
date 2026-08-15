@@ -116,7 +116,18 @@ func (w *Worker) StartWork(ctx context.Context, workID, sessionID string) error 
 		bin = "ant"
 	}
 
-	args := []string{"beta:worker", "run", "--work-id", workID, "--session-id", sessionID}
+	args := []string{
+		"beta:worker", "run",
+		"--work-id", workID,
+		"--session-id", sessionID,
+	}
+	if envID := os.Getenv("ANTHROPIC_ENVIRONMENT_ID"); envID != "" {
+		args = append(args, "--environment-id", envID)
+	}
+	if envKey := os.Getenv("ANTHROPIC_ENVIRONMENT_KEY"); envKey != "" {
+		args = append(args, "--environment-key", envKey)
+	}
+
 	w.logger.Info("Running ant worker process",
 		slog.String("binary", bin),
 		slog.Any("args", args),

@@ -163,8 +163,8 @@ func TestBuildManifests(t *testing.T) {
 
 	// The poller only queues work items; it must not dispatch them itself.
 	poll := strings.Join(workerContainer.Command, " ")
-	if !strings.Contains(poll, "ate-antworker queue --redis-addr "+cfg.QueueAddr()) {
-		t.Errorf("poller command = %v, want the --on-work hook to enqueue to %s", workerContainer.Command, cfg.QueueAddr())
+	if !strings.Contains(poll, "--on-work ate-antworker") {
+		t.Errorf("poller command = %v, want --on-work ate-antworker", workerContainer.Command)
 	}
 }
 

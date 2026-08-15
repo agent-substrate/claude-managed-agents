@@ -11,6 +11,16 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type redisLogger struct{}
+
+func (redisLogger) Printf(ctx context.Context, format string, v ...interface{}) {
+	slog.Debug(fmt.Sprintf(format, v...))
+}
+
+func init() {
+	redis.SetLogger(redisLogger{})
+}
+
 // DefaultAddr is where the generated manifests put Redis.
 const DefaultAddr = "ate-antworker-redis:6379"
 

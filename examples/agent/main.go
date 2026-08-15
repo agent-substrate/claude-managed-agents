@@ -15,10 +15,9 @@ import (
 
 func main() {
 	var (
-		prompt    string
-		model     string
-		agentID   string
-		sessionID string
+		prompt  string
+		model   string
+		agentID string
 	)
 	defaultModel := os.Getenv("ANTHROPIC_MODEL")
 	if defaultModel == "" {
@@ -28,7 +27,6 @@ func main() {
 	flag.StringVar(&prompt, "prompt", "Run `uname -a` in bash and show the output.", "prompt to execute in the sandbox")
 	flag.StringVar(&model, "model", defaultModel, "Anthropic model to power the agent")
 	flag.StringVar(&agentID, "agent", "", "existing agent to reuse; a new agent is created when empty")
-	flag.StringVar(&sessionID, "session", "", "send the prompt to an existing session instead of starting one (--agent and --model are ignored)")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -36,27 +34,9 @@ func main() {
 	// 'ant auth login' profile, then workload identity federation.
 	client := anthropic.NewClient()
 
-	// Sessions are stateful: pass --session to continue an earlier one, and the
-	// agent keeps every turn of context it already had.
-	var session *anthropic.BetaManagedAgentsSession
-	var err error
-	if sessionID != "" {
-		session, err = client.Beta.Sessions.Get(ctx, sessionID, anthropic.BetaSessionGetParams{})
-		if err != nil {
-			log.Fatalf("failed to load session %s: %v", sessionID, err)
-		}
-		if session.Status == anthropic.BetaManagedAgentsSessionStatusTerminated {
-			log.Fatalf("session %s is terminated and cannot accept new messages", session.ID)
-		}
-		fmt.Printf("● Continuing session  (%s)\n", session.Status)
-		fmt.Printf("  agent    %s\n", session.Agent.ID)
-		fmt.Printf("  model    %s\n", session.Agent.Model.ID)
-	} else {
-		session = startSession(ctx, &client, agentID, model)
-	}
+	session := startSession(ctx, &client, agentID, model, prompt)
 
 	fmt.Printf("  session  %s\n", session.ID)
-	fmt.Printf("  resume   --session %s\n", session.ID)
 	fmt.Printf("  trace    https://platform.claude.com/workspaces/default/sessions/%s\n", session.ID)
 
 	fmt.Printf("\n▸ %s\n", prompt)
@@ -67,16 +47,14 @@ func main() {
 	stream := client.Beta.Sessions.Events.StreamEvents(ctx, session.ID, anthropic.BetaSessionEventStreamParams{})
 	defer stream.Close()
 
-	sendPrompt(ctx, &client, session.ID, prompt)
-
 	if err := streamEvents(stream); err != nil {
 		log.Fatal(err)
 	}
 }
 
 // startSession creates the agent (unless one was supplied) and opens a session
-// on the self-hosted environment.
-func startSession(ctx context.Context, client *anthropic.Client, agentID, model string) *anthropic.BetaManagedAgentsSession {
+// on the self-hosted environment with initial events.
+func startSession(ctx context.Context, client *anthropic.Client, agentID, model, prompt string) *anthropic.BetaManagedAgentsSession {
 	envID := os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
 	if envID == "" {
 		log.Fatal("Error: ANTHROPIC_ENVIRONMENT_ID environment variable is required.\nExport it with: export ANTHROPIC_ENVIRONMENT_ID=\"env_...\"")
@@ -124,18 +102,7 @@ func startSession(ctx context.Context, client *anthropic.Client, agentID, model 
 			OfString: param.NewOpt(agentID),
 		},
 		EnvironmentID: envID,
-	})
-	if err != nil {
-		log.Fatalf("failed to create session: %v", err)
-	}
-	return session
-}
-
-// sendPrompt delivers the prompt as a user message, which starts a new session
-// working or wakes an idle one.
-func sendPrompt(ctx context.Context, client *anthropic.Client, sessionID, prompt string) {
-	_, err := client.Beta.Sessions.Events.Send(ctx, sessionID, anthropic.BetaSessionEventSendParams{
-		Events: []anthropic.BetaManagedAgentsEventParamsUnion{
+		InitialEvents: []anthropic.BetaSessionNewParamsInitialEventUnion{
 			{
 				OfUserMessage: &anthropic.BetaManagedAgentsUserMessageEventParams{
 					Type: "user.message",
@@ -152,8 +119,9 @@ func sendPrompt(ctx context.Context, client *anthropic.Client, sessionID, prompt
 		},
 	})
 	if err != nil {
-		log.Fatalf("failed to send event: %v", err)
+		log.Fatalf("failed to create session: %v", err)
 	}
+	return session
 }
 
 // streamEvents renders the session's events until it stops for good, returning

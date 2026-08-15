@@ -89,3 +89,29 @@ func TestQueueMissingWorkID(t *testing.T) {
 		t.Errorf("error = %v, want it to name the missing work ID", err)
 	}
 }
+
+func TestRedisConfigOpenSuccess(t *testing.T) {
+	server := miniredis.RunT(t)
+
+	rcfg := redisConfig{Addr: server.Addr()}
+	q, err := rcfg.Open(context.Background())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer q.Close()
+
+	if err := q.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+}
+
+func TestRedisConfigOpenCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rcfg := redisConfig{Addr: "127.0.0.1:1"}
+	_, err := rcfg.Open(ctx)
+	if err == nil {
+		t.Fatal("expected error on canceled context, got nil")
+	}
+}

@@ -12,7 +12,7 @@ import (
 
 func newDispatchCommand() *cobra.Command {
 	cfg := worker.Config{}
-	var ropts redisOptions
+	var rcfg redisConfig
 
 	cmd := &cobra.Command{
 		Use:   "dispatch",
@@ -31,7 +31,7 @@ Run it as its own Deployment, scaled with replicas.`,
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			q, err := ropts.Open(ctx)
+			q, err := rcfg.Open(ctx)
 			if err != nil {
 				return err
 			}
@@ -53,7 +53,7 @@ Run it as its own Deployment, scaled with replicas.`,
 		},
 	}
 
-	registerRedisFlags(cmd, &ropts)
+	registerRedisFlags(cmd, &rcfg)
 
 	cmd.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", worker.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", worker.DefaultAtenetRouterAddr, "Substrate atenet HTTP router endpoint")

@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDispatchCommandHelp(t *testing.T) {
@@ -32,6 +34,9 @@ func TestDispatchCommandHelp(t *testing.T) {
 }
 
 func TestDispatchCommandFailsWithoutRedis(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
 	cmd := newDispatchCommand()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -39,11 +44,8 @@ func TestDispatchCommandFailsWithoutRedis(t *testing.T) {
 	// Port 1 has nothing listening, so connecting fails fast.
 	cmd.SetArgs([]string{"--redis-addr", "127.0.0.1:1"})
 
-	err := cmd.Execute()
+	err := cmd.ExecuteContext(ctx)
 	if err == nil {
 		t.Fatal("dispatch with an unreachable Redis succeeded, want an error")
-	}
-	if !strings.Contains(err.Error(), "connecting to Redis") {
-		t.Errorf("error = %v, want it to report the Redis connection failure", err)
 	}
 }

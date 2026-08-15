@@ -13,7 +13,7 @@ import (
 // enqueueTimeout bounds how long the poller hook may spend queueing a work item.
 const enqueueTimeout = 10 * time.Second
 
-func runQueue(ctx context.Context, req worker.DispatchRequest, ropts redisOptions) error {
+func runQueue(ctx context.Context, req worker.DispatchRequest, rcfg redisConfig) error {
 	// Read from environment variables if not passed via flags
 	if req.WorkID == "" {
 		req.WorkID = os.Getenv("ANTHROPIC_WORK_ID")
@@ -35,7 +35,7 @@ func runQueue(ctx context.Context, req worker.DispatchRequest, ropts redisOption
 	ctx, cancel := context.WithTimeout(ctx, enqueueTimeout)
 	defer cancel()
 
-	q, err := ropts.Open(ctx)
+	q, err := rcfg.Open(ctx)
 	if err != nil {
 		return err
 	}
@@ -46,7 +46,7 @@ func runQueue(ctx context.Context, req worker.DispatchRequest, ropts redisOption
 
 func newQueueCommand() *cobra.Command {
 	var req worker.DispatchRequest
-	var ropts redisOptions
+	var rcfg redisConfig
 
 	cmd := &cobra.Command{
 		Use:   "queue",
@@ -60,11 +60,11 @@ actor, and runs it, so a work item survives this process dying between the poll
 and the work being done.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueue(cmd.Context(), req, ropts)
+			return runQueue(cmd.Context(), req, rcfg)
 		},
 	}
 
-	registerRedisFlags(cmd, &ropts)
+	registerRedisFlags(cmd, &rcfg)
 	cmd.Flags().StringVar(&req.WorkID, "work-id", "", "Anthropic work ID (or $ANTHROPIC_WORK_ID)")
 	cmd.Flags().StringVar(&req.SessionID, "session-id", "", "Anthropic session ID (or $ANTHROPIC_SESSION_ID)")
 	return cmd

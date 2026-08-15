@@ -445,6 +445,7 @@ func BuildDispatcherDeployment(cfg Config) *appsv1.Deployment {
 func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 	labels := map[string]string{"app": DefaultDeploymentName}
 	replicas := int32(1)
+
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -465,7 +466,7 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 							"ant", "beta:worker", "poll",
 							// The hook only queues the work item; the dispatcher
 							// Deployment resumes the actor and runs the work item.
-							"--on-work", "ate-antworker queue --redis-addr " + cfg.QueueAddr(),
+							"--on-work", "ate-antworker",
 						},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
