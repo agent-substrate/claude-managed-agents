@@ -204,17 +204,20 @@ func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string,
 
 	args := []string{
 		"beta:worker", "run",
-		"--work-id", sessionID,
-		"--session-id", sessionID,
 		"--unrestricted-paths",
 		"--max-idle", "30s",
-		"--base-url", baseURL,
 	}
+
+	env := append(os.Environ(),
+		"ANTHROPIC_SESSION_ID="+sessionID,
+		"ANTHROPIC_WORK_ID="+sessionID,
+		"ANTHROPIC_BASE_URL="+baseURL,
+	)
 	if req.EnvironmentID != "" {
-		args = append(args, "--environment-id", req.EnvironmentID)
+		env = append(env, "ANTHROPIC_ENVIRONMENT_ID="+req.EnvironmentID)
 	}
 	if req.EnvironmentKey != "" {
-		args = append(args, "--environment-key", req.EnvironmentKey)
+		env = append(env, "ANTHROPIC_ENVIRONMENT_KEY="+req.EnvironmentKey)
 	}
 
 	w.logger.Info("Running ant worker process",
@@ -228,7 +231,7 @@ func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string,
 	cmd.Stdout = io.MultiWriter(os.Stdout, &outBuf)
 	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
 	cmd.Stdin = os.Stdin
-	cmd.Env = os.Environ()
+	cmd.Env = env
 
 	err = cmd.Run()
 	stdout = outBuf.String()
