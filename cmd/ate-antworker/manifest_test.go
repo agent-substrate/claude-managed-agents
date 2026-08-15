@@ -142,8 +142,8 @@ func TestBuildManifests(t *testing.T) {
 	if len(template.Spec.Containers[0].Command) < 2 || template.Spec.Containers[0].Command[0] != "ate-antworker" || template.Spec.Containers[0].Command[1] != "worker" {
 		t.Errorf("template container command = %v, want ['ate-antworker', 'worker', ...]", template.Spec.Containers[0].Command)
 	}
-	if len(template.Spec.Containers[0].Env) != 2 {
-		t.Errorf("template container env count = %d, want 2", len(template.Spec.Containers[0].Env))
+	if len(template.Spec.Containers[0].Env) != 0 {
+		t.Errorf("template container env count = %d, want 0", len(template.Spec.Containers[0].Env))
 	}
 	if template.Spec.Containers[0].Readyz == nil || template.Spec.Containers[0].Readyz.HTTPGet == nil || template.Spec.Containers[0].Readyz.HTTPGet.Path != "/healthz" || template.Spec.Containers[0].Readyz.HTTPGet.Port != 80 {
 		t.Errorf("template container readyz = %+v, want path '/healthz' and port 80", template.Spec.Containers[0].Readyz)
@@ -210,13 +210,7 @@ func TestBuildManifestsWithAPIKey(t *testing.T) {
 	}
 
 	template := find[*atev1alpha1.ActorTemplate](t, objs, cfg.Template)
-	foundAPIKey := false
-	for _, env := range template.Spec.Containers[0].Env {
-		if env.Name == "ANTHROPIC_API_KEY" && *env.Value == "sk-ant-api03-test-key" {
-			foundAPIKey = true
-		}
-	}
-	if !foundAPIKey {
-		t.Errorf("expected ANTHROPIC_API_KEY in ActorTemplate env: %+v", template.Spec.Containers[0].Env)
+	if len(template.Spec.Containers[0].Env) != 0 {
+		t.Errorf("expected no env in ActorTemplate: %+v", template.Spec.Containers[0].Env)
 	}
 }

@@ -23,7 +23,9 @@ const (
 
 // WorkRequest is the JSON payload accepted by the worker HTTP server.
 type WorkRequest struct {
-	SessionID string `json:"session_id"`
+	SessionID      string `json:"session_id"`
+	EnvironmentID  string `json:"environment_id,omitempty"`
+	EnvironmentKey string `json:"environment_key,omitempty"`
 }
 
 // WorkResponse is the JSON payload returned by the worker HTTP server.
@@ -150,7 +152,7 @@ func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	stdout, stderr, err := w.StartWork(context.Background(), sessionID)
+	stdout, stderr, err := w.StartWork(context.Background(), payload)
 	if err != nil {
 		errMsg := err.Error()
 		if stderr != "" {
@@ -184,7 +186,8 @@ func (w *Worker) handleHealthz(rw http.ResponseWriter, req *http.Request) {
 }
 
 // StartWork executes 'ant beta:worker run --session-id <sessionID>' synchronously.
-func (w *Worker) StartWork(ctx context.Context, sessionID string) (stdout string, stderr string, err error) {
+func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string, stderr string, err error) {
+	sessionID := strings.TrimSpace(req.SessionID)
 	if sessionID == "" {
 		return "", "", errors.New("session_id is required")
 	}
@@ -207,11 +210,11 @@ func (w *Worker) StartWork(ctx context.Context, sessionID string) (stdout string
 		"--max-idle", "30s",
 		"--base-url", baseURL,
 	}
-	if envID := os.Getenv("ANTHROPIC_ENVIRONMENT_ID"); envID != "" {
-		args = append(args, "--environment-id", envID)
+	if req.EnvironmentID != "" {
+		args = append(args, "--environment-id", req.EnvironmentID)
 	}
-	if envKey := os.Getenv("ANTHROPIC_ENVIRONMENT_KEY"); envKey != "" {
-		args = append(args, "--environment-key", envKey)
+	if req.EnvironmentKey != "" {
+		args = append(args, "--environment-key", req.EnvironmentKey)
 	}
 
 	w.logger.Info("Running ant worker process",

@@ -71,7 +71,7 @@ func TestWorkerStartWorkMissingIDs(t *testing.T) {
 	w := NewWorker(nil)
 	w.antBinary = "true"
 
-	if _, _, err := w.StartWork(t.Context(), ""); err == nil {
+	if _, _, err := w.StartWork(t.Context(), WorkRequest{SessionID: ""}); err == nil {
 		t.Error("expected error when sessionID is empty, got nil")
 	}
 }
@@ -80,7 +80,11 @@ func TestWorkerStartWorkExecution(t *testing.T) {
 	w := NewWorker(nil)
 	w.antBinary = "true"
 
-	if _, _, err := w.StartWork(t.Context(), "sesn_test_123"); err != nil {
+	if _, _, err := w.StartWork(t.Context(), WorkRequest{
+		SessionID:      "sesn_test_123",
+		EnvironmentID:  "env_test_123",
+		EnvironmentKey: "key_test_123",
+	}); err != nil {
 		t.Fatalf("StartWork: %v", err)
 	}
 }

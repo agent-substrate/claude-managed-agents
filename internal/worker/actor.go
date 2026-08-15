@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -39,6 +40,8 @@ type Config struct {
 	Template         string
 	Insecure         bool
 	Logger           *slog.Logger
+	EnvironmentID    string
+	EnvironmentKey   string
 
 	// AteClient can be provided to override the default gRPC client (e.g. in tests).
 	AteClient ateapipb.ControlClient
@@ -57,6 +60,12 @@ func (c *Config) Defaults() {
 	}
 	if c.AtenetRouterAddr == "" {
 		c.AtenetRouterAddr = DefaultAtenetRouterAddr
+	}
+	if c.EnvironmentID == "" {
+		c.EnvironmentID = os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
+	}
+	if c.EnvironmentKey == "" {
+		c.EnvironmentKey = os.Getenv("ANTHROPIC_ENVIRONMENT_KEY")
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -237,9 +246,10 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 	}
 	url := fmt.Sprintf("%s/work", routerAddr)
 
-	payload := map[string]string{
-		"work_id":    workID,
-		"session_id": sessionID,
+	payload := WorkRequest{
+		SessionID:      sessionID,
+		EnvironmentID:  cfg.EnvironmentID,
+		EnvironmentKey: cfg.EnvironmentKey,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

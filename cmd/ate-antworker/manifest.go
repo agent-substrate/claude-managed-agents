@@ -195,26 +195,6 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 
 // BuildActorTemplate constructs the Substrate ActorTemplate CRD.
 func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
-	var envVars []atev1alpha1.EnvVar
-	if cfg.EnvironmentID != "" {
-		envVars = append(envVars, atev1alpha1.EnvVar{
-			Name:  "ANTHROPIC_ENVIRONMENT_ID",
-			Value: &cfg.EnvironmentID,
-		})
-	}
-	if cfg.EnvironmentKey != "" {
-		envVars = append(envVars, atev1alpha1.EnvVar{
-			Name:  "ANTHROPIC_ENVIRONMENT_KEY",
-			Value: &cfg.EnvironmentKey,
-		})
-	}
-	if cfg.APIKey != "" {
-		envVars = append(envVars, atev1alpha1.EnvVar{
-			Name:  "ANTHROPIC_API_KEY",
-			Value: &cfg.APIKey,
-		})
-	}
-
 	return &atev1alpha1.ActorTemplate{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: atev1alpha1.GroupVersion.String(),
@@ -235,7 +215,6 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 				Name:    "worker",
 				Image:   cfg.WorkerImage,
 				Command: []string{"ate-antworker", "worker"},
-				Env:     envVars,
 				Readyz: &atev1alpha1.ContainerReadyz{
 					HTTPGet: &atev1alpha1.HTTPGetAction{
 						Path: "/healthz",
