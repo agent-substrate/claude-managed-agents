@@ -204,7 +204,7 @@ func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string,
 
 	args := []string{
 		"beta:worker", "run",
-		"--unrestricted-paths",
+		"--unrestricted-paths", // TODO(jbd): Make this flag optional.
 		"--max-idle", "30s",
 	}
 
