@@ -63,12 +63,11 @@ If anything interrupts step 4, the claim lapses and the work item returns to `at
 
 ## Commands
 
-`ate-antworker` provides four subcommands:
+`ate-antworker` provides the following:
 
-1. **`ate-antworker manifest`**: Generates Kubernetes deployment YAML for Redis, the worker pool, sandbox template, poller Deployment, and consumer Deployment.
-2. **`ate-antworker dispatch`**: Hook target for **`ant beta:worker poll --on-work 'ate-antworker dispatch'`**. Appends the work item to the durable queue and returns.
-3. **`ate-antworker consume`**: Drains the queue (claims item and its session $\rightarrow$ wakes actor $\rightarrow$ runs the work $\rightarrow$ suspends actor $\rightarrow$ acknowledges item).
-4. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
+1. **`ate-antworker dispatch`**: Hook target for **`ant beta:worker poll --on-work 'ate-antworker dispatch'`**. Appends the work item to the durable queue and returns.
+2. **`ate-antworker consume`**: Drains the queue (claims item and its session $\rightarrow$ wakes actor $\rightarrow$ runs the work $\rightarrow$ suspends actor $\rightarrow$ acknowledges item).
+3. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
 
 ---
 
@@ -223,4 +222,9 @@ contacts an actor itself, so the poller cannot be the thing that loses work.
 | `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of microVM/gVisor runners for sandbox actors (10 replicas) |
 | `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
 | `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work "ate-antworker dispatch"` |
-| `ate-antworker-consumer` | `Deployment` | Queue consumers running `ate-antworker consume` (2 replicas) |
+| `ate-antworker-consumer` | `Deployment` | Queue consumers running `ate-antworker consume` (8 replicas) |
+
+## Roadmap
+
+- **Distribute prebuilt images** so deploying is one `kubectl apply` with no build step.
+- **Expose metrics** for queue depth, retries, and dead-lettered work items.
