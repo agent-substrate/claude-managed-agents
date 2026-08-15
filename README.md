@@ -147,6 +147,9 @@ export ANTHROPIC_ENVIRONMENT_ID="env_..."
 # 2. Run example
 go run ./examples/agent \
   --prompt "Run 'uname -a' in bash and show the output."
+
+# 3. Reuse the agent it created, instead of making a new one each run
+export ANTHROPIC_AGENT_ID="agent_..."
 ```
 
 ## Work Queue
