@@ -167,3 +167,4 @@ Inside the container:
 ## Roadmap
 
 - **Distribute prebuilt images** so deploying is one `kubectl apply` with no build step.
+- **Durable buffer for work items** so the crashed work can be retried.
