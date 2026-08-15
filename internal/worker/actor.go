@@ -252,7 +252,7 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 	if !strings.HasPrefix(routerAddr, "http://") && !strings.HasPrefix(routerAddr, "https://") {
 		routerAddr = "http://" + routerAddr
 	}
-	url := fmt.Sprintf("%s/dispatch", routerAddr)
+	url := fmt.Sprintf("%s/work", routerAddr)
 
 	payload := map[string]string{
 		"work_id":    workID,

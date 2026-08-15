@@ -11,9 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/yaml"
 )
 
@@ -26,14 +24,9 @@ const (
 	DefaultTemplate         = "ate-antworker-actor-template"
 	DefaultWorkerPool       = "ate-antworker-workerpool"
 	DefaultDeploymentName   = "ate-antworker"
-	DefaultDispatcherName   = "ate-antworker-dispatcher"
-	DefaultRedisName        = "ate-antworker-redis"
 	DefaultSecretName       = "ate-antworker-creds"
 	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
 	DefaultAtenetRouterAddr = "atenet-router.ate-system.svc.cluster.local:80"
-	DefaultRedisImage       = "redis:7.4-alpine"
-	DefaultRedisStorage     = "5Gi"
-	DefaultRedisPort        = 6379
 )
 
 // Config defines the parameters for generating Substrate and Kubernetes deployment manifests.
@@ -49,13 +42,6 @@ type Config struct {
 	APIKey           string `json:"api_key"`
 	AteapiAddr       string `json:"ateapi_addr"`
 	AtenetRouterAddr string `json:"atenet_router_addr"`
-
-	// RedisAddr points the queue at an existing Redis. When empty, a
-	// single-replica Redis is generated alongside the workers.
-	RedisAddr     string `json:"redis_addr"`
-	RedisPassword string `json:"redis_password"`
-
-	DispatcherReplicas int32 `json:"dispatcher_replicas"`
 }
 
 // Defaults fills in default values for unset fields.
@@ -75,23 +61,6 @@ func (c *Config) Defaults() {
 	if c.AtenetRouterAddr == "" {
 		c.AtenetRouterAddr = DefaultAtenetRouterAddr
 	}
-	if c.DispatcherReplicas == 0 {
-		// Each dispatcher runs one work item at a time, so replicas are the
-		// only concurrency dial. Stay under the pre-warmed worker pool.
-		c.DispatcherReplicas = 8
-	}
-}
-
-// BundlesRedis reports whether the manifests include a Redis of their own,
-// which they do unless the queue points at an existing one.
-func (c *Config) BundlesRedis() bool { return c.RedisAddr == "" }
-
-// QueueAddr returns the Redis endpoint the poller and dispatchers connect to.
-func (c *Config) QueueAddr() string {
-	if c.RedisAddr != "" {
-		return c.RedisAddr
-	}
-	return fmt.Sprintf("%s.%s.svc.cluster.local:%d", DefaultRedisName, c.Namespace, DefaultRedisPort)
 }
 
 // Validate ensures required fields are set before generating manifests.
@@ -151,9 +120,6 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 	cmd.Flags().StringVar(&cfg.APIKey, "anthropic-api-key", "", "Anthropic API key")
 	cmd.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", DefaultAtenetRouterAddr, "Substrate atenet HTTP router endpoint")
-	cmd.Flags().StringVar(&cfg.RedisAddr, "redis-addr", "", "existing Redis host:port for the work queue (default: generate a single-replica Redis)")
-	cmd.Flags().StringVar(&cfg.RedisPassword, "redis-password", "", "Redis password, stored in the credentials Secret")
-	cmd.Flags().Int32Var(&cfg.DispatcherReplicas, "dispatcher-replicas", 8, "number of dispatcher replicas; each runs one work item at a time")
 
 	_ = cmd.MarkFlagRequired("worker-image")
 	_ = cmd.MarkFlagRequired("ateom-image")
@@ -166,19 +132,13 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 func BuildManifests(cfg Config) []any {
 	cfg.Defaults()
 
-	objs := []any{
+	return []any{
 		BuildNamespace(cfg),
 		BuildSecret(cfg),
-	}
-	if cfg.BundlesRedis() {
-		objs = append(objs, BuildRedisService(cfg), BuildRedisStatefulSet(cfg))
-	}
-	return append(objs,
 		BuildWorkerPool(cfg),
 		BuildActorTemplate(cfg),
 		BuildWorkerDeployment(cfg),
-		BuildDispatcherDeployment(cfg),
-	)
+	}
 }
 
 // BuildNamespace constructs the corev1.Namespace manifest.
@@ -199,9 +159,6 @@ func BuildSecret(cfg Config) *corev1.Secret {
 	}
 	if cfg.APIKey != "" {
 		stringData["ANTHROPIC_API_KEY"] = cfg.APIKey
-	}
-	if cfg.RedisPassword != "" {
-		stringData["REDIS_PASSWORD"] = cfg.RedisPassword
 	}
 
 	return &corev1.Secret{
@@ -293,154 +250,6 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 	}
 }
 
-// BuildRedisService constructs the Service fronting the bundled Redis.
-func BuildRedisService(cfg Config) *corev1.Service {
-	labels := map[string]string{"app": DefaultRedisName}
-	return &corev1.Service{
-		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultRedisName,
-			Namespace: cfg.Namespace,
-			Labels:    labels,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: labels,
-			Ports: []corev1.ServicePort{{
-				Name:       "redis",
-				Port:       DefaultRedisPort,
-				TargetPort: intstr.FromInt32(DefaultRedisPort),
-			}},
-		},
-	}
-}
-
-// BuildRedisStatefulSet constructs the single-replica Redis backing the durable
-// work queue. Append-only persistence is enabled so queued work items survive a
-// restart of the pod.
-//
-// One replica is enough to make the queue durable, but it is not highly
-// available: point --redis-addr at a managed or replicated Redis if the queue
-// must survive losing a node.
-func BuildRedisStatefulSet(cfg Config) *appsv1.StatefulSet {
-	labels := map[string]string{"app": DefaultRedisName}
-	replicas := int32(1)
-
-	args := []string{
-		"redis-server",
-		"--appendonly", "yes",
-		"--dir", "/data",
-	}
-	var env []corev1.EnvVar
-	if cfg.RedisPassword != "" {
-		// Kubernetes expands $(REDIS_PASSWORD) from the container's env.
-		args = append(args, "--requirepass", "$(REDIS_PASSWORD)")
-		env = append(env, corev1.EnvVar{
-			Name: "REDIS_PASSWORD",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: DefaultSecretName},
-					Key:                  "REDIS_PASSWORD",
-				},
-			},
-		})
-	}
-
-	return &appsv1.StatefulSet{
-		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSet"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultRedisName,
-			Namespace: cfg.Namespace,
-			Labels:    labels,
-		},
-		Spec: appsv1.StatefulSetSpec{
-			Replicas:    &replicas,
-			ServiceName: DefaultRedisName,
-			Selector:    &metav1.LabelSelector{MatchLabels: labels},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Name:  "redis",
-						Image: DefaultRedisImage,
-						Args:  args,
-						Env:   env,
-						Ports: []corev1.ContainerPort{{
-							Name:          "redis",
-							ContainerPort: DefaultRedisPort,
-						}},
-						ReadinessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								TCPSocket: &corev1.TCPSocketAction{
-									Port: intstr.FromInt32(DefaultRedisPort),
-								},
-							},
-						},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "data",
-							MountPath: "/data",
-						}},
-					}},
-				},
-			},
-			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
-				ObjectMeta: metav1.ObjectMeta{Name: "data"},
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse(DefaultRedisStorage),
-						},
-					},
-				},
-			}},
-		},
-	}
-}
-
-// BuildDispatcherDeployment constructs the Deployment that drains the queue: it
-// resumes the actor for each queued work item, runs it, and suspends the actor.
-func BuildDispatcherDeployment(cfg Config) *appsv1.Deployment {
-	labels := map[string]string{"app": DefaultDispatcherName}
-	replicas := cfg.DispatcherReplicas
-
-	return &appsv1.Deployment{
-		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultDispatcherName,
-			Namespace: cfg.Namespace,
-			Labels:    labels,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Name:  DefaultDispatcherName,
-						Image: cfg.WorkerImage,
-						Command: []string{
-							"ate-antworker", "dispatch",
-							"--redis-addr", cfg.QueueAddr(),
-							"--ateapi-addr", cfg.AteapiAddr,
-							"--atenet-router-addr", cfg.AtenetRouterAddr,
-							"--namespace", cfg.Namespace,
-							"--template", cfg.Template,
-						},
-						EnvFrom: []corev1.EnvFromSource{{
-							SecretRef: &corev1.SecretEnvSource{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: DefaultSecretName,
-								},
-							},
-						}},
-					}},
-				},
-			},
-		},
-	}
-}
-
 // BuildWorkerDeployment constructs the Kubernetes Deployment for the worker daemon.
 func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 	labels := map[string]string{"app": DefaultDeploymentName}
@@ -464,8 +273,6 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 						Image: cfg.WorkerImage,
 						Command: []string{
 							"ant", "beta:worker", "poll",
-							// The hook only queues the work item; the dispatcher
-							// Deployment resumes the actor and runs the work item.
 							"--on-work", "ate-antworker",
 						},
 						EnvFrom: []corev1.EnvFromSource{{

@@ -4,25 +4,20 @@ Deploy [Anthropic Managed Agents Self-Hosted Sandbox](https://platform.claude.co
 
 This project enables Claude Managed Agents to run bash commands, file operations, code execution, and skills inside secure, isolated sandboxes running on your Agent Substrate cluster.
 
-
 ## Overview
 
 ### Components
 
-- **Poller**: An always-on service in your cluster that fetches incoming events and appends them to the work queue.
-- **Work Queue**: A durable Redis queue holding polled events until the work has actually completed.
-- **Dispatchers**: Deployment that drains the queue, resumes the sandbox actor for each event, and acknowledges the event when the work is done.
+- **Poller Deployment**: An always-on service in your cluster running `ant beta:worker poll --on-work ate-antworker`. It fetches incoming work items and synchronously dispatches them.
 - **Worker Pool**: A set of microVM/gVisor runners that sandbox actors are scheduled onto.
-- **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across work items.
+- **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across turns via snapshots.
 
 ### How It Works
 
-1. **Poll**: The poller fetches a work item queued by Claude Managed Agents.
-2. **Queue**: The poller appends it to the durable Redis queue and returns immediately, without touching an actor.
-3. **Claim**: A dispatcher takes the work item together with its session, so no other dispatcher can enter that sandbox.
-4. **Run**: The dispatcher resumes the sandbox actor, the worker runs the work item, Substrate suspends the actor and persists its snapshot, and only then is the item acknowledged.
-
-If anything interrupts step 4, the claim lapses and the work item returns to `ate-antworker:pending` to be retried; after 3 attempts it lands on `ate-antworker:dead`.
+1. **Poll**: The poller fetches a work item from Claude Managed Agents.
+2. **Dispatch**: The poller hook invokes `ate-antworker`, which resumes or registers the corresponding session actor via the Substrate atenet router.
+3. **Execute**: The worker daemon inside the microVM runs `ant beta:worker run`, executing tool calls and streaming results back to Anthropic.
+4. **Suspend**: When the work item completes, the actor is suspended to save a snapshot to object storage and free the worker pool slot.
 
 ```
                 ╭───────────────────────────────────╮
@@ -33,31 +28,17 @@ If anything interrupts step 4, the claim lapses and the work item returns to `at
 │ Agent Substrate on Kubernetes   ▼                                  │
 │    ╭──────────────────────────────────────────────────────────╮    │
 │    │ Poller Deployment                                        │    │
-│    │   ant beta:worker poll --on-work "ate-antworker queue"   │    │
+│    │   ant beta:worker poll --on-work ate-antworker           │    │
 │    ╰────────────────────────────┬─────────────────────────────╯    │
-│                                 │ 2. enqueue, then return          │
+│                                 │ 2. dispatch to actor             │
 │                                 ▼                                  │
-│    ╭──────────────────────────────────────────────────────────╮    │
-│    │ Redis work queue   (StatefulSet, appendonly)             │    │
-│    │                                                          │    │
-│    │   pending ──claim──► inflight ──ack──► done              │    │
-│    │      ▲                   │                               │    │
-│    │      ╰── lease expired ──┴── attempts used ──► dead      │    │
-│    ╰────────────────────────────┬─────────────────────────────╯    │
-│                                 │ 3. claim work item + its session │
-│                                 ▼                                  │
-│    ╭──────────────────────────────────────────────────────────╮    │
-│    │ Dispatcher Deployment (N replicas, one work item each)   │    │
-│    │   ate-antworker dispatch                                 │    │
-│    ╰────────────────────────────┬─────────────────────────────╯    │
-│                                 │ 4. resume, run, suspend, ack     │
-│                                 ╰──────────────╮                   │
-│                                                ▼                   │
 │    ╭─────────────────────────╮  ╭─────────────────────────────╮    │
 │    │ Substrate WorkerPool    │  │ Sandbox Actor (per session) │    │
 │    │ microVM / gVisor        ├─►│ ate-antworker worker        │    │
 │    │ runners                 │  │ ant beta:worker run         │    │
 │    ╰─────────────────────────╯  ╰─────────────────────────────╯    │
+│                                 3. run tools, stream results       │
+│                                 4. suspend actor to snapshot       │
 ╰────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -65,9 +46,9 @@ If anything interrupts step 4, the claim lapses and the work item returns to `at
 
 `ate-antworker` provides the following:
 
-1. **`ate-antworker queue`**: Hook target for **`ant beta:worker poll --on-work 'ate-antworker queue'`**. Appends the work item to the durable queue and returns.
-2. **`ate-antworker dispatch`**: Drains the queue (claims item and its session $\rightarrow$ wakes actor $\rightarrow$ runs the work $\rightarrow$ suspends actor $\rightarrow$ acknowledges item).
-3. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
+1. **`ate-antworker`** (root): Hook target for **`ant beta:worker poll --on-work ate-antworker`**. Wakes/resumes the session actor, runs the work synchronously, and suspends the actor.
+2. **`ate-antworker worker`**: The in-sandbox HTTP daemon running inside each Substrate actor pod supervising `ant beta:worker run`.
+3. **`ate-antworker manifest`**: Generates Kubernetes and Substrate manifests.
 
 ---
 
@@ -103,22 +84,12 @@ go install github.com/agent-substrate/claude-managed-agents/cmd/ate-antworker@la
 
 # Generate deployment YAML and apply to Kubernetes
 ate-antworker manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:31b8bf93926ac28208b2659e3aa98b0199b695f241a823df2b9df511095a4c29 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:717c04c3d42442ad8ac9aa7eb97792ba348acd21fc0c207f1b2822ed68921765 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
   --anthropic-env-id  "$ANTHROPIC_ENVIRONMENT_ID" \
   --anthropic-env-key "$ANTHROPIC_ENVIRONMENT_KEY" | kubectl apply -f -
-```
-
-By default this also generates a single-replica Redis with append-only
-persistence for the work queue. To use an existing Redis instead, pass
-`--redis-addr` (and `--redis-password` if it requires auth):
-
-```bash
-ate-antworker manifest ... \
-  --redis-addr      redis.example.com:6379 \
-  --redis-password  "$REDIS_PASSWORD"
 ```
 
 ### 3. Verify Deployment
@@ -154,38 +125,6 @@ go run ./examples/agent \
   --prompt "Show the kernel version."
 ```
 
-## Work Queue
-
-Polled events are persisted before any actor is resumed, so a work item is not
-lost if the poller pod is evicted, the dispatcher crashes mid-run, or the actor
-cannot be woken. A claimed item stays in `ate-antworker:inflight`, owned by a
-single key — `ate-antworker:session:<id>`, whose value names the item holding it
-and whose TTL the dispatcher renews while it works. When renewals stop,
-maintenance requeues the item, or moves it to `ate-antworker:dead` after three
-attempts. Expiry is the only retry
-path, so a failed work item waits out its lease (5 minutes) instead of retrying
-immediately.
-
-Each dispatcher runs one work item at a time and a claim takes the whole
-session, so concurrency is the replica count and no two work items ever share a
-sandbox. Set the pool with `--dispatcher-replicas` (8 by default, under the
-WorkerPool size). On SIGTERM a dispatcher stops claiming and finishes the item
-it is on, so give the pod a `terminationGracePeriodSeconds` longer than a
-typical work item if you want it to finish rather than be reclaimed.
-
-Inspect the queue with `redis-cli`:
-
-```bash
-kubectl exec -n ate-antworker ate-antworker-redis-0 -- \
-  redis-cli llen ate-antworker:pending
-kubectl exec -n ate-antworker ate-antworker-redis-0 -- \
-  redis-cli lrange ate-antworker:dead 0 -1
-```
-
-The generated Redis is a single replica: it survives a pod restart through its
-persistent volume, but not the loss of its node. Point `--redis-addr` at a
-managed or replicated Redis for a stronger guarantee.
-
 ## Running Locally
 
 To shell into the container locally with your Anthropic environment variables:
@@ -196,7 +135,7 @@ podman run -it --rm \
   -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   -e ANTHROPIC_ENVIRONMENT_ID="$ANTHROPIC_ENVIRONMENT_ID" \
   -e ANTHROPIC_ENVIRONMENT_KEY="$ANTHROPIC_ENVIRONMENT_KEY" \
-  gcr.io/dberkov-gke-dev3/ate-antworker@sha256:31b8bf93926ac28208b2659e3aa98b0199b695f241a823df2b9df511095a4c29
+  gcr.io/$GOOGLE_CLOUD_PROJECT/ate-antworker:latest
 ```
 
 Inside the container:
@@ -208,14 +147,11 @@ Inside the container:
 | --- | --- | --- |
 | `ate-antworker` | `Atespace` (`ate.dev/v1alpha1`) | Substrate tenant atespace for actors |
 | `ate-antworker` | `Namespace` | Target Kubernetes namespace |
-| `ate-antworker-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_ENVIRONMENT_KEY`, and `REDIS_PASSWORD` |
-| `ate-antworker-redis` | `Service` + `StatefulSet` | Durable work queue, with append-only persistence (omitted when `--redis-addr` points at an existing Redis) |
+| `ate-antworker-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_ENVIRONMENT_KEY` |
 | `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of microVM/gVisor runners for sandbox actors (10 replicas) |
 | `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
-| `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work "ate-antworker queue"` |
-| `ate-antworker-dispatcher` | `Deployment` | Dispatchers running `ate-antworker dispatch` (8 replicas) |
+| `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work ate-antworker` |
 
 ## Roadmap
 
 - **Distribute prebuilt images** so deploying is one `kubectl apply` with no build step.
-- **Expose metrics** for queue depth, retries, and dead-lettered work items.

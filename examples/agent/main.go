@@ -133,7 +133,7 @@ func streamEvents(stream *ssestream.Stream[anthropic.BetaManagedAgentsStreamSess
 
 		switch v := event.AsAny().(type) {
 		case anthropic.BetaManagedAgentsAgentThinkingEvent:
-			fmt.Println("  ⋯ thinking")
+			fmt.Printf("\n  🧠 thinking...\n")
 
 		case anthropic.BetaManagedAgentsAgentToolUseEvent,
 			anthropic.BetaManagedAgentsAgentCustomToolUseEvent,

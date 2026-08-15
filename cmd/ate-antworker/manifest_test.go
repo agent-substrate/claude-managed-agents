@@ -116,8 +116,8 @@ func find[T any](t *testing.T, objs []any, name string) T {
 func TestBuildManifests(t *testing.T) {
 	cfg := testConfig()
 	objs := BuildManifests(cfg)
-	if len(objs) != 8 {
-		t.Fatalf("got %d manifests, want 8", len(objs))
+	if len(objs) != 5 {
+		t.Fatalf("got %d manifests, want 5", len(objs))
 	}
 
 	ns := find[*corev1.Namespace](t, objs, "ate-antworker")
@@ -161,75 +161,9 @@ func TestBuildManifests(t *testing.T) {
 		t.Errorf("deployment container command = %v, want ['ant', 'beta:worker', 'poll', ...]", workerContainer.Command)
 	}
 
-	// The poller only queues work items; it must not dispatch them itself.
 	poll := strings.Join(workerContainer.Command, " ")
 	if !strings.Contains(poll, "--on-work ate-antworker") {
 		t.Errorf("poller command = %v, want --on-work ate-antworker", workerContainer.Command)
-	}
-}
-
-func TestBuildManifestsQueue(t *testing.T) {
-	cfg := testConfig()
-	objs := BuildManifests(cfg)
-
-	redis := find[*appsv1.StatefulSet](t, objs, DefaultRedisName)
-	if got := *redis.Spec.Replicas; got != 1 {
-		t.Errorf("redis replicas = %d, want 1", got)
-	}
-	redisArgs := strings.Join(redis.Spec.Template.Spec.Containers[0].Args, " ")
-	if !strings.Contains(redisArgs, "--appendonly yes") {
-		t.Errorf("redis args = %q, want append-only persistence so queued work survives a restart", redisArgs)
-	}
-	if len(redis.Spec.VolumeClaimTemplates) != 1 {
-		t.Fatalf("redis volume claim templates = %d, want 1", len(redis.Spec.VolumeClaimTemplates))
-	}
-
-	svc := find[*corev1.Service](t, objs, DefaultRedisName)
-	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != DefaultRedisPort {
-		t.Errorf("redis service ports = %+v, want %d", svc.Spec.Ports, DefaultRedisPort)
-	}
-
-	dispatcher := find[*appsv1.Deployment](t, objs, DefaultDispatcherName)
-	if got := *dispatcher.Spec.Replicas; got != 8 {
-		t.Errorf("dispatcher replicas = %d, want 8", got)
-	}
-	command := strings.Join(dispatcher.Spec.Template.Spec.Containers[0].Command, " ")
-	for _, want := range []string{
-		"ate-antworker dispatch",
-		"--redis-addr " + cfg.QueueAddr(),
-		"--ateapi-addr " + DefaultAteapiAddr,
-		"--namespace " + cfg.Namespace,
-	} {
-		if !strings.Contains(command, want) {
-			t.Errorf("dispatcher command = %q, want it to contain %q", command, want)
-		}
-	}
-}
-
-func TestBuildManifestsExternalRedis(t *testing.T) {
-	cfg := testConfig()
-	cfg.RedisAddr = "redis.example.com:6379"
-	cfg.RedisPassword = "hunter2"
-
-	objs := BuildManifests(cfg)
-	for _, obj := range objs {
-		if set, ok := obj.(*appsv1.StatefulSet); ok {
-			t.Fatalf("generated a Redis StatefulSet %q despite --redis-addr", set.Name)
-		}
-	}
-
-	secret := find[*corev1.Secret](t, objs, DefaultSecretName)
-	if secret.StringData["REDIS_PASSWORD"] != "hunter2" {
-		t.Errorf("secret REDIS_PASSWORD = %q, want it stored for the dispatcher", secret.StringData["REDIS_PASSWORD"])
-	}
-
-	dispatcher := find[*appsv1.Deployment](t, objs, DefaultDispatcherName)
-	command := strings.Join(dispatcher.Spec.Template.Spec.Containers[0].Command, " ")
-	if !strings.Contains(command, "--redis-addr redis.example.com:6379") {
-		t.Errorf("dispatcher command = %q, want the external Redis address", command)
-	}
-	if strings.Contains(command, "hunter2") {
-		t.Errorf("dispatcher command = %q, want the password read from the Secret, not the command line", command)
 	}
 }
 
@@ -248,8 +182,6 @@ func TestWriteManifests(t *testing.T) {
 		"kind: ActorTemplate",
 		"apiVersion: ate.dev/v1alpha1",
 		"kind: Deployment",
-		"kind: StatefulSet",
-		"kind: Service",
 		"image: gcr.io/test/worker@sha256:1111",
 		"location: gs://test-bucket/snapshots/",
 		"ant",

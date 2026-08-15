@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -13,28 +14,32 @@ import (
 var version = "0.1.0"
 
 func newRootCommand() *cobra.Command {
-	var req worker.DispatchRequest
-	var rcfg redisConfig
+	var (
+		cfg worker.Config
+		req worker.DispatchRequest
+	)
 
 	root := &cobra.Command{
 		Use:           "ate-antworker",
 		Short:         "Deploy and manage Anthropic workers on Agent Substrate",
-		Long:          `ate-antworker queues Anthropic work items and runs them on Substrate actors.`,
+		Long:          `ate-antworker executes Anthropic work items on Substrate actors.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runQueue(cmd.Context(), req, rcfg)
+			return runDispatch(cmd.Context(), cfg, req)
 		},
 	}
 
-	registerRedisFlags(root, &rcfg)
 	root.Flags().StringVar(&req.WorkID, "work-id", "", "Anthropic work ID (or $ANTHROPIC_WORK_ID)")
 	root.Flags().StringVar(&req.SessionID, "session-id", "", "Anthropic session ID (or $ANTHROPIC_SESSION_ID)")
+	root.Flags().StringVar(&cfg.Namespace, "namespace", worker.DefaultNamespace, "Kubernetes namespace / Substrate atespace")
+	root.Flags().StringVar(&cfg.Template, "template", worker.DefaultTemplate, "Substrate ActorTemplate name")
+	root.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", worker.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
+	root.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", worker.DefaultAtenetRouterAddr, "Substrate atenet router endpoint")
+	root.Flags().BoolVar(&cfg.Insecure, "insecure", false, "connect to ateapi without TLS")
 
 	root.AddCommand(newManifestCommand())
 	root.AddCommand(newWorkerCommand())
-	root.AddCommand(newQueueCommand())
-	root.AddCommand(newDispatchCommand())
 
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
@@ -45,6 +50,25 @@ func newRootCommand() *cobra.Command {
 	})
 
 	return root
+}
+
+func runDispatch(ctx context.Context, cfg worker.Config, req worker.DispatchRequest) error {
+	if req.WorkID == "" {
+		req.WorkID = os.Getenv("ANTHROPIC_WORK_ID")
+	}
+	if req.SessionID == "" {
+		req.SessionID = os.Getenv("ANTHROPIC_SESSION_ID")
+	}
+	if req.SessionID == "" {
+		req.SessionID = req.WorkID
+	}
+	if req.WorkID == "" {
+		return fmt.Errorf("work ID is required (set ANTHROPIC_WORK_ID or pass --work-id)")
+	}
+
+	req.Wait = true
+	cfg.Defaults()
+	return worker.DispatchWork(ctx, cfg, req)
 }
 
 func main() {
