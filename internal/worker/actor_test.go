@@ -320,13 +320,7 @@ func TestDispatchWork(t *testing.T) {
 	aName := ActorName(sessionID)
 	key := "ate-antworker/" + aName
 
-	req := DispatchRequest{
-		WorkID:    "work_test_dispatch_01",
-		SessionID: sessionID,
-		Wait:      true,
-	}
-
-	if err := DispatchWork(ctx, cfg, req); err != nil {
+	if err := DispatchWork(ctx, cfg, sessionID); err != nil {
 		t.Fatalf("DispatchWork: %v", err)
 	}
 
@@ -335,46 +329,5 @@ func TestDispatchWork(t *testing.T) {
 	}
 	if fakeClient.suspendedActors[key] != 1 {
 		t.Errorf("expected actor %q to be suspended after the work item, count=%d", key, fakeClient.suspendedActors[key])
-	}
-}
-
-func TestDispatchWorkNoWait(t *testing.T) {
-	fakeClient := newFakeControlClient()
-
-	mockRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "started"})
-	}))
-	defer mockRouter.Close()
-
-	cfg := Config{
-		AteClient:        fakeClient,
-		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
-		Namespace:        "ate-antworker",
-		Template:         "ate-antworker-actor-template",
-	}
-
-	ctx := context.Background()
-	sessionID := "sesn_test_dispatch_nowait"
-	aName := ActorName(sessionID)
-	key := "ate-antworker/" + aName
-
-	req := DispatchRequest{
-		WorkID:    "work_test_nowait",
-		SessionID: sessionID,
-		Wait:      false,
-	}
-
-	if err := DispatchWork(ctx, cfg, req); err != nil {
-		t.Fatalf("DispatchWork (no wait): %v", err)
-	}
-
-	if _, ok := fakeClient.createdActors[key]; !ok {
-		t.Fatalf("expected actor %q to be created", key)
-	}
-	// With wait=false, it shouldn't suspend
-	if fakeClient.suspendedActors[key] != 0 {
-		t.Errorf("expected 0 suspensions with wait=false, got %d", fakeClient.suspendedActors[key])
 	}
 }

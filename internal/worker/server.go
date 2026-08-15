@@ -1,9 +1,11 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,18 +19,18 @@ const (
 
 // WorkRequest is the JSON payload accepted by the worker HTTP server.
 type WorkRequest struct {
-	WorkID   string `json:"work_id"`
-	WorkType string `json:"work_type,omitempty"`
+	SessionID string `json:"session_id"`
 }
 
 // WorkResponse is the JSON payload returned by the worker HTTP server.
 type WorkResponse struct {
 	Status string `json:"status"`
+	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
 
 // Worker runs a lightweight HTTP server inside a Substrate actor container.
-// On /work, it executes 'ant beta:worker run --work-id <work_id>'.
+// On /work, it executes 'ant beta:worker run --session-id <session_id>'.
 type Worker struct {
 	logger    *slog.Logger
 	antBinary string
@@ -54,7 +56,7 @@ func (w *Worker) Handler() http.Handler {
 	return mux
 }
 
-// handleWork parses the work ID and starts 'ant beta:worker run'.
+// handleWork parses the session ID and starts 'ant beta:worker run'.
 func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost && req.Method != http.MethodPut {
 		http.Error(rw, `{"error": "method not allowed, use POST"}`, http.StatusMethodNotAllowed)
@@ -66,23 +68,36 @@ func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 		_ = json.NewDecoder(req.Body).Decode(&payload)
 	}
 
-	workID := strings.TrimSpace(payload.WorkID)
-	if workID == "" {
+	sessionID := strings.TrimSpace(payload.SessionID)
+	if sessionID == "" {
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(rw).Encode(WorkResponse{
 			Status: "error",
-			Error:  "work_id is required",
+			Error:  "session_id is required",
 		})
 		return
 	}
 
-	if err := w.StartWork(req.Context(), workID); err != nil {
+	stdout, stderr, err := w.StartWork(req.Context(), sessionID)
+	if err != nil {
 		rw.Header().Set("Content-Type", "application/json")
 		rw.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(rw).Encode(WorkResponse{
 			Status: "error",
+			Output: stdout,
 			Error:  err.Error(),
+		})
+		return
+	}
+
+	if stderr != "" {
+		rw.Header().Set("Content-Type", "application/json")
+		rw.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(rw).Encode(WorkResponse{
+			Status: "error",
+			Output: stdout,
+			Error:  stderr,
 		})
 		return
 	}
@@ -91,6 +106,7 @@ func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 	rw.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(rw).Encode(WorkResponse{
 		Status: "completed",
+		Output: stdout,
 	})
 }
 
@@ -103,10 +119,10 @@ func (w *Worker) handleHealthz(rw http.ResponseWriter, req *http.Request) {
 	})
 }
 
-// StartWork executes 'ant beta:worker run --work-id <workID>' synchronously.
-func (w *Worker) StartWork(ctx context.Context, workID string) error {
-	if workID == "" {
-		return errors.New("work_id is required")
+// StartWork executes 'ant beta:worker run --session-id <sessionID>' synchronously.
+func (w *Worker) StartWork(ctx context.Context, sessionID string) (stdout string, stderr string, err error) {
+	if sessionID == "" {
+		return "", "", errors.New("session_id is required")
 	}
 
 	bin := w.antBinary
@@ -116,8 +132,10 @@ func (w *Worker) StartWork(ctx context.Context, workID string) error {
 
 	args := []string{
 		"beta:worker", "run",
-		"--work-id", workID,
-		"--session-id", workID, // TODO(jbd): Rename work id to session_id everywhere
+		"--work-id", sessionID,
+		"--session-id", sessionID,
+		"--unrestricted-paths",
+		"--max-idle", "10m",
 	}
 	if envID := os.Getenv("ANTHROPIC_ENVIRONMENT_ID"); envID != "" {
 		args = append(args, "--environment-id", envID)
@@ -129,22 +147,39 @@ func (w *Worker) StartWork(ctx context.Context, workID string) error {
 	w.logger.Info("Running ant worker process",
 		slog.String("binary", bin),
 		slog.Any("args", args),
-		slog.String("work_id", workID),
+		slog.String("session_id", sessionID),
 	)
 
+	var outBuf, errBuf bytes.Buffer
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = io.MultiWriter(os.Stdout, &outBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
 	cmd.Stdin = os.Stdin
 	cmd.Env = os.Environ()
 
-	return cmd.Run()
+	err = cmd.Run()
+	stdout = outBuf.String()
+	stderr = errBuf.String()
+	w.logger.Info("ant worker process finished",
+		slog.String("session_id", sessionID),
+		slog.String("stdout", stdout),
+		slog.String("stderr", stderr),
+		slog.Any("error", err),
+	)
+	return stdout, stderr, err
 }
 
-// Run starts the HTTP server on addr.
+// Run starts the HTTP server on addr with 10-minute timeouts.
 func (w *Worker) Run(addr string) error {
 	if addr == "" {
 		addr = DefaultWorkerAddr
 	}
-	return http.ListenAndServe(addr, w.Handler())
+	server := &http.Server{
+		Addr:         addr,
+		Handler:      w.Handler(),
+		ReadTimeout:  DefaultWorkTimeout,
+		WriteTimeout: DefaultWorkTimeout,
+		IdleTimeout:  DefaultWorkTimeout,
+	}
+	return server.ListenAndServe()
 }

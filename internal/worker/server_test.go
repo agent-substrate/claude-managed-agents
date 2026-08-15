@@ -26,7 +26,7 @@ func TestWorkerHTTPHandler(t *testing.T) {
 	resp.Body.Close()
 
 	// 2. Dispatch work item via JSON payload to /work
-	payload, _ := json.Marshal(WorkRequest{WorkID: "sesn_01UgEbQopdaDjL8DxCvjMwat", WorkType: "session"})
+	payload, _ := json.Marshal(WorkRequest{SessionID: "sesn_01UgEbQopdaDjL8DxCvjMwat"})
 	resp, err = http.Post(server.URL+"/work", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("POST /work: %v", err)
@@ -41,7 +41,7 @@ func TestWorkerHTTPHandler(t *testing.T) {
 		t.Errorf("unexpected dispatch response: %+v", startResp)
 	}
 
-	// 3. Missing work ID should return 400
+	// 3. Missing session ID should return 400
 	resp, err = http.Post(server.URL+"/work", "application/json", bytes.NewReader([]byte("{}")))
 	if err != nil {
 		t.Fatalf("POST /work empty: %v", err)
@@ -51,14 +51,14 @@ func TestWorkerHTTPHandler(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// 4. Work item with work_id alone should succeed
-	payload, _ = json.Marshal(WorkRequest{WorkID: "sesn_01UgEbQopdaDjL8DxCvjMwat"})
+	// 4. Work item with session_id alone should succeed
+	payload, _ = json.Marshal(WorkRequest{SessionID: "sesn_01UgEbQopdaDjL8DxCvjMwat"})
 	resp, err = http.Post(server.URL+"/work", "application/json", bytes.NewReader(payload))
 	if err != nil {
-		t.Fatalf("POST /work with work_id: %v", err)
+		t.Fatalf("POST /work with session_id: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("POST /work with work_id status = %d, want 200", resp.StatusCode)
+		t.Errorf("POST /work with session_id status = %d, want 200", resp.StatusCode)
 	}
 	resp.Body.Close()
 }
@@ -67,8 +67,8 @@ func TestWorkerStartWorkMissingIDs(t *testing.T) {
 	w := NewWorker(nil)
 	w.antBinary = "true"
 
-	if err := w.StartWork(t.Context(), ""); err == nil {
-		t.Error("expected error when workID is empty, got nil")
+	if _, _, err := w.StartWork(t.Context(), ""); err == nil {
+		t.Error("expected error when sessionID is empty, got nil")
 	}
 }
 
@@ -76,7 +76,7 @@ func TestWorkerStartWorkExecution(t *testing.T) {
 	w := NewWorker(nil)
 	w.antBinary = "true"
 
-	if err := w.StartWork(t.Context(), "work_test_123"); err != nil {
+	if _, _, err := w.StartWork(t.Context(), "sesn_test_123"); err != nil {
 		t.Fatalf("StartWork: %v", err)
 	}
 }

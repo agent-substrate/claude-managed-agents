@@ -15,8 +15,9 @@ var version = "0.1.0"
 
 func newRootCommand() *cobra.Command {
 	var (
-		cfg worker.Config
-		req worker.DispatchRequest
+		cfg       worker.Config
+		workID    string
+		sessionID string
 	)
 
 	root := &cobra.Command{
@@ -26,12 +27,12 @@ func newRootCommand() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDispatch(cmd.Context(), cfg, req)
+			return runDispatch(cmd.Context(), cfg, workID, sessionID)
 		},
 	}
 
-	root.Flags().StringVar(&req.WorkID, "work-id", "", "Anthropic work ID (or $ANTHROPIC_WORK_ID)")
-	root.Flags().StringVar(&req.SessionID, "session-id", "", "Anthropic session ID (or $ANTHROPIC_SESSION_ID)")
+	root.Flags().StringVar(&workID, "work-id", "", "Anthropic work ID")
+	root.Flags().StringVar(&sessionID, "session-id", "", "Anthropic session ID")
 	root.Flags().StringVar(&cfg.Namespace, "namespace", worker.DefaultNamespace, "Kubernetes namespace / Substrate atespace")
 	root.Flags().StringVar(&cfg.Template, "template", worker.DefaultTemplate, "Substrate ActorTemplate name")
 	root.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", worker.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
@@ -40,7 +41,6 @@ func newRootCommand() *cobra.Command {
 
 	root.AddCommand(newManifestCommand())
 	root.AddCommand(newWorkerCommand())
-
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
@@ -52,23 +52,22 @@ func newRootCommand() *cobra.Command {
 	return root
 }
 
-func runDispatch(ctx context.Context, cfg worker.Config, req worker.DispatchRequest) error {
-	if req.WorkID == "" {
-		req.WorkID = os.Getenv("ANTHROPIC_WORK_ID")
+func runDispatch(ctx context.Context, cfg worker.Config, workID, sessionID string) error {
+	if sessionID == "" {
+		sessionID = os.Getenv("ANTHROPIC_SESSION_ID")
 	}
-	if req.SessionID == "" {
-		req.SessionID = os.Getenv("ANTHROPIC_SESSION_ID")
+	if sessionID == "" {
+		sessionID = os.Getenv("ANTHROPIC_WORK_ID")
 	}
-	if req.SessionID == "" {
-		req.SessionID = req.WorkID
+	if sessionID == "" {
+		sessionID = workID
 	}
-	if req.WorkID == "" {
-		return fmt.Errorf("work ID is required (set ANTHROPIC_WORK_ID or pass --work-id)")
+	if sessionID == "" {
+		return fmt.Errorf("session ID is required (set ANTHROPIC_SESSION_ID / ANTHROPIC_WORK_ID or pass --session-id)")
 	}
 
-	req.Wait = true
 	cfg.Defaults()
-	return worker.DispatchWork(ctx, cfg, req)
+	return worker.DispatchWork(ctx, cfg, sessionID)
 }
 
 func main() {

@@ -12,8 +12,8 @@ func newWorkerCommand() *cobra.Command {
 		Use:   "worker",
 		Short: "Run the HTTP worker daemon inside a Substrate actor sandbox",
 		Long: `Worker runs a lightweight HTTP server inside a Substrate actor container.
-When it receives POST /work with {work_id}, it forks:
-ant beta:worker run --work-id <work_id>`,
+When it receives POST /work with {session_id}, it forks:
+ant beta:worker run --session-id <session_id>`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return worker.NewWorker(nil).Run(addr)
