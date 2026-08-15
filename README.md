@@ -48,10 +48,11 @@ When `ant beta:worker poll --on-work ate-antworker` claims a work item, the poll
 
 Inside the sandbox actor, `ant beta:worker run` also attempts to heartbeat the same work item to Anthropic with `expected_last_heartbeat=NO_HEARTBEAT`. Because the poller has already heartbeated the work item, sending this request upstream would result in a `412 Precondition Failed` conflict error, causing `ant beta:worker run` to terminate prematurely.
 
-To prevent this conflict:
-- `ate-antworker worker` acts as a local HTTP reverse proxy for `api.anthropic.com`.
-- `ant beta:worker run` is started with `--base-url http://127.0.0.1:80`.
-- Local heartbeat requests (`POST /v1/environments/.../work/.../heartbeat`) are intercepted locally and acknowledged with `200 OK`, while all other API calls (session events, tool results) are proxied upstream to Anthropic.
+### Maximum Idle Timeout (`--max-idle`)
+
+When `ate-antworker worker` receives a `/work` request, it starts `ant beta:worker run` with `--max-idle 30s`. Once all tool calls for the current work item are executed and results are streamed to Anthropic, the CLI detects session inactivity and exits after the 30-second idle period.
+
+Without `--max-idle`, `ant beta:worker run` remains running indefinitely waiting for subsequent turns on the same session, preventing the actor from suspending and releasing its worker pool slot.
 
 ## Commands
 
@@ -95,7 +96,7 @@ go install github.com/agent-substrate/claude-managed-agents/cmd/ate-antworker@la
 
 # Generate deployment YAML and apply to Kubernetes
 ate-antworker manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:634d388fdb7e37a50c3fc1cbbe5e19aa054a8009ff20be320f88b53c33d8feb4 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:409cd490041895e565ef8672eb4cd8f95c5702dae34759822683cfb55f9ba4b2 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
