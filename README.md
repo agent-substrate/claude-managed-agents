@@ -2,46 +2,26 @@
 
 Deploy [Anthropic Managed Agents Self-Hosted Sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes) workers on [Agent Substrate](https://github.com/agent-substrate/substrate).
 
-This project enables Claude Managed Agents to run bash commands, file operations, code execution, and skills inside secure, isolated sandboxes running on your Agent Substrate cluster.
+This worker runs Claude Managed Agents tool calls (bash, file operations, skills) inside isolated, gVisor/microVM sandboxes with durable session orchestration and cross-turn snapshot persistence.
 
 ## Overview
 
+```
+Claude Managed Agents  ──►  Poller (`ant beta:worker poll`)
+                               │
+                               ▼
+                          Valkey Queue (Durable session buffer & lock)
+                               │
+                               ▼
+                      Sandbox Actor (`ant beta:worker run`)
+                      (gVisor / microVM sandbox on Substrate)
+```
+
 ### Components
 
-- **Poller**: An always-on service in your cluster running `ant beta:worker poll --on-work ate-antworker`. It fetches incoming work items and dispatches them.
-- **Durable Buffer**: A durable session queue on top of Valkey Streams. It provides per-session distributed locking, automatic heartbeat renewal, crash reclamation (`XAUTOCLAIM`), and dead-letter queueing.
+- **Poller**: An always-on service running `ant beta:worker poll --on-work ate-antworker`. It fetches incoming work items and dispatches them.
+- **Durable Buffer**: A durable session queue on top of Valkey Streams. It provides per-session distributed locking, automatic heartbeat renewal, crash reclamation, and dead-letter queueing.
 - **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across turns via snapshots.
-
-### How It Works
-
-```
-                ╭───────────────────────────────────╮
-                │       Claude Managed Agents       │
-                ╰─────────────────┬─────────────────╯
-                                  │ 1. poll work item
-╭─────────────────────────────────┼──────────────────────────────────╮
-│ Agent Substrate on Kubernetes   ▼                                  │
-│    ╭──────────────────────────────────────────────────────────╮    │
-│    │ Poller                                                   │    │
-│    │   ant beta:worker poll --on-work ate-antworker           │    │
-│    ╰────────────────────────────┬─────────────────────────────╯    │
-│                                 │ 2. enqueue & coordinate          │
-│                                 ▼                                  │
-│    ╭──────────────────────────────────────────────────────────╮    │
-│    │ Durable Buffer                                           │    │
-│    │   Distributed session locking + automatic heartbeats     │    │
-│    ╰────────────────────────────┬─────────────────────────────╯    │
-│                                 │ 3. notify via router             │
-│                                 ▼                                  │
-│    ╭─────────────────────────╮  ╭─────────────────────────────╮    │
-│    │ Substrate WorkerPool    ├─►│ Sandbox Actor (per session) │    │
-│    ╰─────────────────────────╯  │   ate-antworker worker      │    │
-│                                 │   ant beta:worker run       │    │
-│                                 ╰─────────────────────────────╯    │
-│                                 4. run tools, stream results       │
-│                                 5. suspend actor & ACK event       │
-╰────────────────────────────────────────────────────────────────────╯
-```
 
 ### Durable Buffer
 
@@ -49,8 +29,7 @@ Valkey Streams provides a durable buffer for distributed coordination, locking, 
 
 We serialize runs for the same `session_id`, ensuring multiple turns or concurrent poller claims never execute simultaneously on the same actor.
 
-While a handler is running, we automatically renew its claim and lock. If a runner crashes mid-run, another runner reclaims the pending entry via `XAUTOCLAIM`. Events that persistently
-fail are moved to a dead-letter stream after exceeding max deliveries.
+While a handler is running, we automatically renew its claim and lock. If a runner crashes mid-run, another runner reclaims the pending entry. Events that persistently fail are moved to a dead-letter stream after exceeding max deliveries.
 
 ### Heartbeat Interception
 
@@ -68,37 +47,25 @@ Without `--max-idle`, `ant beta:worker run` remains running indefinitely waiting
 
 ## Prerequisites
 
-1. Kubernetes cluster with [Agent Substrate](https://github.com/agent-substrate/substrate) installed.
-2. Anthropic API credentials:
-   - `ANTHROPIC_API_KEY` (e.g. `sk-ant-api...`)
-   - `ANTHROPIC_ENVIRONMENT_ID` (e.g. `env_01abc...`)
-   - `ANTHROPIC_ENVIRONMENT_KEY` (optional, e.g. `sk-ant-oat...`)
-3. A Google Cloud project provided by `GOOGLE_CLOUD_PROJECT` environment variable.
-4. An object storage bucket for actor snapshots (e.g. `gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/`).
-5. [Podman](https://podman.io/) (or Docker) for building container images.
+1. Kubernetes cluster with [Agent Substrate](https://github.com/agent-substrate/substrate).
+2. Anthropic API credentials: `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and optional `ANTHROPIC_ENVIRONMENT_KEY`.
+3. Google Cloud project (`GOOGLE_CLOUD_PROJECT`) and GCS bucket for snapshots (`gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/`).
+4. Podman (or Docker) for building container images.
 
 ## Quickstart
 
 ### 1. Build and Push Container Image
-
-Build the container image with the worker CLI using Podman (or Docker):
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="your-gcp-project"
 make push
 ```
 
-### 2. Generate and Apply Deployment Manifests
-
-Using the CLI:
+### 2. Generate and Apply Manifests
 
 ```bash
-# Install CLI tool
-go install github.com/agent-substrate/claude-managed-agents/cmd/ate-antworker@latest
-
-# Generate deployment YAML and apply to Kubernetes
-ate-antworker manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:c184286aaf020a9d6e986d78f047eb9e1a9d00529bfd8ce8ce7d57f164b9ac2e \
+go run ./cmd/ate-antworker manifest \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:029c5c516d64630de3f154379b5749c773a29554d6813c6cfccdb6f6b9ace923 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
@@ -122,21 +89,16 @@ kubectl logs -n ate-antworker -l app=ate-antworker -f
 
 ## Example Agent
 
-Once deployed, send tasks to Claude referencing your self-hosted `ANTHROPIC_ENVIRONMENT_ID`. The cluster will automatically claim the work, resume the sandbox actor, execute tools inside the sandbox, and suspend the actor when idle.
-
 ```bash
 # 1. Set environment variables
 export ANTHROPIC_API_KEY="sk-ant-api..."
 export ANTHROPIC_ENVIRONMENT_ID="env_..."
 
-# 2. Run example with an initial prompt (prints session ID & trace URL)
-go run ./examples/agent \
-  --prompt "Run 'uname -a' in bash and show the output."
+# 2. Run example with an initial prompt
+go run ./examples/agent --prompt "Run 'uname -a' in bash and show the output."
 
-# 3. Reuse an existing agent, instead of creating one on every run
-go run ./examples/agent \
-  --agent "agent_..." \
-  --prompt "Show the kernel version."
+# 3. Reuse an existing agent
+go run ./examples/agent --agent "agent_..." --prompt "Show the kernel version."
 ```
 
 ## Running Locally
@@ -164,11 +126,11 @@ Inside the container:
 | `ate-antworker-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_ENVIRONMENT_KEY` |
 | `valkey` | `Service` | Internal ClusterIP service exposing Valkey queue on port 6379 |
 | `valkey` | `Deployment` | Dedicated Valkey instance managing durable streams and consumer groups |
-| `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of microVM/gVisor runners for sandbox actors (10 replicas) |
+| `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of gVisor/microVM runners for sandbox actors (10 replicas) |
 | `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
 | `ate-antworker` | `Deployment` | Always-on poller running `ant beta:worker poll --on-work ate-antworker` (5 replicas) |
 
 ## Roadmap
 
-- **Distribute prebuilt images** so deploying is one `kubectl apply` with no build step.
-- [x] **Durable session orchestration & buffering** backed by [`sessionflight`](https://github.com/rakyll/sessionflight) with distributed locking, crash recovery, and auto-ACKing.
+- [ ] **Distribute prebuilt images** so deploying is one `kubectl apply` with no build step.
+- [x] **Durable session orchestration & buffering** with distributed locking, crash recovery, and auto-ACKing.

@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
@@ -18,7 +17,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
-	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 const (
@@ -33,7 +31,7 @@ func run(ctx context.Context, ateClient ateapipb.ControlClient, cfg Config, sess
 		Name:     actorName(sessionID),
 	}
 
-	actor, err := ateClient.GetActor(ctx, &ateapipb.GetActorRequest{Actor: actorRef})
+	_, err := ateClient.GetActor(ctx, &ateapipb.GetActorRequest{Actor: actorRef})
 	if status.Code(err) == codes.NotFound {
 		cfg.Logger.Info("Actor not found, creating new actor",
 			slog.String("actor", actorRef.Name),
@@ -58,10 +56,9 @@ func run(ctx context.Context, ateClient ateapipb.ControlClient, cfg Config, sess
 
 	} else if err != nil {
 		return err
-	} else if actor != nil {
-		if _, err := ateClient.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: actorRef}); err != nil {
-			cfg.Logger.Debug("ResumeActor result", slog.String("actor", actorRef.Name), slog.Any("error", err))
-		}
+	}
+	if _, err := ateClient.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: actorRef}); err != nil {
+		cfg.Logger.Debug("ResumeActor result", slog.String("actor", actorRef.Name), slog.Any("error", err))
 	}
 	return notify(ctx, cfg, actorRef, sessionID)
 }
@@ -126,55 +123,38 @@ func notify(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectRef, sessi
 	}
 
 	timeoutMs := fmt.Sprintf("%d", DefaultWorkTimeout.Milliseconds())
-	backoff := wait.Backoff{
-		Duration: 500 * time.Millisecond,
-		Factor:   1.5,
-		Steps:    15,
-		Cap:      5 * time.Second,
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-envoy-upstream-rq-timeout-ms", timeoutMs)
+	req.Header.Set("x-envoy-upstream-rq-per-try-timeout-ms", timeoutMs)
+	req.Host = fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorRef.Name, actorRef.Atespace)
+
+	client := &http.Client{
+		Timeout: DefaultWorkTimeout,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("posting to router at %s (host %s): %w", url, req.Host, err)
+	}
+	defer resp.Body.Close()
+
+	var workResp WorkResponse
+	_ = json.NewDecoder(resp.Body).Decode(&workResp)
+
+	if resp.StatusCode >= 400 || workResp.Status == "error" {
+		return fmt.Errorf("worker daemon via router at %s returned status %d: %s (output: %s)", url, resp.StatusCode, workResp.Error, workResp.Output)
 	}
 
-	var lastErr error
-	err = wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-		if err != nil {
-			return false, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-envoy-upstream-rq-timeout-ms", timeoutMs)
-		req.Header.Set("x-envoy-upstream-rq-per-try-timeout-ms", timeoutMs)
-		req.Host = fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorRef.Name, actorRef.Atespace)
+	cfg.Logger.Info("Successfully notified actor of work item via router",
+		slog.String("actor", actorRef.Name),
+		slog.String("session_id", sessionID),
+		slog.String("status", workResp.Status),
+	)
 
-		client := &http.Client{
-			Timeout: DefaultWorkTimeout,
-		}
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = fmt.Errorf("posting to router at %s (host %s): %w", url, req.Host, err)
-			return false, nil
-		}
-		defer resp.Body.Close()
-
-		var workResp WorkResponse
-		_ = json.NewDecoder(resp.Body).Decode(&workResp)
-
-		if resp.StatusCode >= 400 || workResp.Status == "error" {
-			lastErr = fmt.Errorf("worker daemon via router at %s returned status %d: %s (output: %s)", url, resp.StatusCode, workResp.Error, workResp.Output)
-			return false, nil
-		}
-
-		cfg.Logger.Info("Successfully notified actor of work item via router",
-			slog.String("actor", actorRef.Name),
-			slog.String("session_id", sessionID),
-			slog.String("status", workResp.Status),
-		)
-
-		return true, nil
-	})
-
-	if err != nil && lastErr != nil {
-		return lastErr
-	}
-	return err
+	return nil
 }
 
 func suspendActor(ctx context.Context, ateClient ateapipb.ControlClient, cfg Config, actorRef *ateapipb.ObjectRef, sessionID string) error {

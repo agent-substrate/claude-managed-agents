@@ -147,7 +147,13 @@ func (d *Dispatcher) Run(ctx context.Context) error {
 		}
 	}()
 
-	return d.runner.Run(runCtx)
+	err := d.runner.Run(runCtx)
+	select {
+	case <-d.cleanupDone:
+		return nil
+	default:
+		return err
+	}
 }
 
 // Close releases any dialed gRPC connections.
