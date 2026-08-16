@@ -34,8 +34,7 @@ Update the `--worker-image` flag in [`README.md`](file:///Users/jbd/substrate-an
 Generate the Kubernetes and Substrate manifests using `ate-antworker manifest` and apply them to the cluster:
 
 ```bash
-make install
-ate-antworker manifest \
+go run ./cmd/ate-antworker manifest \
   --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/ate-antworker@sha256:... \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
@@ -55,5 +54,5 @@ kubectl get pods -n ate-antworker
 See the logs for more:
 
 ```bash
-kubectl logs -n ate-antworker -l app=ate-antworker --tail=100
+kubectl logs -n ate-antworker -l app=ate-antworker --all-containers --tail=50
 ```

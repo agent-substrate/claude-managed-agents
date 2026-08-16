@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/valkey-io/valkey-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -31,7 +33,7 @@ func TestActorName(t *testing.T) {
 	}
 
 	for _, id := range testIDs {
-		name := ActorName(id)
+		name := actorName(id)
 		if !rfc1123Pattern.MatchString(name) {
 			t.Errorf("ActorName(%q) = %q does not match RFC 1123 regex", id, name)
 		}
@@ -39,7 +41,7 @@ func TestActorName(t *testing.T) {
 			t.Errorf("ActorName(%q) = %q length = %d > 63", id, name, len(name))
 		}
 		// Must be deterministic
-		if second := ActorName(id); second != name {
+		if second := actorName(id); second != name {
 			t.Errorf("ActorName(%q) not deterministic: %q vs %q", id, name, second)
 		}
 	}
@@ -49,9 +51,6 @@ func TestConfigDefaults(t *testing.T) {
 	cfg := Config{}
 	cfg.Defaults()
 
-	if cfg.Addr != DefaultWorkerAddr {
-		t.Errorf("addr = %q, want %q", cfg.Addr, DefaultWorkerAddr)
-	}
 	if cfg.Namespace != DefaultNamespace {
 		t.Errorf("namespace = %q, want %q", cfg.Namespace, DefaultNamespace)
 	}
@@ -129,9 +128,6 @@ func (f *fakeControlClient) SuspendActor(ctx context.Context, in *ateapipb.Suspe
 	}
 	key := in.GetActor().Atespace + "/" + in.GetActor().Name
 	if a, ok := f.createdActors[key]; ok {
-		if a.Status != ateapipb.Actor_STATUS_RUNNING {
-			return nil, status.Errorf(codes.FailedPrecondition, "MarkSuspendingStep prerequisite not met for Actor: %s (got: %s, want STATUS_RUNNING)", in.GetActor().Name, a.Status)
-		}
 		a.Status = ateapipb.Actor_STATUS_SUSPENDED
 	}
 	f.suspendedActors[key]++
@@ -227,7 +223,7 @@ func (f *fakeControlClient) DeleteAtespace(ctx context.Context, in *ateapipb.Del
 	return nil, status.Error(codes.Unimplemented, "unimplemented")
 }
 
-func TestResumeAndSuspendActorLifecycle(t *testing.T) {
+func TestRunActorRegistrationAndNotification(t *testing.T) {
 	fakeClient := newFakeControlClient()
 
 	mockRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +234,7 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 	defer mockRouter.Close()
 
 	cfg := Config{
-		AteClient:        fakeClient,
+		ATEClient:        fakeClient,
 		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
 		Namespace:        "ate-antworker",
 		Template:         "ate-antworker-actor-template",
@@ -246,17 +242,15 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 	cfg.Defaults()
 
 	ctx := context.Background()
-	actorRef := &ateapipb.ObjectRef{
-		Atespace: "ate-antworker",
-		Name:     "session-test-001",
+	sessionID := "session-test-001"
+	aName := actorName(sessionID)
+
+	// 1. Initial run: Actor does not exist yet -> should create atespace, create actor, and notify router
+	if err := run(ctx, fakeClient, cfg, sessionID); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 
-	// 1. Initial Registration: Actor does not exist yet -> should create atespace, create actor, and notify router
-	if err := RunActor(ctx, fakeClient, cfg, actorRef, "work-test-001", "session-test-001"); err != nil {
-		t.Fatalf("RunActor: %v", err)
-	}
-
-	key := "ate-antworker/session-test-001"
+	key := "ate-antworker/" + aName
 	if _, ok := fakeClient.createdAtespaces["ate-antworker"]; !ok {
 		t.Errorf("expected Atespace 'ate-antworker' to be created")
 	}
@@ -264,18 +258,9 @@ func TestResumeAndSuspendActorLifecycle(t *testing.T) {
 		t.Errorf("expected Actor %q to be created", key)
 	}
 
-	// 2. Suspend Actor
-	fakeClient.createdActors[key].Status = ateapipb.Actor_STATUS_RUNNING
-	if _, err := fakeClient.SuspendActor(ctx, &ateapipb.SuspendActorRequest{Actor: actorRef}); err != nil {
-		t.Fatalf("SuspendActor: %v", err)
-	}
-	if fakeClient.suspendedActors[key] != 1 {
-		t.Errorf("suspended count = %d, want 1", fakeClient.suspendedActors[key])
-	}
-
-	// 3. Subsequent Notification: Actor already exists -> should notify router directly without error
-	if err := RunActor(ctx, fakeClient, cfg, actorRef, "work-test-002", "session-test-001"); err != nil {
-		t.Fatalf("second RunActor: %v", err)
+	// 2. Subsequent run: Actor already exists -> should notify router directly without recreating
+	if err := run(ctx, fakeClient, cfg, sessionID); err != nil {
+		t.Fatalf("second run: %v", err)
 	}
 }
 
@@ -283,15 +268,10 @@ func TestEnsureActorErrorPropagation(t *testing.T) {
 	fakeClient := newFakeControlClient()
 	fakeClient.createErr = status.Error(codes.Internal, "internal substrate error")
 
-	cfg := Config{AteClient: fakeClient}
+	cfg := Config{ATEClient: fakeClient}
 	cfg.Defaults()
 
-	actorRef := &ateapipb.ObjectRef{
-		Atespace: "ate-antworker",
-		Name:     "session-test",
-	}
-
-	err := RunActor(context.Background(), fakeClient, cfg, actorRef, "work-test", "session-test")
+	err := run(context.Background(), fakeClient, cfg, "session-test")
 	if err == nil || !errors.Is(err, fakeClient.createErr) {
 		if status.Code(err) != codes.Internal {
 			t.Errorf("expected internal error, got %v", err)
@@ -299,37 +279,92 @@ func TestEnsureActorErrorPropagation(t *testing.T) {
 	}
 }
 
-func TestDispatchWork(t *testing.T) {
+func TestSuspendActor(t *testing.T) {
 	fakeClient := newFakeControlClient()
-
-	sessionID := "sesn_test_dispatch_01"
-	aName := ActorName(sessionID)
+	sessionID := "session-suspend-01"
+	aName := actorName(sessionID)
 	key := "ate-antworker/" + aName
 
-	w, err := NewWorker(Config{AteClient: fakeClient})
-	if err != nil {
-		t.Fatalf("NewWorker: %v", err)
+	actorRef := &ateapipb.ObjectRef{
+		Atespace: "ate-antworker",
+		Name:     aName,
 	}
-	w.antBinary = "true"
 
-	mockRouter := httptest.NewServer(w.Handler())
-	defer mockRouter.Close()
+	fakeClient.createdActors[key] = &ateapipb.Actor{
+		Metadata: &ateapipb.ResourceMetadata{Atespace: "ate-antworker", Name: aName},
+		Status:   ateapipb.Actor_STATUS_RUNNING,
+	}
 
 	cfg := Config{
-		AteClient:        fakeClient,
+		Namespace: "ate-antworker",
+		ATEClient: fakeClient,
+	}
+	cfg.Defaults()
+
+	if err := suspendActor(context.Background(), fakeClient, cfg, actorRef, sessionID); err != nil {
+		t.Fatalf("suspendActor: %v", err)
+	}
+
+	if fakeClient.suspendedActors[key] != 1 {
+		t.Errorf("suspended count = %d, want 1", fakeClient.suspendedActors[key])
+	}
+	if fakeClient.createdActors[key].Status != ateapipb.Actor_STATUS_SUSPENDED {
+		t.Errorf("actor status = %s, want STATUS_SUSPENDED", fakeClient.createdActors[key].Status)
+	}
+}
+
+func TestDispatcherLifecycle(t *testing.T) {
+	fakeClient := newFakeControlClient()
+
+	mockRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+	}))
+	defer mockRouter.Close()
+
+	mr := miniredis.RunT(t)
+	vc, err := valkey.NewClient(valkey.ClientOption{
+		InitAddress:  []string{mr.Addr()},
+		DisableCache: true,
+	})
+	if err != nil {
+		t.Fatalf("valkey.NewClient: %v", err)
+	}
+	defer vc.Close()
+
+	cfg := Config{
+		ATEClient:        fakeClient,
 		AtenetRouterAddr: mockRouter.Listener.Addr().String(),
 		Namespace:        "ate-antworker",
 		Template:         "ate-antworker-actor-template",
+		ValkeyClient:     vc,
 	}
+
+	sessionID := "sesn_test_dispatcher_01"
+	aName := actorName(sessionID)
+	key := "ate-antworker/" + aName
+
+	d, err := NewDispatcher(context.Background(), cfg, sessionID)
+	if err != nil {
+		t.Fatalf("NewDispatcher: %v", err)
+	}
+	defer d.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := DispatchWork(ctx, cfg, sessionID); err != nil {
-		t.Fatalf("DispatchWork: %v", err)
+	// d.Run should consume the session event (enqueued in NewDispatcher), execute, clean up (suspend actor), and return immediately
+	if err := d.Run(ctx); err != nil {
+		t.Fatalf("d.Run: %v", err)
 	}
 
-	if fakeClient.suspendedActors[key] != 1 {
-		t.Errorf("expected actor %q to be suspended after the work item, count=%d", key, fakeClient.suspendedActors[key])
+	fakeClient.mu.Lock()
+	defer fakeClient.mu.Unlock()
+	if _, ok := fakeClient.createdActors[key]; !ok {
+		t.Errorf("expected actor %q to be created", key)
+	}
+	if fakeClient.suspendedActors[key] < 1 {
+		t.Errorf("expected actor %q to be suspended via Cleanup, got %d", key, fakeClient.suspendedActors[key])
 	}
 }

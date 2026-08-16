@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/yaml"
 )
 
@@ -87,7 +88,7 @@ func newManifestCommand() *cobra.Command {
 		Short:   "Generate Kubernetes and Agent Substrate manifests",
 		Long: `Manifest generates Kubernetes manifests for everything needed to run Anthropic's
 self-hosted sandbox worker on a cluster with Agent Substrate installed:
-the target namespace, Secret for credentials, a WorkerPool of pre-warmed workers,
+the target namespace, Secret for credentials, Valkey queue, a WorkerPool of pre-warmed workers,
 the ActorTemplate for sandboxed execution, and the worker daemon Deployment.
 
 It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
@@ -135,6 +136,8 @@ func BuildManifests(cfg Config) []any {
 	return []any{
 		BuildNamespace(cfg),
 		BuildSecret(cfg),
+		BuildValkeyService(cfg),
+		BuildValkeyDeployment(cfg),
 		BuildWorkerPool(cfg),
 		BuildActorTemplate(cfg),
 		BuildWorkerDeployment(cfg),
@@ -169,6 +172,79 @@ func BuildSecret(cfg Config) *corev1.Secret {
 		},
 		Type:       corev1.SecretTypeOpaque,
 		StringData: stringData,
+	}
+}
+
+// BuildValkeyService constructs the Kubernetes Service for the Valkey durable queue.
+func BuildValkeyService(cfg Config) *corev1.Service {
+	labels := map[string]string{"app": "valkey"}
+
+	return &corev1.Service{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "valkey",
+			Namespace: cfg.Namespace,
+			Labels:    labels,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: labels,
+			Ports: []corev1.ServicePort{{
+				Name:       "valkey",
+				Port:       6379,
+				TargetPort: intstr.FromInt32(6379),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	}
+}
+
+// BuildValkeyDeployment constructs the Kubernetes Deployment for the Valkey queue.
+func BuildValkeyDeployment(cfg Config) *appsv1.Deployment {
+	labels := map[string]string{"app": "valkey"}
+	replicas := int32(1)
+
+	return &appsv1.Deployment{
+		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "valkey",
+			Namespace: cfg.Namespace,
+			Labels:    labels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "valkey",
+						Image: "valkey/valkey:8.0",
+						Ports: []corev1.ContainerPort{{
+							Name:          "valkey",
+							ContainerPort: 6379,
+						}},
+						LivenessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromInt32(6379),
+								},
+							},
+							InitialDelaySeconds: 5,
+							PeriodSeconds:       10,
+						},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{
+									Port: intstr.FromInt32(6379),
+								},
+							},
+							InitialDelaySeconds: 2,
+							PeriodSeconds:       5,
+						},
+					}},
+				},
+			},
+		},
 	}
 }
 
@@ -232,7 +308,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 // BuildWorkerDeployment constructs the Kubernetes Deployment for the worker daemon.
 func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 	labels := map[string]string{"app": DefaultDeploymentName}
-	replicas := int32(3)
+	replicas := int32(5)
 
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
@@ -254,6 +330,10 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 							"ant", "beta:worker", "poll",
 							"--on-work", "ate-antworker",
 						},
+						Env: []corev1.EnvVar{{
+							Name:  "VALKEY_ADDR",
+							Value: fmt.Sprintf("valkey.%s.svc.cluster.local:6379", cfg.Namespace),
+						}},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
 								LocalObjectReference: corev1.LocalObjectReference{

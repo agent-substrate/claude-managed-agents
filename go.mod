@@ -4,8 +4,11 @@ go 1.26.5
 
 require (
 	github.com/agent-substrate/substrate v0.0.0-20260802031337-3ed6aa07e167
+	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/anthropics/anthropic-sdk-go v1.63.0
+	github.com/rakyll/sessionflight v0.0.0-20260816201745-d4f9bea3f4c7
 	github.com/spf13/cobra v1.10.2
+	github.com/valkey-io/valkey-go v1.0.77
 	google.golang.org/grpc v1.82.1
 	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1
@@ -13,7 +16,6 @@ require (
 )
 
 require (
-	github.com/alicebob/miniredis/v2 v2.38.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.0 // indirect
@@ -30,7 +32,6 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/valkey-io/valkey-go v1.0.77 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect

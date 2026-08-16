@@ -15,11 +15,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 const (
@@ -40,56 +35,32 @@ type WorkResponse struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// WorkerConfig defines configuration for the in-actor worker daemon.
+type WorkerConfig struct {
+	Addr string
+}
+
+// Defaults fills in default values for unset fields.
+func (c *WorkerConfig) Defaults() {
+	if c.Addr == "" {
+		c.Addr = DefaultWorkerAddr
+	}
+}
+
 // Worker runs a lightweight HTTP server inside a Substrate actor container.
-// On /work, it executes 'ant beta:worker run --session-id <session_id>'.
-//
-// Heartbeat Conflict Workaround:
-// ------------------------------
-// In Anthropic Managed Agents, the poller deployment runs `ant beta:worker poll --on-work ate-antworker`.
-// When a work item is claimed, `poll` maintains an upstream heartbeat loop with Anthropic to keep
-// the work lease alive while `--on-work` executes.
-//
-// Inside the Substrate actor microVM, `StartWork` runs `ant beta:worker run --work-id <id> --session-id <id>`.
-// However, `ant beta:worker run` ALSO attempts to heartbeat the same `work-id` and sends
-// `expected_last_heartbeat=NO_HEARTBEAT` on its first heartbeat (~10 seconds in).
-//
-// Because the poller already sent a heartbeat to Anthropic, Anthropic returns:
-//
-//	412 Precondition Failed: Heartbeat precondition failed: expected NO_HEARTBEAT, actual was <timestamp>
-//
-// This causes `ant beta:worker run` to believe another worker stole its lease, cancel its context,
-// and shut down prematurely (~15 seconds after starting). In multi-turn sessions, this leaves subsequent
-// tool calls stranded with no runner attached.
-//
-// To resolve this, Worker acts as a local reverse proxy for https://api.anthropic.com and starts
-// `ant beta:worker run` with `--base-url http://127.0.0.1:<port>`:
-//   - Heartbeats (`POST /v1/environments/.../work/.../heartbeat`) are intercepted locally and acknowledged
-//     with HTTP 200 OK (`{"state":"active","lease_extended":true,"ttl_seconds":300}`).
-//   - All real session event streams and tool execution results (`/v1/sessions/...`) are transparently
-//     proxied to https://api.anthropic.com.
-//   - The upstream poller (`poll`) continues to maintain the single, real lease with Anthropic until
-//     the actor finishes and is suspended.
+// On /work, it executes 'ant beta:worker run --session-id <session_id>'
+// and suspends the actor once execution finishes to snapshot state and free the worker runner.
 type Worker struct {
-	cfg          Config
+	addr         string
+	namespace    string
 	antBinary    string
 	localBaseURL string
 	proxy        http.Handler
-	ateConn      *grpc.ClientConn
 }
 
-// NewWorker creates a new Worker instance with an Anthropic reverse proxy.
-// It initializes cfg.AteClient if not already provided.
-func NewWorker(cfg Config) (*Worker, error) {
+// NewWorker creates a new Worker instance with an Anthropic reverse proxy and ateapi client for self-suspension.
+func NewWorker(cfg WorkerConfig) (*Worker, error) {
 	cfg.Defaults()
-	var ateConn *grpc.ClientConn
-	if cfg.AteClient == nil {
-		client, conn, err := DialAteAPI(cfg.AteapiAddr, cfg.Insecure)
-		if err != nil {
-			return nil, fmt.Errorf("dialing ateapi at %s: %w", cfg.AteapiAddr, err)
-		}
-		cfg.AteClient = client
-		ateConn = conn
-	}
 
 	targetURL, _ := url.Parse("https://api.anthropic.com")
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
@@ -103,26 +74,14 @@ func NewWorker(cfg Config) (*Worker, error) {
 		localBaseURL = "http://" + cfg.Addr
 	}
 	return &Worker{
-		cfg:          cfg,
+		addr:         cfg.Addr,
 		antBinary:    "ant",
 		localBaseURL: localBaseURL,
 		proxy:        proxy,
-		ateConn:      ateConn,
 	}, nil
 }
 
-// Close releases any background connections maintained by Worker.
-func (w *Worker) Close() error {
-	if w.ateConn != nil {
-		return w.ateConn.Close()
-	}
-	return nil
-}
-
 func (w *Worker) logger() *slog.Logger {
-	if w != nil && w.cfg.Logger != nil {
-		return w.cfg.Logger
-	}
 	return slog.Default()
 }
 
@@ -164,8 +123,8 @@ func (w *Worker) handleProxy(rw http.ResponseWriter, req *http.Request) {
 	http.NotFound(rw, req)
 }
 
-// handleWork parses the session ID and starts 'ant beta:worker run'.
-// Once the response has been returned to the client, it suspends the actor.
+// handleWork parses the session ID, returns 200 accepted immediately,
+// runs 'ant beta:worker run' in the background, and suspends the actor when done.
 func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost && req.Method != http.MethodPut {
 		http.Error(rw, `{"error": "method not allowed, use POST"}`, http.StatusMethodNotAllowed)
@@ -188,72 +147,18 @@ func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	stdout, stderr, err := w.StartWork(context.Background(), payload)
-	if err != nil {
-		errMsg := err.Error()
-		if stderr != "" {
-			errMsg = stderr
-		}
-		rw.Header().Set("Content-Type", "application/json")
-		rw.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(rw).Encode(WorkResponse{
-			Status: "error",
-			Output: stdout,
-			Error:  errMsg,
-		})
-		if flusher, ok := rw.(http.Flusher); ok {
-			flusher.Flush()
-		}
-		if err := w.suspendActor(sessionID); err != nil {
-			w.logger().Error("Failed to suspend actor after error response", slog.Any("error", err))
-		}
-		return
+	if _, _, err := w.StartWork(context.Background(), payload); err != nil {
+		w.logger().Error("Background ant worker process failed",
+			slog.String("session_id", sessionID),
+			slog.Any("error", err),
+		)
 	}
 
 	rw.Header().Set("Content-Type", "application/json")
 	rw.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(rw).Encode(WorkResponse{
-		Status: "completed",
-		Output: stdout,
+		Status: "accepted",
 	})
-	if flusher, ok := rw.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	if err := w.suspendActor(sessionID); err != nil {
-		w.logger().Error("Failed to suspend actor after success response", slog.Any("error", err))
-	}
-}
-
-func (w *Worker) suspendActor(sessionID string) error {
-	actorName := ActorName(sessionID)
-	actorRef := &ateapipb.ObjectRef{
-		Atespace: w.cfg.Namespace,
-		Name:     actorName,
-	}
-
-	w.logger().Info("Suspending actor after returning response",
-		slog.String("session_id", sessionID),
-		slog.String("actor", actorName),
-		slog.String("namespace", w.cfg.Namespace),
-	)
-
-	if w.cfg.AteClient == nil {
-		return fmt.Errorf("ateapi client not initialized")
-	}
-
-	suspendCtx, cancel := context.WithTimeout(context.Background(), DefaultSuspendTimeout)
-	defer cancel()
-
-	_, err := w.cfg.AteClient.SuspendActor(suspendCtx, &ateapipb.SuspendActorRequest{Actor: actorRef})
-	if err != nil && status.Code(err) != codes.NotFound {
-		w.logger().Error("Failed to suspend actor",
-			slog.String("actor", actorName),
-			slog.Any("error", err),
-		)
-		return fmt.Errorf("suspending actor %s: %w", actorName, err)
-	}
-	w.logger().Info("Actor suspended successfully", slog.String("actor", actorName))
-	return nil
 }
 
 // handleHealthz returns OK status.
@@ -325,9 +230,9 @@ func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string,
 	return stdout, stderr, err
 }
 
-// Run starts the HTTP server using w.cfg.Addr with 10-minute timeouts.
+// Run starts the HTTP server using w.addr with 10-minute timeouts.
 func (w *Worker) Run() error {
-	addr := w.cfg.Addr
+	addr := w.addr
 	if addr == "" {
 		addr = DefaultWorkerAddr
 	}

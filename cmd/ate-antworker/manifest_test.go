@@ -116,8 +116,8 @@ func find[T any](t *testing.T, objs []any, name string) T {
 func TestBuildManifests(t *testing.T) {
 	cfg := testConfig()
 	objs := BuildManifests(cfg)
-	if len(objs) != 5 {
-		t.Fatalf("got %d manifests, want 5", len(objs))
+	if len(objs) != 7 {
+		t.Fatalf("got %d manifests, want 7", len(objs))
 	}
 
 	ns := find[*corev1.Namespace](t, objs, "ate-antworker")
@@ -128,6 +128,16 @@ func TestBuildManifests(t *testing.T) {
 	secret := find[*corev1.Secret](t, objs, DefaultSecretName)
 	if secret.StringData["ANTHROPIC_ENVIRONMENT_ID"] != "env_test_123" {
 		t.Errorf("secret env id = %q", secret.StringData["ANTHROPIC_ENVIRONMENT_ID"])
+	}
+
+	valkeySvc := find[*corev1.Service](t, objs, "valkey")
+	if valkeySvc.Spec.Ports[0].Port != 6379 {
+		t.Errorf("valkey service port = %d, want 6379", valkeySvc.Spec.Ports[0].Port)
+	}
+
+	valkeyDep := find[*appsv1.Deployment](t, objs, "valkey")
+	if valkeyDep.Spec.Template.Spec.Containers[0].Image != "valkey/valkey:8.0" {
+		t.Errorf("valkey image = %q, want valkey/valkey:8.0", valkeyDep.Spec.Template.Spec.Containers[0].Image)
 	}
 
 	pool := find[*atev1alpha1.WorkerPool](t, objs, DefaultWorkerPool)
@@ -153,8 +163,8 @@ func TestBuildManifests(t *testing.T) {
 	}
 
 	deployment := find[*appsv1.Deployment](t, objs, DefaultDeploymentName)
-	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 3 {
-		t.Errorf("deployment replicas = %v, want 3", deployment.Spec.Replicas)
+	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 5 {
+		t.Errorf("deployment replicas = %v, want 5", *deployment.Spec.Replicas)
 	}
 	if len(deployment.Spec.Template.Spec.Containers) != 1 {
 		t.Fatalf("deployment containers count = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
@@ -181,10 +191,13 @@ func TestWriteManifests(t *testing.T) {
 	for _, want := range []string{
 		"kind: Namespace",
 		"kind: Secret",
+		"kind: Service",
+		"name: valkey",
 		"kind: WorkerPool",
 		"kind: ActorTemplate",
 		"apiVersion: ate.dev/v1alpha1",
 		"kind: Deployment",
+		"name: ate-antworker",
 		"image: gcr.io/test/worker@sha256:1111",
 		"location: gs://test-bucket/snapshots/",
 		"ant",

@@ -6,11 +6,9 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -24,139 +22,26 @@ import (
 )
 
 const (
-	DefaultNamespace        = "ate-antworker"
-	DefaultTemplate         = "ate-antworker-actor-template"
-	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
-	DefaultAtenetRouterAddr = "atenet-router.ate-system.svc.cluster.local:80"
-	DefaultSuspendTimeout   = 30 * time.Second
-	DefaultWorkTimeout      = 10 * time.Minute
+	DefaultNamespace  = "ate-antworker"
+	DefaultTemplate   = "ate-antworker-actor-template"
+	DefaultAteapiAddr = "api.ate-system.svc.cluster.local:443"
 )
 
-// Config defines the configuration for Substrate actor dispatching.
-type Config struct {
-	Addr             string
-	AteapiAddr       string
-	AtenetRouterAddr string
-	Namespace        string
-	Template         string
-	Insecure         bool
-	Logger           *slog.Logger
-	EnvironmentID    string
-	EnvironmentKey   string
-
-	// AteClient can be provided to override the default gRPC client (e.g. in tests).
-	AteClient ateapipb.ControlClient
-}
-
-// Defaults fills in default values for unset fields.
-func (c *Config) Defaults() {
-	if c.Addr == "" {
-		c.Addr = DefaultWorkerAddr
-	}
-	if c.Namespace == "" {
-		c.Namespace = os.Getenv("ATESPACE")
-	}
-	if c.Namespace == "" {
-		c.Namespace = os.Getenv("NAMESPACE")
-	}
-	if c.Namespace == "" {
-		c.Namespace = DefaultNamespace
-	}
-	if c.Template == "" {
-		c.Template = DefaultTemplate
-	}
-	if c.AteapiAddr == "" {
-		c.AteapiAddr = os.Getenv("ATEAPI_ADDR")
-	}
-	if c.AteapiAddr == "" {
-		c.AteapiAddr = DefaultAteapiAddr
-	}
-	if c.AtenetRouterAddr == "" {
-		c.AtenetRouterAddr = os.Getenv("ATENET_ROUTER_ADDR")
-	}
-	if c.AtenetRouterAddr == "" {
-		c.AtenetRouterAddr = DefaultAtenetRouterAddr
-	}
-	if c.EnvironmentID == "" {
-		c.EnvironmentID = os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
-	}
-	if c.EnvironmentKey == "" {
-		c.EnvironmentKey = os.Getenv("ANTHROPIC_ENVIRONMENT_KEY")
-	}
-	if c.Logger == nil {
-		c.Logger = slog.Default()
-	}
-}
-
-// DispatchWork receives a single Anthropic session (e.g. from 'ant beta:worker poll --on-work')
-// and dispatches it to the corresponding Substrate actor via the atenet router.
-// It waits for the work item to finish.
-func DispatchWork(ctx context.Context, cfg Config, sessionID string) error {
-	cfg.Defaults()
-	logger := cfg.Logger
-
-	if sessionID == "" {
-		return fmt.Errorf("session_id is required")
-	}
-
-	aName := ActorName(sessionID)
+func run(ctx context.Context, ateClient ateapipb.ControlClient, cfg Config, sessionID string) error {
 	actorRef := &ateapipb.ObjectRef{
 		Atespace: cfg.Namespace,
-		Name:     aName,
+		Name:     actorName(sessionID),
 	}
 
-	logger.Info("Dispatching work item to Substrate actor",
-		slog.String("session_id", sessionID),
-		slog.String("actor", aName),
-		slog.String("namespace", cfg.Namespace),
-	)
-
-	var (
-		ateClient ateapipb.ControlClient
-		conn      *grpc.ClientConn
-		err       error
-	)
-
-	if cfg.AteClient != nil {
-		ateClient = cfg.AteClient
-	} else {
-		ateClient, conn, err = DialAteAPI(cfg.AteapiAddr, cfg.Insecure)
-		if err != nil {
-			return fmt.Errorf("dialing ateapi at %s: %w", cfg.AteapiAddr, err)
-		}
-		defer conn.Close()
-	}
-
-	// Ensure actor exists and run the work item synchronously via worker daemon
-	if err := RunActor(ctx, ateClient, cfg, actorRef, sessionID, sessionID); err != nil {
-		return fmt.Errorf("dispatching work to actor: %w", err)
-	}
-
-	logger.Info("Work item completed successfully on actor",
-		slog.String("session_id", sessionID),
-		slog.String("actor", aName),
-	)
-	return nil
-}
-
-// RunActor ensures the atespace and actor exist in Substrate,
-// and notifies the actor via the Substrate atenet router (which automatically wakes/resumes it).
-func RunActor(ctx context.Context, ateClient ateapipb.ControlClient, cfg Config, actorRef *ateapipb.ObjectRef, workID, sessionID string) error {
-	_, err := ateClient.GetActor(ctx, &ateapipb.GetActorRequest{Actor: actorRef})
-	if err == nil {
-		return NotifyActorWork(ctx, cfg, actorRef, workID, sessionID)
-	}
-
+	actor, err := ateClient.GetActor(ctx, &ateapipb.GetActorRequest{Actor: actorRef})
 	if status.Code(err) == codes.NotFound {
-		cfg.Logger.Info("Actor not found, registering new actor",
+		cfg.Logger.Info("Actor not found, creating new actor",
 			slog.String("actor", actorRef.Name),
 			slog.String("atespace", actorRef.Atespace),
 		)
-
-		if err := EnsureAtespace(ctx, ateClient, actorRef.Atespace); err != nil {
+		if err := ensureAtespace(ctx, ateClient, actorRef.Atespace); err != nil {
 			return fmt.Errorf("ensuring atespace %q: %w", actorRef.Atespace, err)
 		}
-
 		_, err = ateClient.CreateActor(ctx, &ateapipb.CreateActorRequest{
 			Actor: &ateapipb.Actor{
 				Metadata: &ateapipb.ResourceMetadata{
@@ -171,14 +56,18 @@ func RunActor(ctx context.Context, ateClient ateapipb.ControlClient, cfg Config,
 			return fmt.Errorf("creating actor %s: %w", actorRef.Name, err)
 		}
 
-		return NotifyActorWork(ctx, cfg, actorRef, workID, sessionID)
+	} else if err != nil {
+		return err
+	} else if actor != nil {
+		if _, err := ateClient.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: actorRef}); err != nil {
+			cfg.Logger.Debug("ResumeActor result", slog.String("actor", actorRef.Name), slog.Any("error", err))
+		}
 	}
-
-	return err
+	return notify(ctx, cfg, actorRef, sessionID)
 }
 
-// EnsureAtespace creates the Atespace if it doesn't already exist.
-func EnsureAtespace(ctx context.Context, ateClient ateapipb.ControlClient, atespace string) error {
+// ensureAtespace creates the Atespace if it doesn't already exist.
+func ensureAtespace(ctx context.Context, ateClient ateapipb.ControlClient, atespace string) error {
 	_, err := ateClient.CreateAtespace(ctx, &ateapipb.CreateAtespaceRequest{
 		Atespace: &ateapipb.Atespace{
 			Metadata: &ateapipb.ResourceMetadata{
@@ -192,8 +81,8 @@ func EnsureAtespace(ctx context.Context, ateClient ateapipb.ControlClient, atesp
 	return nil
 }
 
-// ActorName returns a deterministic RFC 1123 compliant actor name for a given Anthropic session ID.
-func ActorName(sessionID string) string {
+// actorName returns a deterministic RFC 1123 compliant actor name for a given Anthropic session ID.
+func actorName(sessionID string) string {
 	h := sha256.Sum256([]byte(sessionID))
 	hashSuffix := fmt.Sprintf("%x", h[:8]) // 16 hex chars
 
@@ -218,25 +107,8 @@ func ActorName(sessionID string) string {
 	return fmt.Sprintf("%s-%s", prefix, hashSuffix)
 }
 
-// DialAteAPI dials the Substrate ateapi gRPC service.
-func DialAteAPI(endpoint string, insecureConn bool) (ateapipb.ControlClient, *grpc.ClientConn, error) {
-	var creds credentials.TransportCredentials
-	if insecureConn {
-		creds = insecure.NewCredentials()
-	} else {
-		creds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
-	}
-
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(creds))
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return ateapipb.NewControlClient(conn), conn, nil
-}
-
-// NotifyActorWork sends an HTTP POST request to the actor via the Substrate atenet router.
-func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectRef, workID, sessionID string) error {
+// notify sends an HTTP POST request to the actor via the Substrate atenet router.
+func notify(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectRef, sessionID string) error {
 	routerAddr := cfg.AtenetRouterAddr
 	if !strings.HasPrefix(routerAddr, "http://") && !strings.HasPrefix(routerAddr, "https://") {
 		routerAddr = "http://" + routerAddr
@@ -253,11 +125,12 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 		return fmt.Errorf("marshaling work payload: %w", err)
 	}
 
+	timeoutMs := fmt.Sprintf("%d", DefaultWorkTimeout.Milliseconds())
 	backoff := wait.Backoff{
-		Duration: 100 * time.Millisecond,
-		Factor:   2.0,
-		Steps:    6,
-		Cap:      2 * time.Second,
+		Duration: 500 * time.Millisecond,
+		Factor:   1.5,
+		Steps:    15,
+		Cap:      5 * time.Second,
 	}
 
 	var lastErr error
@@ -267,8 +140,8 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 			return false, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("x-envoy-upstream-rq-timeout-ms", "0")
-		req.Header.Set("x-envoy-upstream-rq-per-try-timeout-ms", "0")
+		req.Header.Set("x-envoy-upstream-rq-timeout-ms", timeoutMs)
+		req.Header.Set("x-envoy-upstream-rq-per-try-timeout-ms", timeoutMs)
 		req.Host = fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorRef.Name, actorRef.Atespace)
 
 		client := &http.Client{
@@ -291,21 +164,47 @@ func NotifyActorWork(ctx context.Context, cfg Config, actorRef *ateapipb.ObjectR
 
 		cfg.Logger.Info("Successfully notified actor of work item via router",
 			slog.String("actor", actorRef.Name),
-			slog.String("work_id", workID),
 			slog.String("session_id", sessionID),
 			slog.String("status", workResp.Status),
 		)
+
 		return true, nil
 	})
 
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
-		if lastErr != nil {
-			return lastErr
-		}
-		return err
+	if err != nil && lastErr != nil {
+		return lastErr
 	}
+	return err
+}
+
+func suspendActor(ctx context.Context, ateClient ateapipb.ControlClient, cfg Config, actorRef *ateapipb.ObjectRef, sessionID string) error {
+	suspendCtx, cancel := context.WithTimeout(ctx, DefaultSuspendTimeout)
+	defer cancel()
+
+	_, err := ateClient.SuspendActor(suspendCtx, &ateapipb.SuspendActorRequest{Actor: actorRef})
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		return fmt.Errorf("suspending actor %s: %w", actorRef.Name, err)
+	}
+	cfg.Logger.Info("Actor suspended successfully", slog.String("actor", actorRef.Name))
 	return nil
+}
+
+// dialATE dials the Substrate ateapi gRPC service.
+func dialATE(endpoint string, insecureConn bool) (ateapipb.ControlClient, *grpc.ClientConn, error) {
+	var creds credentials.TransportCredentials
+	if insecureConn {
+		creds = insecure.NewCredentials()
+	} else {
+		creds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
+	}
+
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(creds))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return ateapipb.NewControlClient(conn), conn, nil
 }

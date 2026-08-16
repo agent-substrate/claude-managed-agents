@@ -9,8 +9,7 @@ import (
 )
 
 func TestWorkerHTTPHandler(t *testing.T) {
-	fakeClient := newFakeControlClient()
-	w, err := NewWorker(Config{AteClient: fakeClient})
+	w, err := NewWorker(WorkerConfig{})
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
@@ -41,7 +40,7 @@ func TestWorkerHTTPHandler(t *testing.T) {
 	var startResp WorkResponse
 	_ = json.NewDecoder(resp.Body).Decode(&startResp)
 	resp.Body.Close()
-	if startResp.Status != "completed" {
+	if startResp.Status != "accepted" {
 		t.Errorf("unexpected dispatch response: %+v", startResp)
 	}
 
@@ -66,13 +65,13 @@ func TestWorkerHTTPHandler(t *testing.T) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&startResp)
 	resp.Body.Close()
-	if startResp.Status != "completed" {
+	if startResp.Status != "accepted" {
 		t.Errorf("unexpected dispatch response: %+v", startResp)
 	}
 }
 
 func TestWorkerStartWorkMissingIDs(t *testing.T) {
-	w, err := NewWorker(Config{AteClient: newFakeControlClient()})
+	w, err := NewWorker(WorkerConfig{})
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
@@ -84,7 +83,7 @@ func TestWorkerStartWorkMissingIDs(t *testing.T) {
 }
 
 func TestWorkerStartWorkExecution(t *testing.T) {
-	w, err := NewWorker(Config{AteClient: newFakeControlClient()})
+	w, err := NewWorker(WorkerConfig{})
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
@@ -100,7 +99,7 @@ func TestWorkerStartWorkExecution(t *testing.T) {
 }
 
 func TestWorkerHeartbeatInterception(t *testing.T) {
-	w, err := NewWorker(Config{AteClient: newFakeControlClient()})
+	w, err := NewWorker(WorkerConfig{})
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
@@ -120,37 +119,5 @@ func TestWorkerHeartbeatInterception(t *testing.T) {
 
 	if res["state"] != "active" || res["lease_extended"] != true {
 		t.Errorf("unexpected heartbeat response: %v", res)
-	}
-}
-
-func TestWorkerSuspendsActorAfterResponse(t *testing.T) {
-	fakeClient := newFakeControlClient()
-	sessionID := "sesn_01UgEbQopdaDjL8DxCvjMwat"
-	aName := ActorName(sessionID)
-	key := DefaultNamespace + "/" + aName
-
-	w, err := NewWorker(Config{AteClient: fakeClient})
-	if err != nil {
-		t.Fatalf("NewWorker: %v", err)
-	}
-	w.antBinary = "true"
-
-	server := httptest.NewServer(w.Handler())
-	defer server.Close()
-
-	payload, _ := json.Marshal(WorkRequest{SessionID: sessionID})
-	resp, err := http.Post(server.URL+"/work", "application/json", bytes.NewReader(payload))
-	if err != nil {
-		t.Fatalf("POST /work: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("POST /work status = %d, want 200", resp.StatusCode)
-	}
-	var startResp WorkResponse
-	_ = json.NewDecoder(resp.Body).Decode(&startResp)
-	resp.Body.Close()
-
-	if fakeClient.suspendedActors[key] != 1 {
-		t.Errorf("expected actor %q to be suspended by worker after response, count = %d", key, fakeClient.suspendedActors[key])
 	}
 }
