@@ -127,11 +127,11 @@ Once deployed, send tasks to Claude referencing your self-hosted `ANTHROPIC_ENVI
 export ANTHROPIC_API_KEY="sk-ant-api..."
 export ANTHROPIC_ENVIRONMENT_ID="env_..."
 
-# 2. Run example
+# 2. Run example with an initial prompt (prints session ID & trace URL)
 go run ./examples/agent \
   --prompt "Run 'uname -a' in bash and show the output."
 
-# 3. Reuse the agent it created, instead of creating one on every run
+# 3. Reuse an existing agent, instead of creating one on every run
 go run ./examples/agent \
   --agent "agent_..." \
   --prompt "Show the kernel version."

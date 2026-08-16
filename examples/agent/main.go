@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
-	"github.com/anthropics/anthropic-sdk-go/packages/ssestream"
 )
 
 func main() {
@@ -24,7 +22,7 @@ func main() {
 		defaultModel = anthropic.BetaManagedAgentsModelClaudeOpus5
 	}
 
-	flag.StringVar(&prompt, "prompt", "Run `uname -a` in bash and show the output.", "prompt to execute in the sandbox")
+	flag.StringVar(&prompt, "prompt", "Run `uname -a` in bash and show the output.", "initial prompt to execute in the sandbox")
 	flag.StringVar(&model, "model", defaultModel, "Anthropic model to power the agent")
 	flag.StringVar(&agentID, "agent", "", "existing agent to reuse; a new agent is created when empty")
 	flag.Parse()
@@ -34,37 +32,23 @@ func main() {
 	// 'ant auth login' profile, then workload identity federation.
 	client := anthropic.NewClient()
 
-	session := startSession(ctx, &client, agentID, model, prompt)
+	session, resolvedAgentID := createSession(ctx, &client, agentID, model, prompt)
 
-	fmt.Printf("  session  %s\n", session.ID)
-	fmt.Printf("  trace    https://platform.claude.com/workspaces/default/sessions/%s\n", session.ID)
-
-	fmt.Printf("\n▸ %s\n", prompt)
-	fmt.Println(strings.Repeat("─", 60))
-
-	// Open the stream before sending: it only delivers events that happen after
-	// it opens, so sending first can lose the early ones.
-	stream := client.Beta.Sessions.Events.StreamEvents(ctx, session.ID, anthropic.BetaSessionEventStreamParams{})
-	defer stream.Close()
-
-	if err := streamEvents(stream); err != nil {
-		log.Fatal(err)
-	}
+	fmt.Printf("💬 Prompt:  %s\n", prompt)
+	fmt.Printf("🤖 Agent:   %s\n", resolvedAgentID)
+	fmt.Printf("🚀 Session: %s\n", session.ID)
+	fmt.Printf("🔗 Click to view session & send more inputs: https://platform.claude.com/workspaces/default/sessions/%s\n", session.ID)
 }
 
-// startSession creates the agent (unless one was supplied) and opens a session
-// on the self-hosted environment with initial events.
-func startSession(ctx context.Context, client *anthropic.Client, agentID, model, prompt string) *anthropic.BetaManagedAgentsSession {
+// createSession creates the agent (unless one was supplied) and opens a session
+// on the self-hosted environment.
+func createSession(ctx context.Context, client *anthropic.Client, agentID, model, prompt string) (*anthropic.BetaManagedAgentsSession, string) {
 	envID := os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
 	if envID == "" {
 		log.Fatal("Error: ANTHROPIC_ENVIRONMENT_ID environment variable is required.\nExport it with: export ANTHROPIC_ENVIRONMENT_ID=\"env_...\"")
 	}
 
-	// Agents are persistent, versioned objects: create one, then reuse its ID on
-	// every run. Creating a fresh agent per run leaves orphaned agents behind and
-	// gives up version pinning.
 	if agentID == "" {
-		fmt.Printf("● Creating agent  (model %s)\n", model)
 		agent, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
 			Name: "Agent Substrate Example Agent",
 			Model: anthropic.BetaManagedAgentsModelConfigParams{
@@ -90,19 +74,16 @@ func startSession(ctx context.Context, client *anthropic.Client, agentID, model,
 			log.Fatalf("failed to create agent: %v", err)
 		}
 		agentID = agent.ID
-		fmt.Printf("  agent    %s\n", agentID)
-		fmt.Printf("  reuse    --agent %s\n", agentID)
-	} else {
-		fmt.Printf("● Using agent     %s\n", agentID)
 	}
 
-	fmt.Printf("● Creating session  (environment %s)\n", envID)
-	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+	params := anthropic.BetaSessionNewParams{
 		Agent: anthropic.BetaSessionNewParamsAgentUnion{
 			OfString: param.NewOpt(agentID),
 		},
 		EnvironmentID: envID,
-		InitialEvents: []anthropic.BetaSessionNewParamsInitialEventUnion{
+	}
+	if prompt != "" {
+		params.InitialEvents = []anthropic.BetaSessionNewParamsInitialEventUnion{
 			{
 				OfUserMessage: &anthropic.BetaManagedAgentsUserMessageEventParams{
 					Type: "user.message",
@@ -116,70 +97,12 @@ func startSession(ctx context.Context, client *anthropic.Client, agentID, model,
 					},
 				},
 			},
-		},
-	})
-	if err != nil {
-		log.Fatalf("failed to create session: %v", err)
-	}
-	return session
-}
-
-// streamEvents renders the session's events until it stops for good, returning
-// whatever ended it: an error the session reported, an error reading the
-// stream, or nil once the agent is done.
-func streamEvents(stream *ssestream.Stream[anthropic.BetaManagedAgentsStreamSessionEventsUnion]) error {
-	for stream.Next() {
-		event := stream.Current()
-
-		switch v := event.AsAny().(type) {
-		case anthropic.BetaManagedAgentsAgentThinkingEvent:
-			fmt.Printf("\n🧠 thinking...\n")
-
-		case anthropic.BetaManagedAgentsAgentToolUseEvent,
-			anthropic.BetaManagedAgentsAgentCustomToolUseEvent,
-			anthropic.BetaManagedAgentsAgentMCPToolUseEvent:
-			printToolUse(event.RawJSON())
-
-		case anthropic.BetaManagedAgentsUserToolResultEvent,
-			anthropic.BetaManagedAgentsAgentToolResultEvent,
-			anthropic.BetaManagedAgentsUserCustomToolResultEvent,
-			anthropic.BetaManagedAgentsAgentMCPToolResultEvent:
-			printToolResult(event.RawJSON())
-
-		case anthropic.BetaManagedAgentsAgentMessageEvent:
-			fmt.Printf("\n● Claude\n")
-			for _, block := range v.Content {
-				if block.Type == "text" {
-					fmt.Printf("%s\n", block.Text)
-				}
-			}
-
-		case anthropic.BetaManagedAgentsSessionStatusIdleEvent:
-			// A session also goes idle while it waits on us, for a tool
-			// confirmation or a custom tool result. Any stop reason other than
-			// requires_action means it has stopped for good.
-			if v.StopReason.Type != "requires_action" {
-				return nil
-			}
-
-		case anthropic.BetaManagedAgentsSessionStatusTerminatedEvent:
-			return nil
-
-		case anthropic.BetaManagedAgentsSessionErrorEvent:
-			return fmt.Errorf("session error: %s", v.Error.Message)
-
-		default:
-			// do nothing
 		}
 	}
 
-	return stream.Err()
-}
-
-func printToolUse(rawJSON string) {
-	fmt.Printf("\n⚒ tool call\n%s\n", rawJSON)
-}
-
-func printToolResult(rawJSON string) {
-	fmt.Printf("\n↳ tool result\n%s\n", rawJSON)
+	session, err := client.Beta.Sessions.New(ctx, params)
+	if err != nil {
+		log.Fatalf("failed to create session: %v", err)
+	}
+	return session, agentID
 }
