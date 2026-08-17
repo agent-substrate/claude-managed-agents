@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/agent-substrate/claude-managed-agents/internal/worker"
+	"github.com/agent-substrate/claude-managed-agents/internal/runner"
 	"github.com/spf13/cobra"
 )
 
@@ -16,15 +16,15 @@ When it receives POST /work with {session_id}, it forks:
 ant beta:worker run.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			w, err := worker.NewWorker(worker.WorkerConfig{
+			r, err := runner.NewRunner(runner.RunnerConfig{
 				Addr: addr,
 			})
 			if err != nil {
 				return err
 			}
-			return w.Run()
+			return r.Run()
 		},
 	}
-	cmd.Flags().StringVar(&addr, "addr", worker.DefaultWorkerAddr, "HTTP listen address")
+	cmd.Flags().StringVar(&addr, "addr", runner.DefaultRunnerAddr, "HTTP listen address")
 	return cmd
 }

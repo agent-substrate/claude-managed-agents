@@ -72,7 +72,7 @@ make push
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-ant@sha256:6ece4da792fb9b917eefe5a36cf09f0cb69ad6b33a6b4f91dc1f0b0cbd05a181 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-ant@sha256:6b40d00fc7c125be261b891e8294ba6c7c0cbfe9da90e83175076138e77ed7dd \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \

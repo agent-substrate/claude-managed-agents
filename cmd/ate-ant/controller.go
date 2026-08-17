@@ -7,8 +7,8 @@ import (
 
 	"github.com/agent-substrate/claude-managed-agents/internal/actor"
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
+	"github.com/agent-substrate/claude-managed-agents/internal/runner"
 	"github.com/agent-substrate/claude-managed-agents/internal/sessionmanager"
-	"github.com/agent-substrate/claude-managed-agents/internal/worker"
 	"github.com/spf13/cobra"
 )
 
@@ -56,7 +56,7 @@ func newControllerCommand() *cobra.Command {
 				if err := actorMgr.Resume(ctx, event.SessionID); err != nil {
 					return fmt.Errorf("resuming session %s: %w", event.SessionID, err)
 				}
-				payload := worker.WorkRequest{
+				payload := runner.WorkRequest{
 					SessionID: event.SessionID,
 					WorkID:    event.WorkID,
 				}

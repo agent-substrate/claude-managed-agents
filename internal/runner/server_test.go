@@ -1,4 +1,4 @@
-package worker
+package runner
 
 import (
 	"bytes"
@@ -8,14 +8,14 @@ import (
 	"testing"
 )
 
-func TestWorkerHTTPHandler(t *testing.T) {
-	w, err := NewWorker(WorkerConfig{})
+func TestRunnerHTTPHandler(t *testing.T) {
+	r, err := NewRunner(RunnerConfig{})
 	if err != nil {
-		t.Fatalf("NewWorker: %v", err)
+		t.Fatalf("NewRunner: %v", err)
 	}
-	w.antBinary = "true"
+	r.antBinary = "true"
 
-	server := httptest.NewServer(w.Handler())
+	server := httptest.NewServer(r.Handler())
 	defer server.Close()
 
 	// 1. Health check
@@ -70,40 +70,40 @@ func TestWorkerHTTPHandler(t *testing.T) {
 	}
 }
 
-func TestWorkerStartWorkMissingIDs(t *testing.T) {
-	w, err := NewWorker(WorkerConfig{})
+func TestRunnerStartWorkMissingIDs(t *testing.T) {
+	r, err := NewRunner(RunnerConfig{})
 	if err != nil {
-		t.Fatalf("NewWorker: %v", err)
+		t.Fatalf("NewRunner: %v", err)
 	}
-	w.antBinary = "true"
+	r.antBinary = "true"
 
-	if _, _, err := w.StartWork(t.Context(), WorkRequest{SessionID: ""}); err == nil {
+	if _, _, err := r.StartWork(t.Context(), WorkRequest{SessionID: ""}); err == nil {
 		t.Error("expected error when sessionID is empty, got nil")
 	}
 }
 
-func TestWorkerStartWorkExecution(t *testing.T) {
-	w, err := NewWorker(WorkerConfig{})
+func TestRunnerStartWorkExecution(t *testing.T) {
+	r, err := NewRunner(RunnerConfig{})
 	if err != nil {
-		t.Fatalf("NewWorker: %v", err)
+		t.Fatalf("NewRunner: %v", err)
 	}
-	w.antBinary = "true"
+	r.antBinary = "true"
 
-	if _, _, err := w.StartWork(t.Context(), WorkRequest{
+	if _, _, err := r.StartWork(t.Context(), WorkRequest{
 		SessionID: "sesn_test_123",
 	}); err != nil {
 		t.Fatalf("StartWork: %v", err)
 	}
 }
 
-func TestWorkerSingleExecutionConcurrency(t *testing.T) {
-	w, err := NewWorker(WorkerConfig{})
+func TestRunnerSingleExecutionConcurrency(t *testing.T) {
+	r, err := NewRunner(RunnerConfig{})
 	if err != nil {
-		t.Fatalf("NewWorker: %v", err)
+		t.Fatalf("NewRunner: %v", err)
 	}
-	w.antBinary = "true"
+	r.antBinary = "true"
 
-	server := httptest.NewServer(w.Handler())
+	server := httptest.NewServer(r.Handler())
 	defer server.Close()
 
 	// Dispatch multiple concurrent requests
@@ -120,14 +120,14 @@ func TestWorkerSingleExecutionConcurrency(t *testing.T) {
 	}
 }
 
-func TestWorkerIdleEndpoint(t *testing.T) {
-	w, err := NewWorker(WorkerConfig{})
+func TestRunnerIdleEndpoint(t *testing.T) {
+	r, err := NewRunner(RunnerConfig{})
 	if err != nil {
-		t.Fatalf("NewWorker: %v", err)
+		t.Fatalf("NewRunner: %v", err)
 	}
-	w.antBinary = "true"
+	r.antBinary = "true"
 
-	server := httptest.NewServer(w.Handler())
+	server := httptest.NewServer(r.Handler())
 	defer server.Close()
 
 	resp, err := http.Get(server.URL + "/idle")
@@ -152,23 +152,23 @@ func TestWorkerIdleEndpoint(t *testing.T) {
 	}
 
 	// 2. Dispatch work -> actor is marked running, /idle returns 0s
-	w.workMu.Lock() // block background work so it stays running
+	r.workMu.Lock() // block background work so it stays running
 	payload, _ := json.Marshal(WorkRequest{SessionID: "sesn_idle_test"})
 	resp, err = http.Post(server.URL+"/work", "application/json", bytes.NewReader(payload))
 	if err != nil {
-		w.workMu.Unlock()
+		r.workMu.Unlock()
 		t.Fatalf("POST /work: %v", err)
 	}
 	resp.Body.Close()
 
 	resp, err = http.Get(server.URL + "/idle")
 	if err != nil {
-		w.workMu.Unlock()
+		r.workMu.Unlock()
 		t.Fatalf("GET /idle while running: %v", err)
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&idle)
 	resp.Body.Close()
-	w.workMu.Unlock()
+	r.workMu.Unlock()
 
 	if idle.IdleDuration != "0s" {
 		t.Errorf("expected idle_duration = '0s' while running, got %q", idle.IdleDuration)
