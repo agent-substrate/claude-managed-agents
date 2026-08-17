@@ -6,7 +6,7 @@ import (
 )
 
 func newWorkerCommand() *cobra.Command {
-	var cfg worker.WorkerConfig
+	var addr string
 
 	cmd := &cobra.Command{
 		Use:   "worker",
@@ -16,13 +16,15 @@ When it receives POST /work with {session_id}, it forks:
 ant beta:worker run.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			w, err := worker.NewWorker(cfg)
+			w, err := worker.NewWorker(worker.WorkerConfig{
+				Addr: addr,
+			})
 			if err != nil {
 				return err
 			}
 			return w.Run()
 		},
 	}
-	cmd.Flags().StringVar(&cfg.Addr, "addr", worker.DefaultWorkerAddr, "HTTP listen address")
+	cmd.Flags().StringVar(&addr, "addr", worker.DefaultWorkerAddr, "HTTP listen address")
 	return cmd
 }

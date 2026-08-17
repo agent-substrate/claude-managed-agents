@@ -1,4 +1,4 @@
-package life
+package actor
 
 import (
 	"context"

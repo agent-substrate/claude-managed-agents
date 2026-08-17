@@ -181,54 +181,6 @@ func TestPollOnceNotFoundOrEmpty(t *testing.T) {
 	}
 }
 
-func TestHeartbeat(t *testing.T) {
-	var requestedPath string
-
-	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		requestedPath = req.URL.Path
-		rw.Header().Set("Content-Type", "application/json")
-		rw.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(rw).Encode(map[string]any{
-			"type":           "work_heartbeat",
-			"state":          "active",
-			"lease_extended": true,
-			"last_heartbeat": "2026-08-16T22:05:00Z",
-			"ttl_seconds":    300,
-		})
-	}))
-	defer server.Close()
-
-	client := anthropic.NewClient(
-		option.WithBaseURL(server.URL),
-		option.WithAPIKey("test-api-key"),
-	)
-
-	p, err := New(Config{
-		Client:        &client,
-		EnvironmentID: "env_123",
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	resp, err := p.Heartbeat(context.Background(), "work_123", "")
-	if err != nil {
-		t.Fatalf("Heartbeat: %v", err)
-	}
-	if requestedPath != "/v1/environments/env_123/work/work_123/heartbeat" {
-		t.Errorf("requested path = %q, want '/v1/environments/env_123/work/work_123/heartbeat'", requestedPath)
-	}
-	if !resp.LeaseExtended {
-		t.Errorf("LeaseExtended = false, want true")
-	}
-	if resp.TTLSeconds != 300 {
-		t.Errorf("TTLSeconds = %d, want 300", resp.TTLSeconds)
-	}
-	if resp.LastHeartbeat != "2026-08-16T22:05:00Z" {
-		t.Errorf("LastHeartbeat = %q, want '2026-08-16T22:05:00Z'", resp.LastHeartbeat)
-	}
-}
-
 func TestComplete(t *testing.T) {
 	var requestedPath string
 
@@ -279,47 +231,6 @@ func TestComplete(t *testing.T) {
 	}
 }
 
-func TestStartHeartbeat(t *testing.T) {
-	var heartbeatCount int32
-
-	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
-		atomic.AddInt32(&heartbeatCount, 1)
-		rw.Header().Set("Content-Type", "application/json")
-		rw.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(rw).Encode(map[string]any{
-			"type":           "work_heartbeat",
-			"state":          "active",
-			"lease_extended": true,
-			"last_heartbeat": "2026-08-16T22:00:00Z",
-			"ttl_seconds":    300,
-		})
-	}))
-	defer server.Close()
-
-	client := anthropic.NewClient(
-		option.WithBaseURL(server.URL),
-		option.WithAPIKey("test-api-key"),
-	)
-
-	p, err := New(Config{
-		Client:            &client,
-		EnvironmentID:     "env_123",
-		HeartbeatInterval: 10 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	stop, _ := p.StartHeartbeat(context.Background(), "work_123")
-	time.Sleep(35 * time.Millisecond)
-	stop()
-
-	count := atomic.LoadInt32(&heartbeatCount)
-	if count < 2 {
-		t.Errorf("heartbeatCount = %d, expected at least 2", count)
-	}
-}
-
 func TestPollLoop(t *testing.T) {
 	var (
 		pollCalls int32
@@ -350,14 +261,6 @@ func TestPollLoop(t *testing.T) {
 				return
 			}
 			rw.WriteHeader(http.StatusNotFound)
-		case "/v1/environments/env_123/work/work_first_1/heartbeat":
-			_ = json.NewEncoder(rw).Encode(map[string]any{
-				"type":           "work_heartbeat",
-				"state":          "active",
-				"lease_extended": true,
-				"last_heartbeat": "2026-08-16T22:00:00Z",
-				"ttl_seconds":    300,
-			})
 		case "/v1/environments/env_123/work/work_first_1/stop":
 			atomic.AddInt32(&stopCalls, 1)
 			_ = json.NewEncoder(rw).Encode(map[string]any{
@@ -390,10 +293,9 @@ func TestPollLoop(t *testing.T) {
 	)
 
 	p, err := New(Config{
-		Client:            &client,
-		EnvironmentID:     "env_123",
-		PollInterval:      10 * time.Millisecond,
-		HeartbeatInterval: 10 * time.Millisecond,
+		Client:        &client,
+		EnvironmentID: "env_123",
+		PollInterval:  10 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -403,7 +305,6 @@ func TestPollLoop(t *testing.T) {
 	go func() {
 		_ = p.Poll(ctx, func(ctx context.Context, item *anthropic.BetaSelfHostedWork) error {
 			handled <- item.ID
-			_, _ = p.Complete(ctx, item.ID, false)
 			return nil
 		})
 	}()
@@ -419,8 +320,4 @@ func TestPollLoop(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 	cancel()
-
-	if atomic.LoadInt32(&stopCalls) != 1 {
-		t.Errorf("stopCalls = %d, want 1", atomic.LoadInt32(&stopCalls))
-	}
 }

@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	DefaultWorkerAddr = ":80"
+	DefaultWorkerAddr  = ":80"
+	DefaultWorkTimeout = 10 * time.Minute
 )
 
 // WorkRequest is the JSON payload accepted by the worker HTTP server.
@@ -68,6 +69,7 @@ type Worker struct {
 // NewWorker creates a new Worker instance.
 func NewWorker(cfg WorkerConfig) (*Worker, error) {
 	cfg.Defaults()
+
 	return &Worker{
 		addr:         cfg.Addr,
 		antBinary:    "ant",

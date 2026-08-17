@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -21,23 +20,19 @@ var (
 )
 
 const (
-	DefaultPollInterval      = 1 * time.Second
-	DefaultHeartbeatInterval = 15 * time.Second
-	DefaultHeartbeatTTL      = 300 // 5 minutes
+	DefaultPollInterval = 1 * time.Second
 )
 
 // Config configures the Poller client and lifecycle.
 type Config struct {
-	Client            *anthropic.Client
-	APIKey            string
-	EnvironmentID     string
-	EnvironmentKey    string
-	PollInterval      time.Duration
-	HeartbeatInterval time.Duration
-	HeartbeatTTL      int64
-	BlockMs           int64
-	HTTPClient        *http.Client
-	Logger            *slog.Logger
+	Client         *anthropic.Client
+	APIKey         string
+	EnvironmentID  string
+	EnvironmentKey string
+	PollInterval   time.Duration
+	BlockMs        int64
+	HTTPClient     *http.Client
+	Logger         *slog.Logger
 }
 
 // Defaults populates default configuration values for unset fields.
@@ -54,19 +49,13 @@ func (c *Config) Defaults() {
 	if c.PollInterval <= 0 {
 		c.PollInterval = DefaultPollInterval
 	}
-	if c.HeartbeatInterval <= 0 {
-		c.HeartbeatInterval = DefaultHeartbeatInterval
-	}
-	if c.HeartbeatTTL <= 0 {
-		c.HeartbeatTTL = DefaultHeartbeatTTL
-	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
 }
 
-// Poller polls Anthropic for self-hosted environment work items,
-// renews leases with periodic heartbeats, and completes/stops items using the Anthropic Go SDK.
+// Poller polls Anthropic for self-hosted environment work items
+// and completes/stops items using the Anthropic Go SDK.
 type Poller struct {
 	client *anthropic.Client
 	cfg    Config
@@ -125,23 +114,6 @@ func (p *Poller) PollOnce(ctx context.Context) (*anthropic.BetaSelfHostedWork, e
 	return res, nil
 }
 
-// Heartbeat records a heartbeat with Anthropic to extend the work lease.
-func (p *Poller) Heartbeat(ctx context.Context, workID string, expectedLastHeartbeat string) (*anthropic.BetaSelfHostedWorkHeartbeatResponse, error) {
-	if workID == "" {
-		return nil, errors.New("work_id is required")
-	}
-
-	params := anthropic.BetaEnvironmentWorkHeartbeatParams{
-		EnvironmentID:     p.cfg.EnvironmentID,
-		DesiredTTLSeconds: param.NewOpt(p.cfg.HeartbeatTTL),
-	}
-	if expectedLastHeartbeat != "" {
-		params.ExpectedLastHeartbeat = param.NewOpt(expectedLastHeartbeat)
-	}
-
-	return p.client.Beta.Environments.Work.Heartbeat(ctx, workID, params)
-}
-
 // Complete marks a claimed work item as completed/stopped using the Anthropic SDK.
 func (p *Poller) Complete(ctx context.Context, workID string, force bool) (*anthropic.BetaSelfHostedWork, error) {
 	if workID == "" {
@@ -156,63 +128,15 @@ func (p *Poller) Complete(ctx context.Context, workID string, force bool) (*anth
 	})
 }
 
-// StartHeartbeat begins a background goroutine that periodically calls Heartbeat
-// for the given workID until the returned stop func is invoked or ctx is canceled.
-func (p *Poller) StartHeartbeat(ctx context.Context, workID string) (stop func(), errs <-chan error) {
-	errChan := make(chan error, 16)
-	stopCtx, cancel := context.WithCancel(ctx)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-		defer close(errChan)
-
-		ticker := time.NewTicker(p.cfg.HeartbeatInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-stopCtx.Done():
-				return
-			case <-ticker.C:
-				_, err := p.Heartbeat(stopCtx, workID, "")
-				if err != nil {
-					if !errors.Is(err, context.Canceled) {
-						p.cfg.Logger.Warn("Work heartbeat renewal failed",
-							slog.String("work_id", workID),
-							slog.Any("error", err),
-						)
-						select {
-						case errChan <- err:
-						default:
-						}
-					}
-					continue
-				}
-			}
-		}
-	}()
-
-	stopFunc := func() {
-		cancel()
-		wg.Wait()
-	}
-
-	return stopFunc, errChan
-}
-
 // Handler is invoked for each claimed work item.
 type Handler func(ctx context.Context, item *anthropic.BetaSelfHostedWork) error
 
 // Poll runs a continuous polling loop using the Anthropic SDK.
-// For each claimed item, it maintains background heartbeats, invokes handler, and marks completion.
+// For each claimed item, it invokes handler and marks completion.
 func (p *Poller) Poll(ctx context.Context, handler Handler) error {
 	p.cfg.Logger.Info("Starting Anthropic SDK work polling loop",
 		slog.String("environment_id", p.cfg.EnvironmentID),
 		slog.Duration("poll_interval", p.cfg.PollInterval),
-		slog.Duration("heartbeat_interval", p.cfg.HeartbeatInterval),
 	)
 
 	for {
@@ -249,15 +173,10 @@ func (p *Poller) Poll(ctx context.Context, handler Handler) error {
 			slog.String("session_id", item.Data.ID),
 		)
 
-		stopHeartbeat, _ := p.StartHeartbeat(ctx, item.ID)
-
-		handlerErr := handler(ctx, item)
-		stopHeartbeat()
-
-		if handlerErr != nil {
+		if err := handler(ctx, item); err != nil {
 			p.cfg.Logger.Error("Work item processing failed",
 				slog.String("work_id", item.ID),
-				slog.Any("error", handlerErr),
+				slog.Any("error", err),
 			)
 			continue
 		}

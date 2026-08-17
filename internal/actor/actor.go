@@ -1,4 +1,4 @@
-package life
+package actor
 
 import (
 	"bytes"
@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -22,11 +23,6 @@ import (
 )
 
 const (
-	DefaultNamespace        = "ate-antworker"
-	DefaultTemplate         = "ate-antworker-actor-template"
-	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
-	DefaultAtenetRouterAddr = "atenet-router.ate-system.svc.cluster.local:80"
-
 	DefaultIdleCheckInterval = 5 * time.Second
 	DefaultIdleThreshold     = 1 * time.Minute
 	DefaultSuspendTimeout    = 30 * time.Second
@@ -55,16 +51,16 @@ type Manager struct {
 // NewManager creates a new actor lifecycle Manager.
 func NewManager(client ateapipb.ControlClient, template, atespace string) *Manager {
 	if atespace == "" {
-		atespace = DefaultNamespace
+		atespace = manifest.DefaultNamespace
 	}
 	if template == "" {
-		template = DefaultTemplate
+		template = manifest.DefaultTemplate
 	}
 	return &Manager{
 		client:      client,
 		template:    template,
 		atespace:    atespace,
-		routerAddr:  DefaultAtenetRouterAddr,
+		routerAddr:  manifest.DefaultAtenetRouterAddr,
 		logger:      slog.Default(),
 		lastResumed: make(map[string]time.Time),
 	}
@@ -164,7 +160,8 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// Notify sends an HTTP POST request to the actor's /work endpoint via the Substrate router.
+// Notify sends an HTTP POST request to the actor's /work endpoint via the Substrate router,
+// retrying transient 5xx errors with backoff while the actor is warming up.
 func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) error {
 	routerAddr := m.routerAddr
 	if !strings.HasPrefix(routerAddr, "http://") && !strings.HasPrefix(routerAddr, "https://") {
@@ -178,46 +175,67 @@ func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) err
 	}
 
 	timeoutMs := fmt.Sprintf("%d", DefaultWorkTimeout.Milliseconds())
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-envoy-upstream-rq-timeout-ms", timeoutMs)
-	req.Header.Set("x-envoy-upstream-rq-per-try-timeout-ms", timeoutMs)
 	actorName := ActorName(sessionID)
-	req.Host = fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorName, m.atespace)
+	host := fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorName, m.atespace)
 
 	client := &http.Client{
 		Timeout: DefaultWorkTimeout,
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("posting to router at %s (host %s): %w", url, req.Host, err)
-	}
-	defer resp.Body.Close()
 
 	type workResponse struct {
 		Status string `json:"status"`
 		Error  string `json:"error,omitempty"`
 	}
-	var workResp workResponse
-	_ = json.NewDecoder(resp.Body).Decode(&workResp)
 
-	if resp.StatusCode >= 400 || workResp.Status == "error" {
-		if workResp.Error != "" {
-			return fmt.Errorf("worker daemon via router at %s returned status %d: %s", url, resp.StatusCode, workResp.Error)
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
 		}
-		return fmt.Errorf("worker daemon via router at %s returned status %d", url, resp.StatusCode)
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-envoy-upstream-rq-timeout-ms", timeoutMs)
+		req.Header.Set("x-envoy-upstream-rq-per-try-timeout-ms", timeoutMs)
+		req.Host = host
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("posting to router at %s (host %s): %w", url, host, err)
+			continue
+		}
+
+		var workResp workResponse
+		_ = json.NewDecoder(resp.Body).Decode(&workResp)
+		resp.Body.Close()
+
+		if resp.StatusCode >= 500 {
+			lastErr = fmt.Errorf("worker daemon via router at %s returned status %d", url, resp.StatusCode)
+			continue
+		}
+		if resp.StatusCode >= 400 || workResp.Status == "error" {
+			if workResp.Error != "" {
+				return fmt.Errorf("worker daemon via router at %s returned status %d: %s", url, resp.StatusCode, workResp.Error)
+			}
+			return fmt.Errorf("worker daemon via router at %s returned status %d", url, resp.StatusCode)
+		}
+
+		m.logger.Info("Successfully notified actor of work item via router",
+			slog.String("actor", actorName),
+			slog.String("session_id", sessionID),
+			slog.String("status", workResp.Status),
+		)
+		return nil
 	}
 
-	m.logger.Info("Successfully notified actor of work item via router",
-		slog.String("actor", actorName),
-		slog.String("session_id", sessionID),
-		slog.String("status", workResp.Status),
-	)
-
-	return nil
+	return lastErr
 }
 
 // Suspend suspends the actor for sessionID.

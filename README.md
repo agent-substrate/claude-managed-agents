@@ -7,25 +7,39 @@ This worker runs Claude Managed Agents tool calls (bash, file operations, skills
 ## Overview
 
 ```
-Claude Managed Agents  ──►  Poller (`ate-antworker`)
+Claude Managed Agents ──► Poller (`ate-antworker`)
                                 │
                                 ▼
-                       Sandbox Actor (`ant beta:worker run`)
-                       (gVisor / microVM sandbox on Substrate)
+                       Queue (`valkey` / Redis)
+                                │
+                                ▼
+                      Consumer (`ate-antworker consumer`)
+                                │
+                                ▼
+                      Substrate Router (`atenet-router`)
+                                │
+                                ▼
+                     Sandbox Actor (`ate-antworker worker`)
+                     (gVisor / microVM sandbox on Substrate)
 ```
 
 ### Components
 
-- **Poller**: An always-on service running `ate-antworker`. It fetches incoming work items and dispatches them to sandbox actors.
-- **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session. They execute tools (bash commands, file operations, skills) and preserve session state across turns via snapshots.
+- **Poller**: An always-on daemon running `ate-antworker`. It polls the Claude Managed Agents API for new work items and enqueues lifecycle events into the queue.
+- **Queue**: An in-cluster Valkey/Redis instance buffering session lifecycle events, providing durable work distribution and decoupling ingestion from execution.
+- **Consumer**: It consumes lifecycle events from the queue, manages Substrate actor lifecycles (creating, resuming, suspending), and dispatches work payloads to actors via `atenet-router`.
+- **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session running `ate-antworker worker`. They execute tools (bash commands, file operations, skills) via `ant beta:worker run` and preserve session state across turns via snapshot persistence.
 
-### Turn Lifecycle
+### Lifecycle
 
-When `ate-antworker worker` receives a `/work` request via the Substrate router:
-1. It immediately acknowledges `200 OK` (`{"status":"accepted"}`).
-2. In the background, it executes `ant beta:worker run` directly against Anthropic API with `--max-idle 1s`.
-3. Process execution is serialized so that only one `ant` process runs at a time within the sandbox actor.
-4. Once all tool calls for the current turn are finished and the idle timeout expires, `ant` exits.
+1. **Enqueue**: The Poller claims work from Anthropic and enqueues a `resume` event to the Valkey queue.
+2. **Dispatch**: The Consumer pulls the event, ensures the actor exists and is resumed via the Substrate API (`api.ate-system`), and dispatches the work payload via `POST /work` through `atenet-router`.
+3. **Run**:
+   - The worker server inside the sandbox actor immediately acknowledges `200 OK` (`{"status":"accepted"}`).
+   - In the background, it executes `ant beta:worker run` directly.
+   - Process execution is serialized so that only one `ant` process runs at a time within the sandbox actor.
+   - Once all tool calls for the current turn are finished and the idle timeout expires, `ant` exits.
+4. **Garbage collect**: When sessions are idle, actors are suspended, checkpointing memory and disk state to GCS for instant resumption on subsequent turns.
 
 ### Idle Status (`/idle`)
 
@@ -58,7 +72,7 @@ make push
 
 ```bash
 go run ./cmd/ate-antworker manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:a0587dde12efd3c9b51ffbace2e50cf7b9585d98da94b358b381e6340774ec91 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-antworker@sha256:4ac69dab7524458bdd4c01e55d4dff7f26db5c7e6b09e0ee13bf19825482350a \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-antworker/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
@@ -68,16 +82,22 @@ go run ./cmd/ate-antworker manifest \
 
 ### 3. Verify Deployment
 
-Check that the worker poller Deployment and Substrate worker pool are running:
+Check that all worker pool, Valkey, poller, and consumer pods are running:
 
 ```bash
 kubectl get pods -n ate-antworker
 ```
 
-Check logs of the worker poller Deployment:
+Stream logs from the poller daemon:
 
 ```bash
 kubectl logs -n ate-antworker -l app=ate-antworker -f
+```
+
+Stream logs from the consumer daemon:
+
+```bash
+kubectl logs -n ate-antworker -l app=ate-antworker-consumer -f
 ```
 
 ## Example Agent
@@ -114,14 +134,16 @@ Inside the container:
 
 | Resource | Kind | Description |
 | --- | --- | --- |
-| `ate-antworker` | `Atespace` (`ate.dev/v1alpha1`) | Substrate tenant atespace for actors |
 | `ate-antworker` | `Namespace` | Target Kubernetes namespace |
-| `ate-antworker-creds` | `Secret` | Stores `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_ENVIRONMENT_KEY` |
+| `ate-antworker-creds` | `Secret` | Stores Anthropic credentials and Valkey connection string |
+| `ate-antworker-creds-reader` | `Role` / `RoleBinding` | RBAC allowing `ate-api-server` to resolve credentials for actor resumption |
+| `valkey` | `Service` & `StatefulSet` | Single-replica Valkey instance backing the session lifecycle event queue |
 | `ate-antworker-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of gVisor/microVM runners for sandbox actors (10 replicas) |
-| `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and workspace snapshot storage |
-| `ate-antworker` | `Deployment` | Always-on poller running `ate-antworker` (1 replica) |
+| `ate-antworker-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-antworker worker`) and GCS snapshot location |
+| `ate-antworker` | `Deployment` | Always-on poller daemon claiming work items from Anthropic |
+| `ate-antworker-consumer` | `Deployment` | Event consumer orchestrating actor lifecycle and routing work items (1 replica) |
 
 ## Roadmap
 
 - [ ] **Distribute prebuilt images** so deploying is one `kubectl apply` with no build step.
-- [x] **Durable session orchestration & buffering** with distributed locking, crash recovery, and auto-ACKing.
+- [ ] **Durable session orchestration & buffering** with distributed locking, crash recovery, and auto-ACKing.

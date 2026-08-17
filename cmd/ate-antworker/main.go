@@ -7,9 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/agent-substrate/claude-managed-agents/internal/life"
 	"github.com/agent-substrate/claude-managed-agents/internal/poller"
-	"github.com/agent-substrate/claude-managed-agents/internal/worker"
+	"github.com/agent-substrate/claude-managed-agents/internal/sessionmanager"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/spf13/cobra"
 )
@@ -17,14 +16,7 @@ import (
 var version = "0.1.0"
 
 func newRootCommand() *cobra.Command {
-	var (
-		cfg              worker.Config
-		template         string
-		namespace        string
-		ateapiAddr       string
-		atenetRouterAddr string
-		insecure         bool
-	)
+	var cfg poller.Config
 
 	root := &cobra.Command{
 		Use:           "ate-antworker",
@@ -35,46 +27,30 @@ func newRootCommand() *cobra.Command {
 			ctx := cmd.Context()
 
 			cfg.Defaults()
-
-			ateClient, conn, err := life.DialATE(ateapiAddr, insecure)
-			if err != nil {
-				return fmt.Errorf("dialing ateapi at %s: %w", ateapiAddr, err)
-			}
-			defer conn.Close()
-
-			lifeMgr := life.NewManager(ateClient, template, namespace).
-				WithRouterAddr(atenetRouterAddr).
-				WithLogger(cfg.Logger)
-			lifeMgr.StartGC(ctx, life.DefaultIdleCheckInterval, life.DefaultIdleThreshold)
-
-			p, err := poller.New(poller.Config{
-				EnvironmentID:  cfg.EnvironmentID,
-				EnvironmentKey: cfg.EnvironmentKey,
-				Logger:         cfg.Logger,
+			sessionManager, err := sessionmanager.New(sessionmanager.Options{
+				Logger: cfg.Logger,
 			})
+			if err != nil {
+				return fmt.Errorf("creating session manager: %w", err)
+			}
+			defer sessionManager.Close()
+
+			p, err := poller.New(cfg)
 			if err != nil {
 				return fmt.Errorf("creating poller: %w", err)
 			}
 			return p.Poll(ctx, func(ctx context.Context, item *anthropic.BetaSelfHostedWork) error {
 				sessID := item.Data.ID
 				workID := item.ID
-
-				dispatcher := worker.NewDispatcher(lifeMgr, cfg, sessID, workID)
-				return dispatcher.Run(ctx)
+				_, err := sessionManager.QueueResume(ctx, sessID, workID)
+				return err
 			})
 		},
 	}
 
-	root.Flags().StringVar(&namespace, "namespace", life.DefaultNamespace, "Kubernetes namespace / Substrate atespace")
-	root.Flags().StringVar(&template, "template", life.DefaultTemplate, "Substrate ActorTemplate name")
-	root.Flags().StringVar(&ateapiAddr, "ateapi-addr", life.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
-	root.Flags().StringVar(&atenetRouterAddr, "atenet-router-addr", life.DefaultAtenetRouterAddr, "Substrate atenet router endpoint")
-	root.Flags().StringVar(&cfg.EnvironmentID, "environment-id", "", "Anthropic environment ID")
-	root.Flags().StringVar(&cfg.EnvironmentKey, "environment-key", "", "Anthropic environment key")
-	root.Flags().BoolVar(&insecure, "insecure", false, "connect to ateapi without TLS")
-
 	root.AddCommand(newManifestCommand())
 	root.AddCommand(newWorkerCommand())
+	root.AddCommand(newConsumerCommand())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
