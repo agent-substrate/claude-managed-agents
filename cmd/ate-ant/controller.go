@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/actor"
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
@@ -19,8 +18,6 @@ func newControllerCommand() *cobra.Command {
 		namespace        string
 		ateapiAddr       string
 		atenetRouterAddr string
-		environmentID    string
-		environmentKey   string
 		insecure         bool
 	)
 
@@ -32,13 +29,6 @@ func newControllerCommand() *cobra.Command {
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-
-			if environmentID == "" {
-				environmentID = os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
-			}
-			if environmentKey == "" {
-				environmentKey = os.Getenv("ANTHROPIC_ENVIRONMENT_KEY")
-			}
 			logger := slog.Default()
 
 			ateClient, conn, err := actor.DialATE(ateapiAddr, insecure)
@@ -67,10 +57,8 @@ func newControllerCommand() *cobra.Command {
 					return fmt.Errorf("resuming session %s: %w", event.SessionID, err)
 				}
 				payload := worker.WorkRequest{
-					SessionID:      event.SessionID,
-					WorkID:         event.WorkID,
-					EnvironmentID:  environmentID,
-					EnvironmentKey: environmentKey,
+					SessionID: event.SessionID,
+					WorkID:    event.WorkID,
 				}
 				if err := actorMgr.Notify(ctx, event.SessionID, payload); err != nil {
 					return fmt.Errorf("notifying session %s: %w", event.SessionID, err)

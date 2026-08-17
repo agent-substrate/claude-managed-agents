@@ -22,10 +22,8 @@ const (
 
 // WorkRequest is the JSON payload accepted by the worker HTTP server.
 type WorkRequest struct {
-	SessionID      string `json:"session_id"`
-	WorkID         string `json:"work_id,omitempty"`
-	EnvironmentID  string `json:"environment_id,omitempty"`
-	EnvironmentKey string `json:"environment_key,omitempty"`
+	SessionID string `json:"session_id"`
+	WorkID    string `json:"work_id,omitempty"`
 }
 
 // WorkResponse is the JSON payload returned by the worker HTTP server.
@@ -210,12 +208,6 @@ func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string,
 		"ANTHROPIC_SESSION_ID="+sessionID,
 		"ANTHROPIC_WORK_ID="+workID,
 	)
-	if req.EnvironmentID != "" {
-		env = append(env, "ANTHROPIC_ENVIRONMENT_ID="+req.EnvironmentID)
-	}
-	if req.EnvironmentKey != "" {
-		env = append(env, "ANTHROPIC_ENVIRONMENT_KEY="+req.EnvironmentKey)
-	}
 
 	w.logger().Info("Running ant worker process",
 		slog.String("binary", bin),

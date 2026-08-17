@@ -90,9 +90,7 @@ func TestWorkerStartWorkExecution(t *testing.T) {
 	w.antBinary = "true"
 
 	if _, _, err := w.StartWork(t.Context(), WorkRequest{
-		SessionID:      "sesn_test_123",
-		EnvironmentID:  "env_test_123",
-		EnvironmentKey: "key_test_123",
+		SessionID: "sesn_test_123",
 	}); err != nil {
 		t.Fatalf("StartWork: %v", err)
 	}
