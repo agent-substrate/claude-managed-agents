@@ -30,7 +30,7 @@ func TestManifestCommand(t *testing.T) {
 		"kind: Namespace",
 		"name: test-ns",
 		"kind: Secret",
-		"name: ate-antworker-creds",
+		"name: ate-ant-creds",
 		"ANTHROPIC_ENVIRONMENT_ID: env_test_abc",
 		"kind: Service",
 		"name: valkey",

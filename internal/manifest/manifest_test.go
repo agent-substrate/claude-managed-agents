@@ -12,8 +12,8 @@ import (
 
 func testConfig() Config {
 	return Config{
-		Namespace:       "ate-antworker",
-		Template:        "ate-antworker-actor-template",
+		Namespace:       "ate-ant",
+		Template:        "ate-ant-actor-template",
 		WorkerImage:     "gcr.io/test/worker@sha256:1111",
 		AteomImage:      "gcr.io/test/ateom@sha256:2222",
 		SnapshotsBucket: "gs://test-bucket/snapshots/",
@@ -72,9 +72,9 @@ func TestBuildManifests(t *testing.T) {
 		t.Fatalf("got %d manifests, want 10", len(objs))
 	}
 
-	ns := find[*corev1.Namespace](t, objs, "ate-antworker")
-	if ns.Name != "ate-antworker" {
-		t.Errorf("namespace = %q, want ate-antworker", ns.Name)
+	ns := find[*corev1.Namespace](t, objs, "ate-ant")
+	if ns.Name != "ate-ant" {
+		t.Errorf("namespace = %q, want ate-ant", ns.Name)
 	}
 
 	secret := find[*corev1.Secret](t, objs, DefaultSecretName)
@@ -107,8 +107,8 @@ func TestBuildManifests(t *testing.T) {
 	if len(template.Spec.Containers) != 1 || template.Spec.Containers[0].Image != cfg.WorkerImage {
 		t.Errorf("template containers = %+v", template.Spec.Containers)
 	}
-	if len(template.Spec.Containers[0].Command) < 2 || template.Spec.Containers[0].Command[0] != "ate-antworker" || template.Spec.Containers[0].Command[1] != "worker" {
-		t.Errorf("template container command = %v, want ['ate-antworker', 'worker', ...]", template.Spec.Containers[0].Command)
+	if len(template.Spec.Containers[0].Command) < 2 || template.Spec.Containers[0].Command[0] != "ate-ant" || template.Spec.Containers[0].Command[1] != "run" {
+		t.Errorf("template container command = %v, want ['ate-ant', 'run', ...]", template.Spec.Containers[0].Command)
 	}
 	if len(template.Spec.Containers[0].Env) == 0 {
 		t.Errorf("template container env is empty, expected secretKeyRefs")
@@ -128,26 +128,26 @@ func TestBuildManifests(t *testing.T) {
 		t.Fatalf("deployment containers count = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
 	}
 	workerContainer := deployment.Spec.Template.Spec.Containers[0]
-	if len(workerContainer.Command) < 1 || workerContainer.Command[0] != "ate-antworker" {
-		t.Errorf("deployment container command = %v, want ['ate-antworker']", workerContainer.Command)
+	if len(workerContainer.Command) < 1 || workerContainer.Command[0] != "ate-ant" {
+		t.Errorf("deployment container command = %v, want ['ate-ant']", workerContainer.Command)
 	}
 	if len(workerContainer.EnvFrom) == 0 || workerContainer.EnvFrom[0].SecretRef == nil || workerContainer.EnvFrom[0].SecretRef.Name != DefaultSecretName {
 		t.Errorf("worker container envFrom = %+v, want secretRef %q", workerContainer.EnvFrom, DefaultSecretName)
 	}
 
-	consumerDep := find[*appsv1.Deployment](t, objs, DefaultConsumerDeploymentName)
-	if consumerDep.Spec.Replicas == nil || *consumerDep.Spec.Replicas != 1 {
-		t.Errorf("consumer deployment replicas = %v, want 1", *consumerDep.Spec.Replicas)
+	controllerDep := find[*appsv1.Deployment](t, objs, DefaultControllerDeploymentName)
+	if controllerDep.Spec.Replicas == nil || *controllerDep.Spec.Replicas != 1 {
+		t.Errorf("controller deployment replicas = %v, want 1", *controllerDep.Spec.Replicas)
 	}
-	if len(consumerDep.Spec.Template.Spec.Containers) != 1 {
-		t.Fatalf("consumer deployment containers count = %d, want 1", len(consumerDep.Spec.Template.Spec.Containers))
+	if len(controllerDep.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("controller deployment containers count = %d, want 1", len(controllerDep.Spec.Template.Spec.Containers))
 	}
-	consumerContainer := consumerDep.Spec.Template.Spec.Containers[0]
-	if len(consumerContainer.Command) < 2 || consumerContainer.Command[0] != "ate-antworker" || consumerContainer.Command[1] != "consumer" {
-		t.Errorf("consumer deployment container command = %v, want ['ate-antworker', 'consumer']", consumerContainer.Command)
+	controllerContainer := controllerDep.Spec.Template.Spec.Containers[0]
+	if len(controllerContainer.Command) < 2 || controllerContainer.Command[0] != "ate-ant" || controllerContainer.Command[1] != "controller" {
+		t.Errorf("controller deployment container command = %v, want ['ate-ant', 'controller']", controllerContainer.Command)
 	}
-	if len(consumerContainer.EnvFrom) == 0 || consumerContainer.EnvFrom[0].SecretRef == nil || consumerContainer.EnvFrom[0].SecretRef.Name != DefaultSecretName {
-		t.Errorf("consumer container envFrom = %+v, want secretRef %q", consumerContainer.EnvFrom, DefaultSecretName)
+	if len(controllerContainer.EnvFrom) == 0 || controllerContainer.EnvFrom[0].SecretRef == nil || controllerContainer.EnvFrom[0].SecretRef.Name != DefaultSecretName {
+		t.Errorf("controller container envFrom = %+v, want secretRef %q", controllerContainer.EnvFrom, DefaultSecretName)
 	}
 }
 
@@ -166,10 +166,10 @@ func TestWriteManifests(t *testing.T) {
 		"kind: ActorTemplate",
 		"apiVersion: ate.dev/v1alpha1",
 		"kind: Deployment",
-		"name: ate-antworker",
+		"name: ate-ant",
 		"image: gcr.io/test/worker@sha256:1111",
 		"location: gs://test-bucket/snapshots/",
-		"ate-antworker",
+		"ate-ant",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)

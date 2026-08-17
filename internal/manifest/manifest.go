@@ -21,38 +21,38 @@ const DefaultPauseImage = "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896c
 
 // Default constants for names and paths.
 const (
-	DefaultNamespace              = "ate-antworker"
-	DefaultTemplate               = "ate-antworker-actor-template"
-	DefaultWorkerPool             = "ate-antworker-workerpool"
-	DefaultDeploymentName         = "ate-antworker"
-	DefaultConsumerDeploymentName = "ate-antworker-consumer"
-	DefaultConsumerReplicas       = 1
-	DefaultSecretName             = "ate-antworker-creds"
-	DefaultAteapiAddr             = "api.ate-system.svc.cluster.local:443"
-	DefaultAtenetRouterAddr       = "atenet-router.ate-system.svc.cluster.local:80"
-	DefaultValkeyName             = "valkey"
-	DefaultValkeyImage            = "valkey/valkey:8"
-	DefaultValkeyPort             = 6379
-	DefaultValkeyStorageSize      = "10Gi"
-	DefaultValkeyAddr             = "valkey.ate-antworker.svc.cluster.local:6379"
+	DefaultNamespace                = "ate-ant"
+	DefaultTemplate                 = "ate-ant-actor-template"
+	DefaultWorkerPool               = "ate-ant-workerpool"
+	DefaultDeploymentName           = "ate-ant"
+	DefaultControllerDeploymentName = "ate-ant-controller"
+	DefaultControllerReplicas       = 1
+	DefaultSecretName               = "ate-ant-creds"
+	DefaultAteapiAddr               = "api.ate-system.svc.cluster.local:443"
+	DefaultAtenetRouterAddr         = "atenet-router.ate-system.svc.cluster.local:80"
+	DefaultValkeyName               = "valkey"
+	DefaultValkeyImage              = "valkey/valkey:8"
+	DefaultValkeyPort               = 6379
+	DefaultValkeyStorageSize        = "10Gi"
+	DefaultValkeyAddr               = "valkey.ate-ant.svc.cluster.local:6379"
 )
 
 // Config defines the parameters for generating Substrate and Kubernetes deployment manifests.
 type Config struct {
-	Namespace        string `json:"namespace"`
-	Template         string `json:"template"`
-	WorkerImage      string `json:"worker_image"`
-	AteomImage       string `json:"ateom_image"`
-	SnapshotsBucket  string `json:"snapshots_bucket"`
-	Replicas         int32  `json:"replicas"`
-	ConsumerReplicas int32  `json:"consumer_replicas"`
-	EnvironmentID    string `json:"environment_id"`
-	EnvironmentKey   string `json:"environment_key"`
-	APIKey           string `json:"api_key"`
-	AteapiAddr       string `json:"ateapi_addr"`
-	AtenetRouterAddr string `json:"atenet_router_addr"`
-	ValkeyAddr       string `json:"valkey_addr"`
-	ValkeyImage      string `json:"valkey_image"`
+	Namespace          string `json:"namespace"`
+	Template           string `json:"template"`
+	WorkerImage        string `json:"worker_image"`
+	AteomImage         string `json:"ateom_image"`
+	SnapshotsBucket    string `json:"snapshots_bucket"`
+	Replicas           int32  `json:"replicas"`
+	ControllerReplicas int32  `json:"controller_replicas"`
+	EnvironmentID      string `json:"environment_id"`
+	EnvironmentKey     string `json:"environment_key"`
+	APIKey             string `json:"api_key"`
+	AteapiAddr         string `json:"ateapi_addr"`
+	AtenetRouterAddr   string `json:"atenet_router_addr"`
+	ValkeyAddr         string `json:"valkey_addr"`
+	ValkeyImage        string `json:"valkey_image"`
 }
 
 // Defaults fills in default values for unset fields.
@@ -66,8 +66,8 @@ func (c *Config) Defaults() {
 	if c.Replicas == 0 {
 		c.Replicas = 10
 	}
-	if c.ConsumerReplicas == 0 {
-		c.ConsumerReplicas = DefaultConsumerReplicas
+	if c.ControllerReplicas == 0 {
+		c.ControllerReplicas = DefaultControllerReplicas
 	}
 	if c.AteapiAddr == "" {
 		c.AteapiAddr = DefaultAteapiAddr
@@ -115,8 +115,8 @@ func BuildManifests(cfg Config) []any {
 		BuildValkeyStatefulSet(cfg),
 		BuildWorkerPool(cfg),
 		BuildActorTemplate(cfg),
-		BuildWorkerDeployment(cfg),
-		BuildConsumerDeployment(cfg),
+		BuildPollerDeployment(cfg),
+		BuildControllerDeployment(cfg),
 	}
 }
 
@@ -341,7 +341,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 			Containers: []atev1alpha1.Container{{
 				Name:    "worker",
 				Image:   cfg.WorkerImage,
-				Command: []string{"ate-antworker", "worker"},
+				Command: []string{"ate-ant", "run"},
 				Env:     env,
 				Readyz: &atev1alpha1.ContainerReadyz{
 					HTTPGet: &atev1alpha1.HTTPGetAction{
@@ -357,8 +357,8 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 	}
 }
 
-// BuildWorkerDeployment constructs the Kubernetes Deployment for the worker daemon.
-func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
+// BuildPollerDeployment constructs the Kubernetes Deployment for the poller daemon.
+func BuildPollerDeployment(cfg Config) *appsv1.Deployment {
 	labels := map[string]string{"app": DefaultDeploymentName}
 	replicas := int32(1)
 
@@ -379,7 +379,7 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 						Name:  DefaultDeploymentName,
 						Image: cfg.WorkerImage,
 						Command: []string{
-							"ate-antworker",
+							"ate-ant",
 						},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
@@ -395,15 +395,15 @@ func BuildWorkerDeployment(cfg Config) *appsv1.Deployment {
 	}
 }
 
-// BuildConsumerDeployment constructs the Kubernetes Deployment for the session consumer daemon.
-func BuildConsumerDeployment(cfg Config) *appsv1.Deployment {
-	labels := map[string]string{"app": DefaultConsumerDeploymentName}
-	replicas := cfg.ConsumerReplicas
+// BuildControllerDeployment constructs the Kubernetes Deployment for the session controller daemon.
+func BuildControllerDeployment(cfg Config) *appsv1.Deployment {
+	labels := map[string]string{"app": DefaultControllerDeploymentName}
+	replicas := cfg.ControllerReplicas
 
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultConsumerDeploymentName,
+			Name:      DefaultControllerDeploymentName,
 			Namespace: cfg.Namespace,
 			Labels:    labels,
 		},
@@ -414,11 +414,11 @@ func BuildConsumerDeployment(cfg Config) *appsv1.Deployment {
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Name:  DefaultConsumerDeploymentName,
+						Name:  DefaultControllerDeploymentName,
 						Image: cfg.WorkerImage,
 						Command: []string{
-							"ate-antworker",
-							"consumer",
+							"ate-ant",
+							"controller",
 						},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{

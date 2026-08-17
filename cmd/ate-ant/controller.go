@@ -13,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newConsumerCommand() *cobra.Command {
+func newControllerCommand() *cobra.Command {
 	var (
 		template         string
 		namespace        string
@@ -25,7 +25,7 @@ func newConsumerCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:           "consumer",
+		Use:           "controller",
 		Short:         "Consume lifecycle events from the session manager and dispatch to Agent Substrate actors",
 		SilenceUsage:  true,
 		SilenceErrors: true,

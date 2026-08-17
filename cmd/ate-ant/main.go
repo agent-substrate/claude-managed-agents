@@ -1,4 +1,4 @@
-// Command ate-antworker provides CLI utilities to generate deployment manifests
+// Command ate-ant provides CLI utilities to generate deployment manifests
 // and manage Anthropic workers on Agent Substrate.
 package main
 
@@ -19,7 +19,7 @@ func newRootCommand() *cobra.Command {
 	var cfg poller.Config
 
 	root := &cobra.Command{
-		Use:           "ate-antworker",
+		Use:           "ate-ant",
 		Short:         "Dispatch Claude Managed Agents work items onto Agent Substrate Actors",
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -49,13 +49,13 @@ func newRootCommand() *cobra.Command {
 	}
 
 	root.AddCommand(newManifestCommand())
-	root.AddCommand(newWorkerCommand())
-	root.AddCommand(newConsumerCommand())
+	root.AddCommand(newRunCommand())
+	root.AddCommand(newControllerCommand())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("ate-antworker version %s\n", version)
+			fmt.Printf("ate-ant version %s\n", version)
 		},
 	})
 
@@ -64,7 +64,7 @@ func newRootCommand() *cobra.Command {
 
 func main() {
 	if err := newRootCommand().Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "ate-antworker: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ate-ant: %v\n", err)
 		os.Exit(1)
 	}
 }

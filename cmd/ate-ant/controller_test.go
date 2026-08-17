@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-func TestConsumerCommandFlags(t *testing.T) {
-	cmd := newConsumerCommand()
+func TestControllerCommandFlags(t *testing.T) {
+	cmd := newControllerCommand()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 
-	if cmd.Use != "consumer" {
-		t.Errorf("cmd.Use = %q, want consumer", cmd.Use)
+	if cmd.Use != "controller" {
+		t.Errorf("cmd.Use = %q, want controller", cmd.Use)
 	}
 
 	flags := []string{
@@ -25,7 +25,7 @@ func TestConsumerCommandFlags(t *testing.T) {
 
 	for _, name := range flags {
 		if cmd.Flags().Lookup(name) == nil {
-			t.Errorf("missing flag --%s on consumer command", name)
+			t.Errorf("missing flag --%s on controller command", name)
 		}
 	}
 }

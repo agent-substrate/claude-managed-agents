@@ -44,7 +44,7 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 	cmd.Flags().StringVar(&cfg.AteomImage, "ateom-image", "", "digest-pinned ateom image for the worker pool (e.g. ateom-gvisor)")
 	cmd.Flags().StringVar(&cfg.SnapshotsBucket, "snapshots-bucket", "", "object-storage bucket (with prefix) for actor snapshots (e.g. gs://bucket/snapshots/)")
 	cmd.Flags().Int32Var(&cfg.Replicas, "replicas", 10, "number of pre-warmed worker pool pods")
-	cmd.Flags().Int32Var(&cfg.ConsumerReplicas, "consumer-replicas", manifest.DefaultConsumerReplicas, "number of consumer daemon pods")
+	cmd.Flags().Int32Var(&cfg.ControllerReplicas, "controller-replicas", manifest.DefaultControllerReplicas, "number of controller daemon pods")
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (e.g. env_...)")
 	cmd.Flags().StringVar(&cfg.EnvironmentKey, "anthropic-env-key", "", "Anthropic environment key")
 	cmd.Flags().StringVar(&cfg.APIKey, "anthropic-api-key", "", "Anthropic API key")

@@ -5,13 +5,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newWorkerCommand() *cobra.Command {
+func newRunCommand() *cobra.Command {
 	var addr string
 
 	cmd := &cobra.Command{
-		Use:   "worker",
-		Short: "Run the HTTP worker daemon inside a Substrate actor sandbox",
-		Long: `Worker runs a lightweight HTTP server inside a Substrate actor container.
+		Use:   "run",
+		Short: "Run the HTTP server inside a Substrate actor sandbox",
+		Long: `Run runs a lightweight HTTP server inside a Substrate actor container.
 When it receives POST /work with {session_id}, it forks:
 ant beta:worker run.`,
 		Args: cobra.NoArgs,
