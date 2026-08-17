@@ -12,6 +12,81 @@ import (
 	"github.com/alicebob/miniredis/v2"
 )
 
+func TestManagerUnacknowledgedEventReplayed(t *testing.T) {
+	mini, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	t.Cleanup(mini.Close)
+
+	mgr, err := New(Options{
+		ValkeyAddr:   mini.Addr(),
+		DisableCache: true,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer mgr.Close()
+
+	ctx := context.Background()
+
+	// Queue two events
+	ev1, err := mgr.QueueResume(ctx, "session-1", "work-100")
+	if err != nil {
+		t.Fatalf("QueueResume: %v", err)
+	}
+	ev2, err := mgr.QueueResume(ctx, "session-2", "work-200")
+	if err != nil {
+		t.Fatalf("QueueResume: %v", err)
+	}
+
+	// Pop first event
+	pop1, err := mgr.pop(ctx)
+	if err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
+	if pop1.ID != ev1.ID {
+		t.Fatalf("expected pop1 ID = %s, got %s", ev1.ID, pop1.ID)
+	}
+
+	// Do NOT acknowledge pop1 -> Pop must replay pop1 from PEL before moving to ev2
+	popReplayed, err := mgr.pop(ctx)
+	if err != nil {
+		t.Fatalf("Pop replayed: %v", err)
+	}
+	if popReplayed.ID != ev1.ID {
+		t.Fatalf("expected replayed pop ID = %s, got %s", ev1.ID, popReplayed.ID)
+	}
+
+	// Acknowledge pop1
+	if err := mgr.ack(ctx, pop1); err != nil {
+		t.Fatalf("Ack pop1: %v", err)
+	}
+
+	// Now Pop moves on to ev2
+	pop2, err := mgr.pop(ctx)
+	if err != nil {
+		t.Fatalf("Pop 2: %v", err)
+	}
+	if pop2.ID != ev2.ID {
+		t.Fatalf("expected pop2 ID = %s, got %s", ev2.ID, pop2.ID)
+	}
+
+	// Acknowledge pop2
+	if err := mgr.ack(ctx, pop2); err != nil {
+		t.Fatalf("Ack pop2: %v", err)
+	}
+
+	// Stream should now be empty of pending/new messages
+	popEmpty, err := mgr.pop(ctx)
+	if err != nil {
+		t.Fatalf("Pop empty: %v", err)
+	}
+	if popEmpty != nil {
+		t.Fatalf("expected nil after all events acknowledged, got %+v", popEmpty)
+	}
+}
+
 func TestManagerQueueAndPop(t *testing.T) {
 	mini, err := miniredis.Run()
 	if err != nil {
@@ -40,7 +115,7 @@ func TestManagerQueueAndPop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueueResume: %v", err)
 	}
-	if ev1.SessionID != "session-1" || ev1.WorkID != "work-100" || ev1.Action != ActionResume {
+	if ev1.SessionID != "session-1" || ev1.WorkID != "work-100" || ev1.Action != ActionResume || ev1.ID == "" {
 		t.Errorf("unexpected ev1: %+v", ev1)
 	}
 
@@ -49,35 +124,54 @@ func TestManagerQueueAndPop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QueueSuspend: %v", err)
 	}
-	if ev2.SessionID != "session-2" || ev2.Action != ActionSuspend {
+	if ev2.SessionID != "session-2" || ev2.Action != ActionSuspend || ev2.ID == "" {
 		t.Errorf("unexpected ev2: %+v", ev2)
 	}
 
-	// Pop first event (FIFO: ev1)
-	pop1, err := mgr.Pop(ctx)
+	// Pop first event (ev1)
+	pop1, err := mgr.pop(ctx)
 	if err != nil {
 		t.Fatalf("Pop 1: %v", err)
 	}
-	if pop1 == nil || pop1.SessionID != "session-1" || pop1.WorkID != "work-100" || pop1.Action != ActionResume {
+	if pop1 == nil || pop1.SessionID != "session-1" || pop1.WorkID != "work-100" || pop1.Action != ActionResume || pop1.ID != ev1.ID {
 		t.Fatalf("unexpected pop1: %+v", pop1)
 	}
 
-	// Pop second event (FIFO: ev2)
-	pop2, err := mgr.Pop(ctx)
+	// Calling Pop before ACK should return the pending unACKed event (ev1)
+	pop1Pending, err := mgr.pop(ctx)
+	if err != nil {
+		t.Fatalf("Pop pending: %v", err)
+	}
+	if pop1Pending == nil || pop1Pending.ID != ev1.ID {
+		t.Fatalf("expected pending ev1 replayed before ACK, got %+v", pop1Pending)
+	}
+
+	// Acknowledge ev1
+	if err := mgr.ack(ctx, pop1); err != nil {
+		t.Fatalf("Ack ev1: %v", err)
+	}
+
+	// Pop second event (ev2)
+	pop2, err := mgr.pop(ctx)
 	if err != nil {
 		t.Fatalf("Pop 2: %v", err)
 	}
-	if pop2 == nil || pop2.SessionID != "session-2" || pop2.Action != ActionSuspend {
+	if pop2 == nil || pop2.SessionID != "session-2" || pop2.Action != ActionSuspend || pop2.ID != ev2.ID {
 		t.Fatalf("unexpected pop2: %+v", pop2)
 	}
 
-	// Pop when empty returns nil
-	pop3, err := mgr.Pop(ctx)
+	// Acknowledge ev2
+	if err := mgr.ack(ctx, pop2); err != nil {
+		t.Fatalf("Ack ev2: %v", err)
+	}
+
+	// Pop when all entries are acknowledged returns nil
+	pop3, err := mgr.pop(ctx)
 	if err != nil {
 		t.Fatalf("Pop 3: %v", err)
 	}
 	if pop3 != nil {
-		t.Fatalf("expected nil pop on empty queue, got %+v", pop3)
+		t.Fatalf("expected nil pop on empty stream, got %+v", pop3)
 	}
 }
 

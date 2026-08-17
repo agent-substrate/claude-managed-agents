@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/actor"
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
@@ -53,26 +54,28 @@ func newControllerCommand() *cobra.Command {
 				if event.WorkID == "" {
 					return nil
 				}
-				if err := actorMgr.Resume(ctx, event.SessionID); err != nil {
-					return fmt.Errorf("resuming session %s: %w", event.SessionID, err)
-				}
-				payload := runner.WorkRequest{
-					SessionID: event.SessionID,
-					WorkID:    event.WorkID,
-				}
-				if err := actorMgr.Notify(ctx, event.SessionID, payload); err != nil {
-					return fmt.Errorf("notifying session %s: %w", event.SessionID, err)
-				}
-				return nil
+				return retry(ctx, func() error {
+					if err := actorMgr.Resume(ctx, event.SessionID); err != nil {
+						return fmt.Errorf("resuming session %s: %w", event.SessionID, err)
+					}
+					payload := runner.WorkRequest{
+						SessionID: event.SessionID,
+						WorkID:    event.WorkID,
+					}
+					if err := actorMgr.Notify(ctx, event.SessionID, payload); err != nil {
+						return fmt.Errorf("notifying session %s: %w", event.SessionID, err)
+					}
+					return nil
+				})
 			}
-
-			// TODO(jbd): Start the garbage collector.
-
 			sessionManager.OnSuspend = func(ctx context.Context, event *sessionmanager.Event) error {
-				if err := actorMgr.Suspend(ctx, event.SessionID); err != nil {
-					return fmt.Errorf("suspending session %s: %w", event.SessionID, err)
-				}
-				return nil
+				// TODO(jbd): Start the garbage collector.
+				return retry(ctx, func() error {
+					if err := actorMgr.Suspend(ctx, event.SessionID); err != nil {
+						return fmt.Errorf("suspending session %s: %w", event.SessionID, err)
+					}
+					return nil
+				})
 			}
 			return sessionManager.Run(ctx)
 		},
@@ -85,4 +88,28 @@ func newControllerCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "connect to ateapi without TLS")
 
 	return cmd
+}
+
+func retry(ctx context.Context, fn func() error) error {
+	const maxRetries = 3
+	var lastErr error
+	backoff := 500 * time.Millisecond
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+		}
+
+		if err := fn(); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
