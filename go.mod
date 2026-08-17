@@ -4,11 +4,8 @@ go 1.26.5
 
 require (
 	github.com/agent-substrate/substrate v0.0.0-20260802031337-3ed6aa07e167
-	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/anthropics/anthropic-sdk-go v1.63.0
-	github.com/rakyll/sessionflight v0.0.0-20260816201745-d4f9bea3f4c7
 	github.com/spf13/cobra v1.10.2
-	github.com/valkey-io/valkey-go v1.0.77
 	google.golang.org/grpc v1.82.1
 	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1
@@ -25,6 +22,7 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
+	github.com/onsi/gomega v1.42.1 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
@@ -33,8 +31,8 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect

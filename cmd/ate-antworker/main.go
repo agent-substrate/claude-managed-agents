@@ -3,19 +3,27 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
+	"github.com/agent-substrate/claude-managed-agents/internal/life"
+	"github.com/agent-substrate/claude-managed-agents/internal/poller"
 	"github.com/agent-substrate/claude-managed-agents/internal/worker"
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/spf13/cobra"
-	"github.com/valkey-io/valkey-go"
 )
 
 var version = "0.1.0"
 
 func newRootCommand() *cobra.Command {
 	var (
-		cfg worker.Config
+		cfg              worker.Config
+		template         string
+		namespace        string
+		ateapiAddr       string
+		atenetRouterAddr string
+		insecure         bool
 	)
 
 	root := &cobra.Command{
@@ -26,42 +34,44 @@ func newRootCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			var sessionID string
-			if sessionID == "" {
-				sessionID = os.Getenv("ANTHROPIC_SESSION_ID")
-			}
-			if sessionID == "" {
-				sessionID = os.Getenv("ANTHROPIC_WORK_ID")
-			}
-			if sessionID == "" {
-				return fmt.Errorf("session ID is required")
-			}
-
-			vc, err := newValKeyClient()
-			if err != nil {
-				return fmt.Errorf("failed to create Valkey client: %v", err)
-			}
-			defer vc.Close()
-
-			cfg.ValkeyClient = vc
 			cfg.Defaults()
-			dispatcher, err := worker.NewDispatcher(ctx, cfg, sessionID)
-			if err != nil {
-				return fmt.Errorf("failed to create a dispatcher: %v", err)
-			}
-			defer dispatcher.Close()
 
-			return dispatcher.Run(ctx)
+			ateClient, conn, err := life.DialATE(ateapiAddr, insecure)
+			if err != nil {
+				return fmt.Errorf("dialing ateapi at %s: %w", ateapiAddr, err)
+			}
+			defer conn.Close()
+
+			lifeMgr := life.NewManager(ateClient, template, namespace).
+				WithRouterAddr(atenetRouterAddr).
+				WithLogger(cfg.Logger)
+			lifeMgr.StartGC(ctx, life.DefaultIdleCheckInterval, life.DefaultIdleThreshold)
+
+			p, err := poller.New(poller.Config{
+				EnvironmentID:  cfg.EnvironmentID,
+				EnvironmentKey: cfg.EnvironmentKey,
+				Logger:         cfg.Logger,
+			})
+			if err != nil {
+				return fmt.Errorf("creating poller: %w", err)
+			}
+			return p.Poll(ctx, func(ctx context.Context, item *anthropic.BetaSelfHostedWork) error {
+				sessID := item.Data.ID
+				workID := item.ID
+
+				dispatcher := worker.NewDispatcher(lifeMgr, cfg, sessID, workID)
+				return dispatcher.Run(ctx)
+			})
 		},
 	}
 
-	root.Flags().StringVar(&cfg.Namespace, "namespace", worker.DefaultNamespace, "Kubernetes namespace / Substrate atespace")
-	root.Flags().StringVar(&cfg.Template, "template", worker.DefaultTemplate, "Substrate ActorTemplate name")
-	root.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", worker.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
-	root.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", worker.DefaultAtenetRouterAddr, "Substrate atenet router endpoint")
+	root.Flags().StringVar(&namespace, "namespace", life.DefaultNamespace, "Kubernetes namespace / Substrate atespace")
+	root.Flags().StringVar(&template, "template", life.DefaultTemplate, "Substrate ActorTemplate name")
+	root.Flags().StringVar(&ateapiAddr, "ateapi-addr", life.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
+	root.Flags().StringVar(&atenetRouterAddr, "atenet-router-addr", life.DefaultAtenetRouterAddr, "Substrate atenet router endpoint")
 	root.Flags().StringVar(&cfg.EnvironmentID, "environment-id", "", "Anthropic environment ID")
 	root.Flags().StringVar(&cfg.EnvironmentKey, "environment-key", "", "Anthropic environment key")
-	root.Flags().BoolVar(&cfg.Insecure, "insecure", false, "connect to ateapi without TLS")
+	root.Flags().BoolVar(&insecure, "insecure", false, "connect to ateapi without TLS")
 
 	root.AddCommand(newManifestCommand())
 	root.AddCommand(newWorkerCommand())
@@ -81,20 +91,4 @@ func main() {
 		fmt.Fprintf(os.Stderr, "ate-antworker: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-func newValKeyClient() (valkey.Client, error) {
-	valkeyAddr := os.Getenv("VALKEY_ADDR")
-	if valkeyAddr == "" {
-		valkeyAddr = "valkey.ate-antworker.svc.cluster.local:6379"
-	}
-	vc, err := valkey.NewClient(valkey.ClientOption{
-		InitAddress:  []string{valkeyAddr},
-		Password:     os.Getenv("VALKEY_PASSWORD"),
-		DisableCache: true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("valkey NewClient failed at %s: %w", valkeyAddr, err)
-	}
-	return vc, nil
 }
