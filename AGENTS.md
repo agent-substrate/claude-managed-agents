@@ -6,13 +6,7 @@ Follow these steps to build, update, and redeploy the worker stack:
 
 ## 1. Delete Existing Namespace
 
-Tear down the existing deployment and resources:
-
-```bash
-kubectl delete ns ate-antworker
-```
-
-Wait for the namespace to finish terminating before proceeding.
+First delete everything but not the running actors.
 
 ## 2. Build and Push Container Image
 

@@ -5,25 +5,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
 const (
-	DefaultWorkerAddr = ":80"
+	DefaultWorkerAddr  = ":80"
+	DefaultWorkTimeout = 10 * time.Minute
 )
 
 // WorkRequest is the JSON payload accepted by the worker HTTP server.
 type WorkRequest struct {
 	SessionID      string `json:"session_id"`
+	WorkID         string `json:"work_id,omitempty"`
 	EnvironmentID  string `json:"environment_id,omitempty"`
 	EnvironmentKey string `json:"environment_key,omitempty"`
 }
@@ -31,8 +31,13 @@ type WorkRequest struct {
 // WorkResponse is the JSON payload returned by the worker HTTP server.
 type WorkResponse struct {
 	Status string `json:"status"`
-	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
+}
+
+// IdleStatus is the JSON payload returned by the /idle HTTP endpoint.
+type IdleStatus struct {
+	IdleDuration string `json:"idle_duration"`
+	LastActiveAt string `json:"last_active_at"`
 }
 
 // WorkerConfig defines configuration for the in-actor worker daemon.
@@ -48,36 +53,27 @@ func (c *WorkerConfig) Defaults() {
 }
 
 // Worker runs a lightweight HTTP server inside a Substrate actor container.
-// On /work, it executes 'ant beta:worker run --session-id <session_id>'
-// and suspends the actor once execution finishes to snapshot state and free the worker runner.
+// On /work, it executes 'ant beta:worker run' directly against Anthropic API.
 type Worker struct {
-	addr         string
-	namespace    string
-	antBinary    string
-	localBaseURL string
-	proxy        http.Handler
+	addr      string
+	antBinary string
+
+	// workMu ensures that only one 'ant beta:worker run' subprocess executes at a time.
+	workMu sync.Mutex
+
+	stateMu      sync.RWMutex
+	running      bool
+	lastActiveAt time.Time
 }
 
-// NewWorker creates a new Worker instance with an Anthropic reverse proxy and ateapi client for self-suspension.
+// NewWorker creates a new Worker instance.
 func NewWorker(cfg WorkerConfig) (*Worker, error) {
 	cfg.Defaults()
 
-	targetURL, _ := url.Parse("https://api.anthropic.com")
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		req.Host = targetURL.Host
-	}
-	localBaseURL := "http://127.0.0.1" + cfg.Addr
-	if !strings.HasPrefix(cfg.Addr, ":") {
-		localBaseURL = "http://" + cfg.Addr
-	}
 	return &Worker{
 		addr:         cfg.Addr,
 		antBinary:    "ant",
-		localBaseURL: localBaseURL,
-		proxy:        proxy,
+		lastActiveAt: time.Now(),
 	}, nil
 }
 
@@ -89,42 +85,14 @@ func (w *Worker) logger() *slog.Logger {
 func (w *Worker) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/work", w.handleWork)
+	mux.HandleFunc("/idle", w.handleIdle)
 	mux.HandleFunc("/healthz", w.handleHealthz)
 	mux.HandleFunc("/readyz", w.handleHealthz)
-	mux.HandleFunc("/v1/environments/", w.handleEnvironments)
-	mux.HandleFunc("/v1/", w.handleProxy)
 	return mux
 }
 
-// handleEnvironments intercepts worker heartbeats to avoid 412 conflicts with the poller.
-// Non-heartbeat environment requests are forwarded to Anthropic via the reverse proxy.
-func (w *Worker) handleEnvironments(rw http.ResponseWriter, req *http.Request) {
-	if strings.HasSuffix(req.URL.Path, "/heartbeat") {
-		nowStr := time.Now().UTC().Format(time.RFC3339)
-		w.logger().Info("Intercepted local worker heartbeat, responding success",
-			slog.String("path", req.URL.Path),
-			slog.String("last_heartbeat", nowStr),
-		)
-		rw.Header().Set("Content-Type", "application/json")
-		rw.WriteHeader(http.StatusOK)
-		resp := fmt.Sprintf(`{"type":"work_heartbeat","state":"active","lease_extended":true,"last_heartbeat":%q,"ttl_seconds":300}`, nowStr)
-		_, _ = rw.Write([]byte(resp))
-		return
-	}
-	w.handleProxy(rw, req)
-}
-
-// handleProxy reverse-proxies other /v1/ requests (such as session events and tool results) to Anthropic.
-func (w *Worker) handleProxy(rw http.ResponseWriter, req *http.Request) {
-	if w.proxy != nil {
-		w.proxy.ServeHTTP(rw, req)
-		return
-	}
-	http.NotFound(rw, req)
-}
-
-// handleWork parses the session ID, returns 200 accepted immediately,
-// runs 'ant beta:worker run' in the background, and suspends the actor when done.
+// handleWork parses the session ID, marks the actor as running, returns 200 accepted immediately,
+// and runs 'ant beta:worker run' in a background goroutine.
 func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost && req.Method != http.MethodPut {
 		http.Error(rw, `{"error": "method not allowed, use POST"}`, http.StatusMethodNotAllowed)
@@ -147,18 +115,63 @@ func (w *Worker) handleWork(rw http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if _, _, err := w.StartWork(context.Background(), payload); err != nil {
-		w.logger().Error("Background ant worker process failed",
-			slog.String("session_id", sessionID),
-			slog.Any("error", err),
-		)
-	}
+	w.stateMu.Lock()
+	w.running = true
+	w.stateMu.Unlock()
+
+	go func() {
+		w.workMu.Lock()
+		defer w.workMu.Unlock()
+
+		defer func() {
+			w.stateMu.Lock()
+			w.running = false
+			w.lastActiveAt = time.Now()
+			w.stateMu.Unlock()
+		}()
+
+		if _, _, err := w.StartWork(context.Background(), payload); err != nil {
+			w.logger().Error("Background ant worker process failed",
+				slog.String("session_id", sessionID),
+				slog.Any("error", err),
+			)
+		}
+	}()
 
 	rw.Header().Set("Content-Type", "application/json")
 	rw.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(rw).Encode(WorkResponse{
 		Status: "accepted",
 	})
+}
+
+// handleIdle returns how long the worker server has been idle.
+func (w *Worker) handleIdle(rw http.ResponseWriter, req *http.Request) {
+	w.stateMu.RLock()
+	running := w.running
+	lastActive := w.lastActiveAt
+	w.stateMu.RUnlock()
+
+	var (
+		idleDur       time.Duration
+		lastActiveStr string
+	)
+	if running {
+		idleDur = 0
+		lastActiveStr = time.Now().UTC().Format(time.RFC3339)
+	} else {
+		idleDur = time.Since(lastActive)
+		lastActiveStr = lastActive.UTC().Format(time.RFC3339)
+	}
+
+	resp := IdleStatus{
+		IdleDuration: idleDur.String(),
+		LastActiveAt: lastActiveStr,
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(rw).Encode(resp)
 }
 
 // handleHealthz returns OK status.
@@ -170,7 +183,7 @@ func (w *Worker) handleHealthz(rw http.ResponseWriter, req *http.Request) {
 	})
 }
 
-// StartWork executes 'ant beta:worker run --session-id <sessionID>' synchronously.
+// StartWork executes 'ant beta:worker run' synchronously.
 func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string, stderr string, err error) {
 	sessionID := strings.TrimSpace(req.SessionID)
 	if sessionID == "" {
@@ -182,21 +195,20 @@ func (w *Worker) StartWork(ctx context.Context, req WorkRequest) (stdout string,
 		bin = "ant"
 	}
 
-	baseURL := w.localBaseURL
-	if baseURL == "" {
-		baseURL = "http://127.0.0.1:80"
+	workID := strings.TrimSpace(req.WorkID)
+	if workID == "" {
+		workID = sessionID
 	}
 
 	args := []string{
 		"beta:worker", "run",
 		"--unrestricted-paths", // TODO(jbd): Make this flag optional.
-		"--max-idle", "30s",
+		"--max-idle", "1s",
 	}
 
 	env := append(os.Environ(),
 		"ANTHROPIC_SESSION_ID="+sessionID,
-		"ANTHROPIC_WORK_ID="+sessionID,
-		"ANTHROPIC_BASE_URL="+baseURL,
+		"ANTHROPIC_WORK_ID="+workID,
 	)
 	if req.EnvironmentID != "" {
 		env = append(env, "ANTHROPIC_ENVIRONMENT_ID="+req.EnvironmentID)
