@@ -202,3 +202,12 @@ Controller            atenet-router        Actor (:80)                 ateapi
 2. **Idleness Probing**: The controller sends `GET /idle` through `atenet-router` to query the actor's last activity timestamp.
 4. **Suspension**: The controller calls `ateapi.SuspendActor()` for the idle actor.
 5. **Resumption**: On subsequent new events, the controller resumes the actor from the snapshot.
+
+
+## Potential Improvements
+
+The project can become more resilient with a few potential improvements to the Anthropic API:
+
+* **Work item ack**: A mechanism to acknowledge polled items upon receipt and queuing, prior to completion.
+* **Completion with error**: The ability to complete events with an error status so tool calls fail fast rather than hanging.
+* **Pollable sleep event**: Delivering an "sleep" event through the polling API alongside work items. Managed Agents should serve as the single source of truth rather than requiring external serialization of these lifecycle events.
