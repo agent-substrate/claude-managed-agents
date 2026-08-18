@@ -17,7 +17,7 @@ import (
 
 const (
 	DefaultRunnerAddr = ":80"
-	DefaultRunTimeout = 10 * time.Minute
+	defaultRunTimeout = 10 * time.Minute
 )
 
 // WorkRequest is the JSON payload accepted by the runner HTTP server.
@@ -244,9 +244,9 @@ func (r *Runner) Run() error {
 	server := &http.Server{
 		Addr:         addr,
 		Handler:      r.Handler(),
-		ReadTimeout:  DefaultRunTimeout,
-		WriteTimeout: DefaultRunTimeout,
-		IdleTimeout:  DefaultRunTimeout,
+		ReadTimeout:  defaultRunTimeout,
+		WriteTimeout: defaultRunTimeout,
+		IdleTimeout:  defaultRunTimeout,
 	}
 	return server.ListenAndServe()
 }

@@ -20,7 +20,7 @@ var (
 )
 
 const (
-	DefaultPollInterval = 1 * time.Second
+	defaultPollInterval = 1 * time.Second
 )
 
 // Config configures the Poller client and lifecycle.
@@ -47,7 +47,7 @@ func (c *Config) Defaults() {
 		c.APIKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
 	if c.PollInterval <= 0 {
-		c.PollInterval = DefaultPollInterval
+		c.PollInterval = defaultPollInterval
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()

@@ -1,4 +1,4 @@
-package sessionmanager
+package event
 
 import (
 	"context"
@@ -19,9 +19,11 @@ func TestManagerUnacknowledgedEventReplayed(t *testing.T) {
 	}
 	t.Cleanup(mini.Close)
 
-	mgr, err := New(Options{
-		ValkeyAddr:   mini.Addr(),
-		DisableCache: true,
+	mgr, err := New(ManagerConfig{
+		Valkey: ValkeyConfig{
+			Addr:         mini.Addr(),
+			DisableCache: true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -95,13 +97,15 @@ func TestManagerQueueAndPop(t *testing.T) {
 	t.Cleanup(mini.Close)
 
 	// Connection error on invalid Valkey address
-	if _, err := New(Options{ValkeyAddr: "127.0.0.1:0"}); err == nil {
+	if _, err := New(ManagerConfig{Valkey: ValkeyConfig{Addr: "127.0.0.1:0"}}); err == nil {
 		t.Error("expected error for invalid ValkeyAddr, got nil")
 	}
 
-	mgr, err := New(Options{
-		ValkeyAddr:   mini.Addr(),
-		DisableCache: true,
+	mgr, err := New(ManagerConfig{
+		Valkey: ValkeyConfig{
+			Addr:         mini.Addr(),
+			DisableCache: true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -189,9 +193,11 @@ func TestManagerReconcile(t *testing.T) {
 		mu              sync.Mutex
 	)
 
-	mgr, err := New(Options{
-		ValkeyAddr:   mini.Addr(),
-		DisableCache: true,
+	mgr, err := New(ManagerConfig{
+		Valkey: ValkeyConfig{
+			Addr:         mini.Addr(),
+			DisableCache: true,
+		},
 		PollInterval: 10 * time.Millisecond,
 		OnResume: func(ctx context.Context, event *Event) error {
 			mu.Lock()
@@ -279,9 +285,11 @@ func TestManagerReconcile_MultipleConsumersDeduplication(t *testing.T) {
 	numConsumers := 3
 	consumers := make([]*Manager, numConsumers)
 	for i := 0; i < numConsumers; i++ {
-		c, err := New(Options{
-			ValkeyAddr:   mini.Addr(),
-			DisableCache: true,
+		c, err := New(ManagerConfig{
+			Valkey: ValkeyConfig{
+				Addr:         mini.Addr(),
+				DisableCache: true,
+			},
 			PollInterval: 10 * time.Millisecond,
 			OnResume: func(ctx context.Context, event *Event) error {
 				atomic.AddInt32(&processedCount, 1)

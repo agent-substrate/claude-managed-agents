@@ -241,7 +241,7 @@ func TestManagerLifecycle(t *testing.T) {
 
 	// 4. Suspend after cooldown
 	mgr.mu.Lock()
-	mgr.lastResumed[name] = time.Now().Add(-DefaultResumeCooldown - time.Second)
+	mgr.lastResumed[name] = time.Now().Add(-defaultResumeCooldown - time.Second)
 	mgr.mu.Unlock()
 
 	if err := mgr.Suspend(context.Background(), sessionID); err != nil {
@@ -427,7 +427,7 @@ func TestSuspendIgnoredWithinCooldown(t *testing.T) {
 
 	// 3. Fast-forward resume timestamp > cooldown
 	mgr.mu.Lock()
-	mgr.lastResumed[aName] = time.Now().Add(-DefaultResumeCooldown - time.Second)
+	mgr.lastResumed[aName] = time.Now().Add(-defaultResumeCooldown - time.Second)
 	mgr.mu.Unlock()
 
 	if err := mgr.SuspendActor(context.Background(), actorRef); err != nil {
@@ -463,7 +463,7 @@ func TestManagerStartGC_Success(t *testing.T) {
 	defer routerServer.Close()
 
 	mgr := NewManager(fakeClient, "test-template", "test-ns").WithRouterAddr(routerServer.URL)
-	mgr.lastResumed[actorName1] = time.Now().Add(-DefaultResumeCooldown - time.Second)
+	mgr.lastResumed[actorName1] = time.Now().Add(-defaultResumeCooldown - time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -25,10 +25,10 @@ import (
 const (
 	DefaultIdleCheckInterval = 5 * time.Second
 	DefaultIdleThreshold     = 30 * time.Second
-	DefaultSuspendTimeout    = 30 * time.Second
-	DefaultNotifyTimeout     = 30 * time.Second
-	DefaultWorkTimeout       = 10 * time.Minute
-	DefaultResumeCooldown    = 20 * time.Second
+
+	defaultSuspendTimeout = 30 * time.Second
+	defaultNotifyTimeout  = 5 * time.Second
+	defaultResumeCooldown = 20 * time.Second
 )
 
 // IdleStatus is the JSON payload returned by an actor's /idle HTTP endpoint.
@@ -175,12 +175,12 @@ func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) err
 		return fmt.Errorf("marshaling work payload: %w", err)
 	}
 
-	timeoutMs := fmt.Sprintf("%d", DefaultNotifyTimeout.Milliseconds())
+	timeoutMs := fmt.Sprintf("%d", defaultNotifyTimeout.Milliseconds())
 	actorName := ActorName(sessionID)
 	host := fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorName, m.atespace)
 
 	client := &http.Client{
-		Timeout: DefaultNotifyTimeout,
+		Timeout: defaultNotifyTimeout,
 	}
 
 	type workResponse struct {
@@ -189,7 +189,7 @@ func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) err
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
+	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -256,15 +256,16 @@ func (m *Manager) SuspendActor(ctx context.Context, actorRef *ateapipb.ObjectRef
 	lastResume, ok := m.lastResumed[actorRef.Name]
 	m.mu.Unlock()
 
-	if ok && time.Since(lastResume) < DefaultResumeCooldown {
-		m.logger.Debug("Ignoring suspend request: actor was resumed recently",
+	if ok && time.Since(lastResume) < defaultResumeCooldown {
+		m.logger.Debug("Ignoring suspend for actor within resume cooldown",
 			slog.String("actor", actorRef.Name),
 			slog.Duration("since_resume", time.Since(lastResume)),
+			slog.Duration("cooldown", defaultResumeCooldown),
 		)
 		return nil
 	}
 
-	suspendCtx, cancel := context.WithTimeout(ctx, DefaultSuspendTimeout)
+	suspendCtx, cancel := context.WithTimeout(ctx, defaultSuspendTimeout)
 	defer cancel()
 
 	_, err := m.client.SuspendActor(suspendCtx, &ateapipb.SuspendActorRequest{Actor: actorRef})

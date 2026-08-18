@@ -7,7 +7,7 @@ This worker runs Claude Managed Agents tool calls (bash, file operations, skills
 ## Overview
 
 ```
-Claude Managed Agents ──► Poller (`ate-ant`)
+Claude Managed Agents ──► Poller (`ate-ant poll`)
                                 │
                                 ▼
                        Queue (`valkey` / Redis)
@@ -25,7 +25,7 @@ Claude Managed Agents ──► Poller (`ate-ant`)
 
 ### Components
 
-- **Poller**: An always-on daemon running `ate-ant`. It polls the Claude Managed Agents API for new work items and enqueues lifecycle events into the queue.
+- **Poller**: An always-on daemon running `ate-ant poll`. It polls the Claude Managed Agents API for new work items and enqueues lifecycle events into the queue.
 - **Queue**: An in-cluster Valkey/Redis instance buffering session lifecycle events, providing durable work distribution and decoupling ingestion from execution.
 - **Controller**: It consumes lifecycle events from the queue, manages Substrate actor lifecycles (creating, resuming, suspending), and dispatches work payloads to actors via `atenet-router`.
 - **Sandbox Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) via `ant beta:worker run` and preserve session state across turns via snapshot persistence.
@@ -72,7 +72,7 @@ make push
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-ant@sha256:68dae71610e0b6720f85305f83c5df8bd17795c26750e1384c4108289ade8e29 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-ant@sha256:54b88ede8f54f063500bfd048e181a3d3437f1ce2dfba07a61b39cc2c954ef5e \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \

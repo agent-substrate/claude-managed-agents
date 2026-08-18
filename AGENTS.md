@@ -50,3 +50,9 @@ See the logs for more:
 ```bash
 kubectl logs -n ate-ant -l app=ate-ant --all-containers --tail=50
 ```
+
+## 6. Explore Valkey
+
+```bash
+kubectl exec -n ate-ant valkey-0 -- valkey-cli xinfo groups stream:events
+```

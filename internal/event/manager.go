@@ -1,4 +1,4 @@
-package sessionmanager
+package event
 
 import (
 	"context"
@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	DefaultPollInterval = 1 * time.Second
-	DefaultStreamKey    = "stream:events"
-	DefaultGroupName    = "sessionmanager"
+	defaultPollInterval = 1 * time.Second
+	defaultStreamKey    = "stream:events"
+	defaultGroupName    = "event"
 )
 
 // Action represents the lifecycle action to take for a session.
@@ -39,20 +39,25 @@ type Event struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Options configures a session Manager.
-type Options struct {
-	Client         valkey.Client
-	ValkeyAddr     string
-	ValkeyPassword string
-	DisableCache   bool
-	PollInterval   time.Duration
-	StreamKey      string
-	QueueKey       string // alias for StreamKey (backwards compatibility)
-	GroupName      string
-	ConsumerName   string
-	Logger         *slog.Logger
-	OnSuspend      func(ctx context.Context, event *Event) error
-	OnResume       func(ctx context.Context, event *Event) error
+// ValkeyConfig configures the Valkey client connection.
+type ValkeyConfig struct {
+	Client       valkey.Client
+	Addr         string
+	Password     string
+	DisableCache bool
+}
+
+// ManagerConfig configures a session Manager.
+type ManagerConfig struct {
+	Valkey       ValkeyConfig
+	PollInterval time.Duration
+	StreamKey    string
+	QueueKey     string // alias for StreamKey (backwards compatibility)
+	GroupName    string
+	ConsumerName string
+	Logger       *slog.Logger
+	OnSuspend    func(ctx context.Context, event *Event) error
+	OnResume     func(ctx context.Context, event *Event) error
 }
 
 // Manager coordinates session lifecycle events using Valkey Streams.
@@ -79,54 +84,56 @@ func defaultConsumerName() string {
 }
 
 // New creates a new session Manager.
-func New(o Options) (*Manager, error) {
-	vkClient := o.Client
+func New(cfg ManagerConfig) (*Manager, error) {
+	vkClient := cfg.Valkey.Client
 	if vkClient == nil {
-		if o.ValkeyAddr == "" {
-			o.ValkeyAddr = os.Getenv("VALKEY_ADDR")
+		addr := cfg.Valkey.Addr
+		if addr == "" {
+			addr = os.Getenv("VALKEY_ADDR")
 		}
-		if o.ValkeyAddr == "" {
-			o.ValkeyAddr = manifest.DefaultValkeyAddr
+		if addr == "" {
+			addr = manifest.DefaultValkeyAddr
 		}
-		if o.ValkeyPassword == "" {
-			o.ValkeyPassword = os.Getenv("VALKEY_PASSWORD")
+		password := cfg.Valkey.Password
+		if password == "" {
+			password = os.Getenv("VALKEY_PASSWORD")
 		}
 
 		clientOpt := valkey.ClientOption{
-			InitAddress:  []string{o.ValkeyAddr},
-			DisableCache: o.DisableCache,
+			InitAddress:  []string{addr},
+			DisableCache: cfg.Valkey.DisableCache,
 		}
-		if o.ValkeyPassword != "" {
-			clientOpt.Password = o.ValkeyPassword
+		if password != "" {
+			clientOpt.Password = password
 		}
 
 		var err error
 		vkClient, err = valkey.NewClient(clientOpt)
 		if err != nil {
-			return nil, fmt.Errorf("sessionmanager: connecting to valkey at %s: %w", o.ValkeyAddr, err)
+			return nil, fmt.Errorf("event: connecting to valkey at %s: %w", addr, err)
 		}
 	}
 
-	logger := o.Logger
+	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	pollInterval := o.PollInterval
+	pollInterval := cfg.PollInterval
 	if pollInterval <= 0 {
-		pollInterval = DefaultPollInterval
+		pollInterval = defaultPollInterval
 	}
-	streamKey := o.StreamKey
+	streamKey := cfg.StreamKey
 	if streamKey == "" {
-		streamKey = o.QueueKey
+		streamKey = cfg.QueueKey
 	}
 	if streamKey == "" {
-		streamKey = DefaultStreamKey
+		streamKey = defaultStreamKey
 	}
-	groupName := o.GroupName
+	groupName := cfg.GroupName
 	if groupName == "" {
-		groupName = DefaultGroupName
+		groupName = defaultGroupName
 	}
-	consumerName := o.ConsumerName
+	consumerName := cfg.ConsumerName
 	if consumerName == "" {
 		consumerName = defaultConsumerName()
 	}
@@ -138,8 +145,8 @@ func New(o Options) (*Manager, error) {
 		streamKey:    streamKey,
 		groupName:    groupName,
 		consumerName: consumerName,
-		onSuspend:    o.OnSuspend,
-		onResume:     o.OnResume,
+		onSuspend:    cfg.OnSuspend,
+		onResume:     cfg.OnResume,
 	}, nil
 }
 
@@ -156,7 +163,7 @@ func (m *Manager) ensureGroup(ctx context.Context) error {
 	cmd := m.vkClient.B().XgroupCreate().Key(m.streamKey).Group(m.groupName).Id("0").Mkstream().Build()
 	err := m.vkClient.Do(ctx, cmd).Error()
 	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
-		return fmt.Errorf("sessionmanager: creating consumer group %s on %s: %w", m.groupName, m.streamKey, err)
+		return fmt.Errorf("event: creating consumer group %s on %s: %w", m.groupName, m.streamKey, err)
 	}
 	return nil
 }
@@ -164,7 +171,7 @@ func (m *Manager) ensureGroup(ctx context.Context) error {
 // QueueResume pushes a "resume" event to the stream.
 func (m *Manager) QueueResume(ctx context.Context, sessionID, workID string) (*Event, error) {
 	if sessionID == "" {
-		return nil, errors.New("sessionmanager: session_id is required")
+		return nil, errors.New("event: session_id is required")
 	}
 	event := &Event{
 		Action:    ActionResume,
@@ -174,12 +181,12 @@ func (m *Manager) QueueResume(ctx context.Context, sessionID, workID string) (*E
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
-		return nil, fmt.Errorf("sessionmanager: marshaling resume event: %w", err)
+		return nil, fmt.Errorf("event: marshaling resume event: %w", err)
 	}
 	cmd := m.vkClient.B().Xadd().Key(m.streamKey).Id("*").FieldValue().FieldValue("data", string(data)).Build()
 	id, err := m.vkClient.Do(ctx, cmd).ToString()
 	if err != nil {
-		return nil, fmt.Errorf("sessionmanager: pushing resume event to stream %s: %w", m.streamKey, err)
+		return nil, fmt.Errorf("event: pushing resume event to stream %s: %w", m.streamKey, err)
 	}
 	event.ID = id
 	return event, nil
@@ -188,7 +195,7 @@ func (m *Manager) QueueResume(ctx context.Context, sessionID, workID string) (*E
 // QueueSuspend pushes a "suspend" event to the stream.
 func (m *Manager) QueueSuspend(ctx context.Context, sessionID string) (*Event, error) {
 	if sessionID == "" {
-		return nil, errors.New("sessionmanager: session_id is required")
+		return nil, errors.New("event: session_id is required")
 	}
 	event := &Event{
 		Action:    ActionSuspend,
@@ -197,12 +204,12 @@ func (m *Manager) QueueSuspend(ctx context.Context, sessionID string) (*Event, e
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
-		return nil, fmt.Errorf("sessionmanager: marshaling suspend event: %w", err)
+		return nil, fmt.Errorf("event: marshaling suspend event: %w", err)
 	}
 	cmd := m.vkClient.B().Xadd().Key(m.streamKey).Id("*").FieldValue().FieldValue("data", string(data)).Build()
 	id, err := m.vkClient.Do(ctx, cmd).ToString()
 	if err != nil {
-		return nil, fmt.Errorf("sessionmanager: pushing suspend event to stream %s: %w", m.streamKey, err)
+		return nil, fmt.Errorf("event: pushing suspend event to stream %s: %w", m.streamKey, err)
 	}
 	event.ID = id
 	return event, nil
@@ -222,11 +229,11 @@ func (m *Manager) parseEntry(entry valkey.XRangeEntry) (*Event, error) {
 				WorkID:    workID,
 			}, nil
 		}
-		return nil, fmt.Errorf("sessionmanager: missing data field in stream entry %s", entry.ID)
+		return nil, fmt.Errorf("event: missing data field in stream entry %s", entry.ID)
 	}
 	var event Event
 	if err := json.Unmarshal([]byte(dataStr), &event); err != nil {
-		return nil, fmt.Errorf("sessionmanager: unmarshaling event from stream entry %s: %w", entry.ID, err)
+		return nil, fmt.Errorf("event: unmarshaling event from stream entry %s: %w", entry.ID, err)
 	}
 	event.ID = entry.ID
 	return &event, nil
@@ -248,7 +255,7 @@ func (m *Manager) pop(ctx context.Context) (*Event, error) {
 		return m.parseEntry(res[m.streamKey][0])
 	}
 	if err != nil && !valkey.IsValkeyNil(err) {
-		return nil, fmt.Errorf("sessionmanager: reading pending stream entries: %w", err)
+		return nil, fmt.Errorf("event: reading pending stream entries: %w", err)
 	}
 
 	// 2. Read new messages for this consumer group (ID: ">")
@@ -258,7 +265,7 @@ func (m *Manager) pop(ctx context.Context) (*Event, error) {
 		if valkey.IsValkeyNil(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("sessionmanager: reading new stream entries: %w", err)
+		return nil, fmt.Errorf("event: reading new stream entries: %w", err)
 	}
 	entries := res[m.streamKey]
 	if len(entries) == 0 {
@@ -295,7 +302,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	)
 
 	if err := m.ensureGroup(ctx); err != nil {
-		return fmt.Errorf("sessionmanager: ensuring consumer group: %w", err)
+		return fmt.Errorf("event: ensuring consumer group: %w", err)
 	}
 
 	for {

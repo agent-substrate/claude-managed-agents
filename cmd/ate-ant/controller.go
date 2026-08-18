@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/actor"
+	"github.com/agent-substrate/claude-managed-agents/internal/event"
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
 	"github.com/agent-substrate/claude-managed-agents/internal/runner"
-	"github.com/agent-substrate/claude-managed-agents/internal/sessionmanager"
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +26,7 @@ func newControllerCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:           "controller",
-		Short:         "Consume lifecycle events from the session manager and dispatch to Agent Substrate actors",
+		Short:         "Consume lifecycle events from the event manager and dispatch to Agent Substrate actors",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
@@ -47,37 +47,37 @@ func newControllerCommand() *cobra.Command {
 			// Start background actor idle garbage collector.
 			am.StartGC(ctx, gcInterval, gcIdleThreshold)
 
-			sm, err := sessionmanager.New(sessionmanager.Options{
+			em, err := event.New(event.ManagerConfig{
 				Logger: logger,
-				OnResume: func(ctx context.Context, event *sessionmanager.Event) error {
-					if event.WorkID == "" {
+				OnResume: func(ctx context.Context, ev *event.Event) error {
+					if ev.WorkID == "" {
 						return nil
 					}
 					return retry(ctx, func() error {
-						if err := am.Resume(ctx, event.SessionID); err != nil {
-							return fmt.Errorf("resuming session %s: %w", event.SessionID, err)
+						if err := am.Resume(ctx, ev.SessionID); err != nil {
+							return fmt.Errorf("resuming session %s: %w", ev.SessionID, err)
 						}
 						payload := runner.WorkRequest{
-							SessionID: event.SessionID,
-							WorkID:    event.WorkID,
+							SessionID: ev.SessionID,
+							WorkID:    ev.WorkID,
 						}
-						if err := am.Notify(ctx, event.SessionID, payload); err != nil {
-							return fmt.Errorf("notifying session %s: %w", event.SessionID, err)
+						if err := am.Notify(ctx, ev.SessionID, payload); err != nil {
+							return fmt.Errorf("notifying session %s: %w", ev.SessionID, err)
 						}
 						return nil
 					})
 				},
-				OnSuspend: func(ctx context.Context, event *sessionmanager.Event) error {
+				OnSuspend: func(ctx context.Context, ev *event.Event) error {
 					// Nothing to do here, we will garbage collect the actors.
 					return nil
 				},
 			})
 			if err != nil {
-				return fmt.Errorf("creating session manager: %w", err)
+				return fmt.Errorf("creating event manager: %w", err)
 			}
-			defer sm.Close()
+			defer em.Close()
 
-			return sm.Reconcile(ctx)
+			return em.Reconcile(ctx)
 		},
 	}
 

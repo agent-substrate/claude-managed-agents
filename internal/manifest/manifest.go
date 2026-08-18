@@ -17,24 +17,25 @@ import (
 )
 
 // DefaultPauseImage is the digest-pinned pause image recommended for Agent Substrate.
-const DefaultPauseImage = "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
+const defaultPauseImage = "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
 
 // Default constants for names and paths.
 const (
-	DefaultNamespace                = "ate-ant"
-	DefaultTemplate                 = "ate-ant-actor-template"
-	DefaultWorkerPool               = "ate-ant-workerpool"
-	DefaultDeploymentName           = "ate-ant"
-	DefaultControllerDeploymentName = "ate-ant-controller"
-	DefaultControllerReplicas       = 1
-	DefaultSecretName               = "ate-ant-creds"
-	DefaultAteapiAddr               = "api.ate-system.svc.cluster.local:443"
-	DefaultAtenetRouterAddr         = "atenet-router.ate-system.svc.cluster.local:80"
-	DefaultValkeyName               = "valkey"
-	DefaultValkeyImage              = "valkey/valkey:8"
-	DefaultValkeyPort               = 6379
-	DefaultValkeyStorageSize        = "10Gi"
-	DefaultValkeyAddr               = "valkey.ate-ant.svc.cluster.local:6379"
+	DefaultNamespace          = "ate-ant"
+	DefaultTemplate           = "ate-ant-actor-template"
+	DefaultControllerReplicas = 1
+	DefaultAteapiAddr         = "api.ate-system.svc.cluster.local:443"
+	DefaultAtenetRouterAddr   = "atenet-router.ate-system.svc.cluster.local:80"
+	DefaultValkeyImage        = "valkey/valkey:8"
+	DefaultValkeyAddr         = "valkey.ate-ant.svc.cluster.local:6379"
+
+	defaultWorkerPool               = "ate-ant-workerpool"
+	defaultDeploymentName           = "ate-ant"
+	defaultControllerDeploymentName = "ate-ant-controller"
+	defaultSecretName               = "ate-ant-creds"
+	defaultValkeyName               = "valkey"
+	defaultValkeyPort               = 6379
+	defaultValkeyStorageSize        = "10Gi"
 )
 
 // Config defines the parameters for generating Substrate and Kubernetes deployment manifests.
@@ -144,7 +145,7 @@ func BuildSecret(cfg Config) *corev1.Secret {
 	return &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultSecretName,
+			Name:      defaultSecretName,
 			Namespace: cfg.Namespace,
 		},
 		Type:       corev1.SecretTypeOpaque,
@@ -157,7 +158,7 @@ func BuildSecretsReaderRole(cfg Config) *rbacv1.Role {
 	return &rbacv1.Role{
 		TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "Role"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultSecretName + "-reader",
+			Name:      defaultSecretName + "-reader",
 			Namespace: cfg.Namespace,
 		},
 		Rules: []rbacv1.PolicyRule{{
@@ -173,7 +174,7 @@ func BuildSecretsReaderRoleBinding(cfg Config) *rbacv1.RoleBinding {
 	return &rbacv1.RoleBinding{
 		TypeMeta: metav1.TypeMeta{APIVersion: "rbac.authorization.k8s.io/v1", Kind: "RoleBinding"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultSecretName + "-reader",
+			Name:      defaultSecretName + "-reader",
 			Namespace: cfg.Namespace,
 		},
 		Subjects: []rbacv1.Subject{{
@@ -184,18 +185,18 @@ func BuildSecretsReaderRoleBinding(cfg Config) *rbacv1.RoleBinding {
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:      "Role",
-			Name:      DefaultSecretName + "-reader",
+			Name:      defaultSecretName + "-reader",
 		},
 	}
 }
 
 // BuildValkeyService constructs the Kubernetes Service for the Valkey instance.
 func BuildValkeyService(cfg Config) *corev1.Service {
-	labels := map[string]string{"app": DefaultValkeyName}
+	labels := map[string]string{"app": defaultValkeyName}
 	return &corev1.Service{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultValkeyName,
+			Name:      defaultValkeyName,
 			Namespace: cfg.Namespace,
 			Labels:    labels,
 		},
@@ -203,9 +204,9 @@ func BuildValkeyService(cfg Config) *corev1.Service {
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: labels,
 			Ports: []corev1.ServicePort{{
-				Name:       DefaultValkeyName,
-				Port:       DefaultValkeyPort,
-				TargetPort: intstr.FromInt(DefaultValkeyPort),
+				Name:       defaultValkeyName,
+				Port:       defaultValkeyPort,
+				TargetPort: intstr.FromInt(defaultValkeyPort),
 			}},
 		},
 	}
@@ -213,30 +214,30 @@ func BuildValkeyService(cfg Config) *corev1.Service {
 
 // BuildValkeyStatefulSet constructs the Kubernetes StatefulSet for a single-replica Valkey.
 func BuildValkeyStatefulSet(cfg Config) *appsv1.StatefulSet {
-	labels := map[string]string{"app": DefaultValkeyName}
+	labels := map[string]string{"app": defaultValkeyName}
 	replicas := int32(1)
 
 	return &appsv1.StatefulSet{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSet"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultValkeyName,
+			Name:      defaultValkeyName,
 			Namespace: cfg.Namespace,
 			Labels:    labels,
 		},
 		Spec: appsv1.StatefulSetSpec{
-			ServiceName: DefaultValkeyName,
+			ServiceName: defaultValkeyName,
 			Replicas:    &replicas,
 			Selector:    &metav1.LabelSelector{MatchLabels: labels},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Name:  DefaultValkeyName,
+						Name:  defaultValkeyName,
 						Image: cfg.ValkeyImage,
 						Args:  []string{"valkey-server", "--save", "60 1", "--loglevel", "notice"},
 						Ports: []corev1.ContainerPort{{
-							Name:          DefaultValkeyName,
-							ContainerPort: DefaultValkeyPort,
+							Name:          defaultValkeyName,
+							ContainerPort: defaultValkeyPort,
 						}},
 						VolumeMounts: []corev1.VolumeMount{{
 							Name:      "data",
@@ -255,7 +256,7 @@ func BuildValkeyStatefulSet(cfg Config) *appsv1.StatefulSet {
 					},
 					Resources: corev1.VolumeResourceRequirements{
 						Requests: corev1.ResourceList{
-							corev1.ResourceStorage: resource.MustParse(DefaultValkeyStorageSize),
+							corev1.ResourceStorage: resource.MustParse(defaultValkeyStorageSize),
 						},
 					},
 				},
@@ -272,7 +273,7 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 			Kind:       "WorkerPool",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultWorkerPool,
+			Name:      defaultWorkerPool,
 			Namespace: cfg.Namespace,
 			Labels: map[string]string{
 				"workload": cfg.Template,
@@ -293,7 +294,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 			Name: "ANTHROPIC_API_KEY",
 			ValueFrom: &atev1alpha1.EnvVarSource{
 				SecretKeyRef: &atev1alpha1.SecretKeySelector{
-					Name: DefaultSecretName,
+					Name: defaultSecretName,
 					Key:  "ANTHROPIC_API_KEY",
 				},
 			},
@@ -304,7 +305,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 			Name: "ANTHROPIC_ENVIRONMENT_KEY",
 			ValueFrom: &atev1alpha1.EnvVarSource{
 				SecretKeyRef: &atev1alpha1.SecretKeySelector{
-					Name: DefaultSecretName,
+					Name: defaultSecretName,
 					Key:  "ANTHROPIC_ENVIRONMENT_KEY",
 				},
 			},
@@ -315,7 +316,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 			Name: "ANTHROPIC_ENVIRONMENT_ID",
 			ValueFrom: &atev1alpha1.EnvVarSource{
 				SecretKeyRef: &atev1alpha1.SecretKeySelector{
-					Name: DefaultSecretName,
+					Name: defaultSecretName,
 					Key:  "ANTHROPIC_ENVIRONMENT_ID",
 				},
 			},
@@ -332,7 +333,7 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 			Namespace: cfg.Namespace,
 		},
 		Spec: atev1alpha1.ActorTemplateSpec{
-			PauseImage: DefaultPauseImage,
+			PauseImage: defaultPauseImage,
 			WorkerSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"workload": cfg.Template,
@@ -359,13 +360,13 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 
 // BuildPollerDeployment constructs the Kubernetes Deployment for the poller daemon.
 func BuildPollerDeployment(cfg Config) *appsv1.Deployment {
-	labels := map[string]string{"app": DefaultDeploymentName}
+	labels := map[string]string{"app": defaultDeploymentName}
 	replicas := int32(1)
 
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultDeploymentName,
+			Name:      defaultDeploymentName,
 			Namespace: cfg.Namespace,
 			Labels:    labels,
 		},
@@ -376,15 +377,16 @@ func BuildPollerDeployment(cfg Config) *appsv1.Deployment {
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Name:  DefaultDeploymentName,
+						Name:  defaultDeploymentName,
 						Image: cfg.WorkerImage,
 						Command: []string{
 							"ate-ant",
+							"poll",
 						},
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
 								LocalObjectReference: corev1.LocalObjectReference{
-									Name: DefaultSecretName,
+									Name: defaultSecretName,
 								},
 							},
 						}},
@@ -397,13 +399,13 @@ func BuildPollerDeployment(cfg Config) *appsv1.Deployment {
 
 // BuildControllerDeployment constructs the Kubernetes Deployment for the session controller daemon.
 func BuildControllerDeployment(cfg Config) *appsv1.Deployment {
-	labels := map[string]string{"app": DefaultControllerDeploymentName}
+	labels := map[string]string{"app": defaultControllerDeploymentName}
 	replicas := cfg.ControllerReplicas
 
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      DefaultControllerDeploymentName,
+			Name:      defaultControllerDeploymentName,
 			Namespace: cfg.Namespace,
 			Labels:    labels,
 		},
@@ -414,7 +416,7 @@ func BuildControllerDeployment(cfg Config) *appsv1.Deployment {
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
-						Name:  DefaultControllerDeploymentName,
+						Name:  defaultControllerDeploymentName,
 						Image: cfg.WorkerImage,
 						Command: []string{
 							"ate-ant",
@@ -423,7 +425,7 @@ func BuildControllerDeployment(cfg Config) *appsv1.Deployment {
 						EnvFrom: []corev1.EnvFromSource{{
 							SecretRef: &corev1.SecretEnvSource{
 								LocalObjectReference: corev1.LocalObjectReference{
-									Name: DefaultSecretName,
+									Name: defaultSecretName,
 								},
 							},
 						}},

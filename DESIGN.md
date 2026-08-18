@@ -24,9 +24,9 @@ This project runs [Claude Managed Agents](https://platform.claude.com/docs/en/ma
 └────────────┬────────────┘
              │ Poll for work
              ▼
-   ┌───────────────────┐
-   │ Poller (`ate-ant`)│
-   └─────────┬─────────┘
+   ┌────────────────────────┐
+   │ Poller (`ate-ant poll`)│
+   └─────────┬──────────────┘
              │ Enqueue lifecycle events
              ▼
    ┌───────────────────┐
@@ -66,7 +66,7 @@ Claude Managed Agents allow polling
 
 All functionality is packaged into a single binary (`ate-ant`) with subcommands for each operational role:
 
-1. **`ate-ant`**:
+1. **`ate-ant poll`**:
    - Always-on daemon that polls the Anthropic Managed Agents API for new work items.
    - Pushes session lifecycle events (`resume`) into the queue without waiting for sandboxes to be ready.
 

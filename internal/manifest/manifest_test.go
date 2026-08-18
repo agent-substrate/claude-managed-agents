@@ -77,7 +77,7 @@ func TestBuildManifests(t *testing.T) {
 		t.Errorf("namespace = %q, want ate-ant", ns.Name)
 	}
 
-	secret := find[*corev1.Secret](t, objs, DefaultSecretName)
+	secret := find[*corev1.Secret](t, objs, defaultSecretName)
 	if secret.StringData["ANTHROPIC_ENVIRONMENT_ID"] != "env_test_123" {
 		t.Errorf("secret env id = %q", secret.StringData["ANTHROPIC_ENVIRONMENT_ID"])
 	}
@@ -85,12 +85,12 @@ func TestBuildManifests(t *testing.T) {
 		t.Errorf("secret valkey addr = %q, want %q", secret.StringData["VALKEY_ADDR"], DefaultValkeyAddr)
 	}
 
-	valkeySvc := find[*corev1.Service](t, objs, DefaultValkeyName)
+	valkeySvc := find[*corev1.Service](t, objs, defaultValkeyName)
 	if len(valkeySvc.Spec.Ports) != 1 || valkeySvc.Spec.Ports[0].Port != 6379 {
 		t.Errorf("valkey service ports = %+v", valkeySvc.Spec.Ports)
 	}
 
-	valkeySts := find[*appsv1.StatefulSet](t, objs, DefaultValkeyName)
+	valkeySts := find[*appsv1.StatefulSet](t, objs, defaultValkeyName)
 	if valkeySts.Spec.Replicas == nil || *valkeySts.Spec.Replicas != 1 {
 		t.Errorf("valkey statefulset replicas = %v, want 1", valkeySts.Spec.Replicas)
 	}
@@ -98,7 +98,7 @@ func TestBuildManifests(t *testing.T) {
 		t.Errorf("valkey statefulset volume claim templates count = %d, want 1", len(valkeySts.Spec.VolumeClaimTemplates))
 	}
 
-	pool := find[*atev1alpha1.WorkerPool](t, objs, DefaultWorkerPool)
+	pool := find[*atev1alpha1.WorkerPool](t, objs, defaultWorkerPool)
 	if pool.Spec.Replicas != 3 {
 		t.Errorf("workerpool = %+v", pool)
 	}
@@ -120,7 +120,7 @@ func TestBuildManifests(t *testing.T) {
 		t.Errorf("snapshots location = %q", template.Spec.SnapshotsConfig.Location)
 	}
 
-	deployment := find[*appsv1.Deployment](t, objs, DefaultDeploymentName)
+	deployment := find[*appsv1.Deployment](t, objs, defaultDeploymentName)
 	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
 		t.Errorf("deployment replicas = %v, want 1", *deployment.Spec.Replicas)
 	}
@@ -128,14 +128,14 @@ func TestBuildManifests(t *testing.T) {
 		t.Fatalf("deployment containers count = %d, want 1", len(deployment.Spec.Template.Spec.Containers))
 	}
 	workerContainer := deployment.Spec.Template.Spec.Containers[0]
-	if len(workerContainer.Command) < 1 || workerContainer.Command[0] != "ate-ant" {
-		t.Errorf("deployment container command = %v, want ['ate-ant']", workerContainer.Command)
+	if len(workerContainer.Command) < 2 || workerContainer.Command[0] != "ate-ant" || workerContainer.Command[1] != "poll" {
+		t.Errorf("deployment container command = %v, want ['ate-ant', 'poll']", workerContainer.Command)
 	}
-	if len(workerContainer.EnvFrom) == 0 || workerContainer.EnvFrom[0].SecretRef == nil || workerContainer.EnvFrom[0].SecretRef.Name != DefaultSecretName {
-		t.Errorf("worker container envFrom = %+v, want secretRef %q", workerContainer.EnvFrom, DefaultSecretName)
+	if len(workerContainer.EnvFrom) == 0 || workerContainer.EnvFrom[0].SecretRef == nil || workerContainer.EnvFrom[0].SecretRef.Name != defaultSecretName {
+		t.Errorf("worker container envFrom = %+v, want secretRef %q", workerContainer.EnvFrom, defaultSecretName)
 	}
 
-	controllerDep := find[*appsv1.Deployment](t, objs, DefaultControllerDeploymentName)
+	controllerDep := find[*appsv1.Deployment](t, objs, defaultControllerDeploymentName)
 	if controllerDep.Spec.Replicas == nil || *controllerDep.Spec.Replicas != 1 {
 		t.Errorf("controller deployment replicas = %v, want 1", *controllerDep.Spec.Replicas)
 	}
@@ -146,8 +146,8 @@ func TestBuildManifests(t *testing.T) {
 	if len(controllerContainer.Command) < 2 || controllerContainer.Command[0] != "ate-ant" || controllerContainer.Command[1] != "controller" {
 		t.Errorf("controller deployment container command = %v, want ['ate-ant', 'controller']", controllerContainer.Command)
 	}
-	if len(controllerContainer.EnvFrom) == 0 || controllerContainer.EnvFrom[0].SecretRef == nil || controllerContainer.EnvFrom[0].SecretRef.Name != DefaultSecretName {
-		t.Errorf("controller container envFrom = %+v, want secretRef %q", controllerContainer.EnvFrom, DefaultSecretName)
+	if len(controllerContainer.EnvFrom) == 0 || controllerContainer.EnvFrom[0].SecretRef == nil || controllerContainer.EnvFrom[0].SecretRef.Name != defaultSecretName {
+		t.Errorf("controller container envFrom = %+v, want secretRef %q", controllerContainer.EnvFrom, defaultSecretName)
 	}
 }
 
@@ -183,7 +183,7 @@ func TestBuildManifestsWithAPIKey(t *testing.T) {
 	cfg.APIKey = "sk-ant-api03-test-key"
 
 	objs := BuildManifests(cfg)
-	secret := find[*corev1.Secret](t, objs, DefaultSecretName)
+	secret := find[*corev1.Secret](t, objs, defaultSecretName)
 	if secret.StringData["ANTHROPIC_API_KEY"] != "sk-ant-api03-test-key" {
 		t.Errorf("secret ANTHROPIC_API_KEY = %q", secret.StringData["ANTHROPIC_API_KEY"])
 	}
