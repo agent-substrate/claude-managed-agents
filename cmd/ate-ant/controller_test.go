@@ -22,6 +22,8 @@ func TestControllerCommandFlags(t *testing.T) {
 		"ateapi-addr",
 		"atenet-router-addr",
 		"insecure",
+		"gc-interval",
+		"gc-idle-threshold",
 	}
 
 	for _, name := range flags {

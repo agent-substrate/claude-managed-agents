@@ -51,6 +51,8 @@ type Options struct {
 	GroupName      string
 	ConsumerName   string
 	Logger         *slog.Logger
+	OnSuspend      func(ctx context.Context, event *Event) error
+	OnResume       func(ctx context.Context, event *Event) error
 }
 
 // Manager coordinates session lifecycle events using Valkey Streams.
@@ -62,8 +64,8 @@ type Manager struct {
 	groupName    string
 	consumerName string
 
-	OnSuspend func(ctx context.Context, event *Event) error
-	OnResume  func(ctx context.Context, event *Event) error
+	onSuspend func(ctx context.Context, event *Event) error
+	onResume  func(ctx context.Context, event *Event) error
 }
 
 func defaultConsumerName() string {
@@ -136,6 +138,8 @@ func New(o Options) (*Manager, error) {
 		streamKey:    streamKey,
 		groupName:    groupName,
 		consumerName: consumerName,
+		onSuspend:    o.OnSuspend,
+		onResume:     o.OnResume,
 	}, nil
 }
 
@@ -280,9 +284,9 @@ func (m *Manager) ackID(ctx context.Context, id string) error {
 	return m.vkClient.Do(ctx, cmd).Error()
 }
 
-// Run continuously pops events from the stream, dispatches them to OnResume/OnSuspend,
+// Reconcile continuously pops events from the stream, dispatches them to OnResume/OnSuspend,
 // and enforces that each event is acknowledged before moving on to the next.
-func (m *Manager) Run(ctx context.Context) error {
+func (m *Manager) Reconcile(ctx context.Context) error {
 	m.logger.Info("Starting session lifecycle manager stream consumer",
 		slog.Duration("poll_interval", m.pollInterval),
 		slog.String("stream_key", m.streamKey),
@@ -324,12 +328,12 @@ func (m *Manager) Run(ctx context.Context) error {
 		var handleErr error
 		switch event.Action {
 		case ActionResume:
-			if m.OnResume != nil {
-				handleErr = m.OnResume(ctx, event)
+			if m.onResume != nil {
+				handleErr = m.onResume(ctx, event)
 			}
 		case ActionSuspend:
-			if m.OnSuspend != nil {
-				handleErr = m.OnSuspend(ctx, event)
+			if m.onSuspend != nil {
+				handleErr = m.onSuspend(ctx, event)
 			}
 		default:
 			m.logger.Warn("Unknown lifecycle event action",

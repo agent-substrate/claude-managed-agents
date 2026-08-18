@@ -72,7 +72,7 @@ make push
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-ant@sha256:7e262a51f1aa74339483be72fd2e1a135588f214a0e91a2a0ab5dfd2a7722811 \
+  --worker-image      gcr.io/dberkov-gke-dev3/ate-ant@sha256:68dae71610e0b6720f85305f83c5df8bd17795c26750e1384c4108289ade8e29 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
@@ -147,4 +147,4 @@ Inside the container:
 
 - [ ] **Distribute prebuilt images** so deploying is one `kubectl apply` with no build step.
 - [ ] **Durable session orchestration** with distributed locking, retries, crash recovery, and auto-ACKing.
-- [ ] **Enable garbage collection** to automatically suspend idle actors.
+- [x] **Enable garbage collection** to automatically suspend idle actors.

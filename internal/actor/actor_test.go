@@ -300,9 +300,11 @@ func TestManagerSuspendIdleActors(t *testing.T) {
 	defer routerServer.Close()
 
 	mgr := NewManager(fakeClient, "test-template", "test-ns").WithRouterAddr(routerServer.URL)
+	mgr.lastResumed[actorName1] = time.Now().Add(-25 * time.Second)
+	mgr.lastResumed[actorName2] = time.Now()
 
-	if err := mgr.SuspendIdleActors(context.Background(), 10*time.Second); err != nil {
-		t.Fatalf("SuspendIdleActors: %v", err)
+	if err := mgr.suspendIdleActors(context.Background(), 10*time.Second); err != nil {
+		t.Fatalf("suspendIdleActors: %v", err)
 	}
 
 	fakeClient.mu.Lock()
@@ -313,6 +315,44 @@ func TestManagerSuspendIdleActors(t *testing.T) {
 	}
 	if fakeClient.suspendedActors["test-ns/"+actorName2] != 0 {
 		t.Errorf("expected actor2 NOT to be suspended, got %d", fakeClient.suspendedActors["test-ns/"+actorName2])
+	}
+}
+
+func TestManagerSuspendIdleActors_Cooldown(t *testing.T) {
+	fakeClient := newFakeControlClient()
+	actorName := "session-cooldown-idle-01"
+
+	fakeClient.createdActors["test-ns/"+actorName] = &ateapipb.Actor{
+		Metadata: &ateapipb.ResourceMetadata{
+			Atespace: "test-ns",
+			Name:     actorName,
+		},
+		Status: ateapipb.Actor_STATUS_RUNNING,
+	}
+
+	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(IdleStatus{
+			IdleDuration: "15s",
+			LastActiveAt: time.Now().Add(-15 * time.Second).UTC().Format(time.RFC3339),
+		})
+	}))
+	defer routerServer.Close()
+
+	mgr := NewManager(fakeClient, "test-template", "test-ns").WithRouterAddr(routerServer.URL)
+	// Mark actor as recently resumed
+	mgr.recordResume(actorName)
+
+	if err := mgr.suspendIdleActors(context.Background(), 10*time.Second); err != nil {
+		t.Fatalf("suspendIdleActors: %v", err)
+	}
+
+	fakeClient.mu.Lock()
+	defer fakeClient.mu.Unlock()
+
+	// Should NOT be suspended because it was resumed within the 10s threshold
+	if fakeClient.suspendedActors["test-ns/"+actorName] != 0 {
+		t.Errorf("expected actor NOT to be suspended due to resume grace period, got %d", fakeClient.suspendedActors["test-ns/"+actorName])
 	}
 }
 
@@ -399,4 +439,51 @@ func TestSuspendIgnoredWithinCooldown(t *testing.T) {
 		t.Errorf("expected 1 suspension after cooldown, got %d", fakeClient.suspendedActors["test-ns/"+aName])
 	}
 	fakeClient.mu.Unlock()
+}
+
+func TestManagerStartGC_Success(t *testing.T) {
+	fakeClient := newFakeControlClient()
+	actorName1 := "session-gc-test-01"
+
+	fakeClient.createdActors["test-ns/"+actorName1] = &ateapipb.Actor{
+		Metadata: &ateapipb.ResourceMetadata{
+			Atespace: "test-ns",
+			Name:     actorName1,
+		},
+		Status: ateapipb.Actor_STATUS_RUNNING,
+	}
+
+	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(IdleStatus{
+			IdleDuration: "15s",
+			LastActiveAt: time.Now().Add(-15 * time.Second).UTC().Format(time.RFC3339),
+		})
+	}))
+	defer routerServer.Close()
+
+	mgr := NewManager(fakeClient, "test-template", "test-ns").WithRouterAddr(routerServer.URL)
+	mgr.lastResumed[actorName1] = time.Now().Add(-DefaultResumeCooldown - time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr.StartGC(ctx, 10*time.Millisecond, 1*time.Second)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		fakeClient.mu.Lock()
+		count := fakeClient.suspendedActors["test-ns/"+actorName1]
+		fakeClient.mu.Unlock()
+		if count >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	fakeClient.mu.Lock()
+	defer fakeClient.mu.Unlock()
+	if fakeClient.suspendedActors["test-ns/"+actorName1] != 1 {
+		t.Fatalf("expected actor to be suspended by GC, got %d", fakeClient.suspendedActors["test-ns/"+actorName1])
+	}
 }

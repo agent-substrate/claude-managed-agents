@@ -175,17 +175,37 @@ func TestManagerQueueAndPop(t *testing.T) {
 	}
 }
 
-func TestManagerRun(t *testing.T) {
+func TestManagerReconcile(t *testing.T) {
 	mini, err := miniredis.Run()
 	if err != nil {
 		t.Fatalf("starting miniredis: %v", err)
 	}
 	t.Cleanup(mini.Close)
 
+	var (
+		resumedSessions []string
+		resumedWorks    []string
+		suspendedEvents []string
+		mu              sync.Mutex
+	)
+
 	mgr, err := New(Options{
 		ValkeyAddr:   mini.Addr(),
 		DisableCache: true,
 		PollInterval: 10 * time.Millisecond,
+		OnResume: func(ctx context.Context, event *Event) error {
+			mu.Lock()
+			defer mu.Unlock()
+			resumedSessions = append(resumedSessions, event.SessionID)
+			resumedWorks = append(resumedWorks, event.WorkID)
+			return nil
+		},
+		OnSuspend: func(ctx context.Context, event *Event) error {
+			mu.Lock()
+			defer mu.Unlock()
+			suspendedEvents = append(suspendedEvents, event.SessionID)
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -195,31 +215,9 @@ func TestManagerRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var (
-		resumedSessions []string
-		resumedWorks    []string
-		suspendedEvents []string
-		mu              sync.Mutex
-	)
-
-	mgr.OnResume = func(ctx context.Context, event *Event) error {
-		mu.Lock()
-		defer mu.Unlock()
-		resumedSessions = append(resumedSessions, event.SessionID)
-		resumedWorks = append(resumedWorks, event.WorkID)
-		return nil
-	}
-
-	mgr.OnSuspend = func(ctx context.Context, event *Event) error {
-		mu.Lock()
-		defer mu.Unlock()
-		suspendedEvents = append(suspendedEvents, event.SessionID)
-		return nil
-	}
-
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- mgr.Run(ctx)
+		runErr <- mgr.Reconcile(ctx)
 	}()
 
 	// Queue events
@@ -261,11 +259,11 @@ func TestManagerRun(t *testing.T) {
 			t.Errorf("expected context.Canceled, got %v", err)
 		}
 	case <-time.After(1 * time.Second):
-		t.Fatal("Run did not exit in time after context cancellation")
+		t.Fatal("Reconcile did not exit in time after context cancellation")
 	}
 }
 
-func TestManagerRun_MultipleConsumersDeduplication(t *testing.T) {
+func TestManagerReconcile_MultipleConsumersDeduplication(t *testing.T) {
 	mini, err := miniredis.Run()
 	if err != nil {
 		t.Fatalf("starting miniredis: %v", err)
@@ -285,22 +283,22 @@ func TestManagerRun_MultipleConsumersDeduplication(t *testing.T) {
 			ValkeyAddr:   mini.Addr(),
 			DisableCache: true,
 			PollInterval: 10 * time.Millisecond,
+			OnResume: func(ctx context.Context, event *Event) error {
+				atomic.AddInt32(&processedCount, 1)
+				return nil
+			},
 		})
 		if err != nil {
 			t.Fatalf("New consumer %d: %v", i, err)
 		}
 		defer c.Close()
 
-		c.OnResume = func(ctx context.Context, event *Event) error {
-			atomic.AddInt32(&processedCount, 1)
-			return nil
-		}
 		consumers[i] = c
 	}
 
 	for i := 0; i < numConsumers; i++ {
 		go func(c *Manager) {
-			_ = c.Run(ctx)
+			_ = c.Reconcile(ctx)
 		}(consumers[i])
 	}
 

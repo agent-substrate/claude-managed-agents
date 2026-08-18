@@ -115,6 +115,7 @@ func (r *Runner) handleWork(rw http.ResponseWriter, req *http.Request) {
 
 	r.stateMu.Lock()
 	r.running = true
+	r.lastActiveAt = time.Now()
 	r.stateMu.Unlock()
 
 	go func() {

@@ -24,8 +24,9 @@ import (
 
 const (
 	DefaultIdleCheckInterval = 5 * time.Second
-	DefaultIdleThreshold     = 1 * time.Minute
+	DefaultIdleThreshold     = 30 * time.Second
 	DefaultSuspendTimeout    = 30 * time.Second
+	DefaultNotifyTimeout     = 30 * time.Second
 	DefaultWorkTimeout       = 10 * time.Minute
 	DefaultResumeCooldown    = 20 * time.Second
 )
@@ -174,12 +175,12 @@ func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) err
 		return fmt.Errorf("marshaling work payload: %w", err)
 	}
 
-	timeoutMs := fmt.Sprintf("%d", DefaultWorkTimeout.Milliseconds())
+	timeoutMs := fmt.Sprintf("%d", DefaultNotifyTimeout.Milliseconds())
 	actorName := ActorName(sessionID)
 	host := fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorName, m.atespace)
 
 	client := &http.Client{
-		Timeout: DefaultWorkTimeout,
+		Timeout: DefaultNotifyTimeout,
 	}
 
 	type workResponse struct {
@@ -227,6 +228,7 @@ func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) err
 			return fmt.Errorf("worker daemon via router at %s returned status %d", url, resp.StatusCode)
 		}
 
+		m.recordResume(actorName)
 		m.logger.Info("Successfully notified actor of work item via router",
 			slog.String("actor", actorName),
 			slog.String("session_id", sessionID),
@@ -276,8 +278,8 @@ func (m *Manager) SuspendActor(ctx context.Context, actorRef *ateapipb.ObjectRef
 	return nil
 }
 
-// ActorIdleStatus queries an actor's /idle endpoint via the Substrate router.
-func (m *Manager) ActorIdleStatus(ctx context.Context, actorRef *ateapipb.ObjectRef) (*IdleStatus, error) {
+// actorIdleStatus queries an actor's /idle endpoint via the Substrate router.
+func (m *Manager) actorIdleStatus(ctx context.Context, actorRef *ateapipb.ObjectRef) (*IdleStatus, error) {
 	routerAddr := m.routerAddr
 	if !strings.HasPrefix(routerAddr, "http://") && !strings.HasPrefix(routerAddr, "https://") {
 		routerAddr = "http://" + routerAddr
@@ -310,9 +312,9 @@ func (m *Manager) ActorIdleStatus(ctx context.Context, actorRef *ateapipb.Object
 	return &idleResp, nil
 }
 
-// SuspendIdleActors lists all actors in the atespace, queries their /idle endpoint,
+// suspendIdleActors lists all actors in the atespace, queries their /idle endpoint,
 // and suspends any actor that has been idle for longer than the threshold.
-func (m *Manager) SuspendIdleActors(ctx context.Context, threshold time.Duration) error {
+func (m *Manager) suspendIdleActors(ctx context.Context, threshold time.Duration) error {
 	resp, err := m.client.ListActors(ctx, &ateapipb.ListActorsRequest{
 		Atespace: m.atespace,
 	})
@@ -333,7 +335,25 @@ func (m *Manager) SuspendIdleActors(ctx context.Context, threshold time.Duration
 			Name:     actor.GetMetadata().GetName(),
 		}
 
-		idleResp, err := m.ActorIdleStatus(ctx, actorRef)
+		m.mu.Lock()
+		lastResume, ok := m.lastResumed[actorRef.Name]
+		m.mu.Unlock()
+
+		if !ok {
+			// First time seeing this actor -> grant a full threshold grace period
+			m.recordResume(actorRef.Name)
+			continue
+		}
+
+		if time.Since(lastResume) < threshold {
+			m.logger.Debug("Skipping idle check: actor was resumed recently",
+				slog.String("actor", actorRef.Name),
+				slog.Duration("since_resume", time.Since(lastResume)),
+			)
+			continue
+		}
+
+		idleResp, err := m.actorIdleStatus(ctx, actorRef)
 		if err != nil {
 			m.logger.Debug("Failed to check actor idle status",
 				slog.String("actor", actorRef.Name),
@@ -394,7 +414,7 @@ func (m *Manager) StartGC(ctx context.Context, checkInterval, idleThreshold time
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := m.SuspendIdleActors(ctx, idleThreshold); err != nil {
+				if err := m.suspendIdleActors(ctx, idleThreshold); err != nil {
 					m.logger.Warn("Actor GC error checking actors", slog.Any("error", err))
 				}
 			}

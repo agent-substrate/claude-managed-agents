@@ -20,6 +20,8 @@ func newControllerCommand() *cobra.Command {
 		ateapiAddr       string
 		atenetRouterAddr string
 		insecure         bool
+		gcInterval       time.Duration
+		gcIdleThreshold  time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -38,46 +40,44 @@ func newControllerCommand() *cobra.Command {
 			}
 			defer conn.Close()
 
-			actorMgr := actor.NewManager(ateClient, template, namespace).
+			am := actor.NewManager(ateClient, template, namespace).
 				WithRouterAddr(atenetRouterAddr).
 				WithLogger(logger)
 
-			sessionManager, err := sessionmanager.New(sessionmanager.Options{
+			// Start background actor idle garbage collector.
+			am.StartGC(ctx, gcInterval, gcIdleThreshold)
+
+			sm, err := sessionmanager.New(sessionmanager.Options{
 				Logger: logger,
+				OnResume: func(ctx context.Context, event *sessionmanager.Event) error {
+					if event.WorkID == "" {
+						return nil
+					}
+					return retry(ctx, func() error {
+						if err := am.Resume(ctx, event.SessionID); err != nil {
+							return fmt.Errorf("resuming session %s: %w", event.SessionID, err)
+						}
+						payload := runner.WorkRequest{
+							SessionID: event.SessionID,
+							WorkID:    event.WorkID,
+						}
+						if err := am.Notify(ctx, event.SessionID, payload); err != nil {
+							return fmt.Errorf("notifying session %s: %w", event.SessionID, err)
+						}
+						return nil
+					})
+				},
+				OnSuspend: func(ctx context.Context, event *sessionmanager.Event) error {
+					// Nothing to do here, we will garbage collect the actors.
+					return nil
+				},
 			})
 			if err != nil {
 				return fmt.Errorf("creating session manager: %w", err)
 			}
-			defer sessionManager.Close()
+			defer sm.Close()
 
-			sessionManager.OnResume = func(ctx context.Context, event *sessionmanager.Event) error {
-				if event.WorkID == "" {
-					return nil
-				}
-				return retry(ctx, func() error {
-					if err := actorMgr.Resume(ctx, event.SessionID); err != nil {
-						return fmt.Errorf("resuming session %s: %w", event.SessionID, err)
-					}
-					payload := runner.WorkRequest{
-						SessionID: event.SessionID,
-						WorkID:    event.WorkID,
-					}
-					if err := actorMgr.Notify(ctx, event.SessionID, payload); err != nil {
-						return fmt.Errorf("notifying session %s: %w", event.SessionID, err)
-					}
-					return nil
-				})
-			}
-			sessionManager.OnSuspend = func(ctx context.Context, event *sessionmanager.Event) error {
-				// TODO(jbd): Start the garbage collector.
-				return retry(ctx, func() error {
-					if err := actorMgr.Suspend(ctx, event.SessionID); err != nil {
-						return fmt.Errorf("suspending session %s: %w", event.SessionID, err)
-					}
-					return nil
-				})
-			}
-			return sessionManager.Run(ctx)
+			return sm.Reconcile(ctx)
 		},
 	}
 
@@ -86,6 +86,8 @@ func newControllerCommand() *cobra.Command {
 	cmd.Flags().StringVar(&ateapiAddr, "ateapi-addr", manifest.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 	cmd.Flags().StringVar(&atenetRouterAddr, "atenet-router-addr", manifest.DefaultAtenetRouterAddr, "Substrate atenet router endpoint")
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "connect to ateapi without TLS")
+	cmd.Flags().DurationVar(&gcInterval, "gc-interval", actor.DefaultIdleCheckInterval, "interval between actor garbage collection sweeps")
+	cmd.Flags().DurationVar(&gcIdleThreshold, "gc-idle-threshold", actor.DefaultIdleThreshold, "idle duration threshold before suspending an actor")
 
 	return cmd
 }
