@@ -10,7 +10,7 @@ This project runs [Claude Managed Agents](https://platform.claude.com/docs/en/ma
 No two work item are executed concurrently if they belong to the same session.
 - **Durable buffering**: Use a durable queue between different components so a crash doesn't cause an event to be dropped.
 - **Auto retries**: Automatically retry failed operations (like network partitions) and handle crashes gracefully without losing events.
-- **Density**: Automatically pause (suspend) idle sandboxes when they are not in use to free up cluster memory and CPU.
+- **Density**: Automatically pause (suspend) idle sandboxes when they are not in use to free up cluster resources.
 
 ## Architecture
 
@@ -211,3 +211,9 @@ The project can become more resilient with a few potential improvements to the A
 * **Work item ack**: A mechanism to acknowledge polled items upon receipt and queuing, prior to completion.
 * **Completion with error**: The ability to complete events with an error status so tool calls fail fast rather than hanging.
 * **Pollable sleep event**: Delivering an "sleep" event through the polling API alongside work items. Managed Agents should serve as the single source of truth rather than requiring external serialization of these lifecycle events.
+* **Allow rescheduling under load**: Similar to model request call reschedules, it would be great if there
+is a way to automatically reschedule work on a later time.
+
+Without changes to the Anthropic API:
+
+* **Switch to the Agent Substrate gc** once it's available rather than relying on the custom gc loop.
