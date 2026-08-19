@@ -173,6 +173,31 @@ The controller runs a Garbage Collection (GC) loop that periodically inspects al
             └─────────────────────┘
 ```
 
+###! Idleness
+
+```
+┌────────────────────┐        GET /idle         ┌─────────────────┐
+│ ate-ant controller │ ───────────────────────► │   ate-ant run   │
+│ (GC Loop every 5s) │ ◄─────────────────────── │     (Actor)     │
+└─────────┬──────────┘   {"idle_duration":"32s"}└─────────────────┘
+          │
+          │ SuspendActor (idle > 30s)
+          ▼
+┌────────────────────┐
+│  Substrate Control │
+│  Plane (`ateapi`)  │
+└────────────────────┘
+```
+
+Each runner server exposes `GET /idle` returning activity metrics:
+
+```json
+{
+  "idle_duration": "32.846s",
+  "last_active_at": "2026-08-17T03:35:00Z"
+}
+```
+
 #### Garbage Collection
 
 ```

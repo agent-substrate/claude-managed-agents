@@ -2,7 +2,7 @@
 
 Deploy [Anthropic Managed Agents Self-Hosted Sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes) workers on [Agent Substrate](https://github.com/agent-substrate/substrate).
 
-This worker runs Claude Managed Agents tool calls (bash, file operations, skills) inside isolated, gVisor/microVM sandboxes with durable session orchestration and snapshot persistence.
+This project runs Claude Managed Agents work (e.g. tool calls like bash, file operations, skills) inside isolated Agent Substrate gVisor/microVM actors with durable orchestration.
 
 ## Overview
 
@@ -29,51 +29,7 @@ This worker runs Claude Managed Agents tool calls (bash, file operations, skills
 - **Controller**: It consumes lifecycle events from the queue, manages Substrate actor lifecycles (creating, resuming, suspending), and notifies actors of work payloads via `atenet-router`.
 - **Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) via `ant beta:worker run` and preserve session state across turns via snapshot persistence.
 
-### Event Queue
-
-The queue uses Valkey Streams (`stream:events`) to buffer session lifecycle events. It decouples fast API polling from sandbox cold starts, serializes concurrent operations per session, and guarantees at-least-once delivery with consumer group acknowledgments (`XACK`):
-
-```
-┌──────────────┐  XADD (resume)  ┌───────────────┐  XREADGROUP  ┌────────────────────┐
-│ ate-ant poll │ ──────────────► │ Valkey Stream │ ───────────► │ ate-ant controller │
-└──────────────┘                 └───────────────┘ ◄── XACK ─── └────────────────────┘
-```
-
-### Lifecycle
-
-1. **Enqueue**: The Poller claims work from Anthropic and enqueues a `resume` event to the Valkey queue.
-2. **Notify**: The Controller pulls the event, ensures the actor exists and is resumed via the Substrate API (`api.ate-system`), and notifies the actor with the work payload via `POST /work` through `atenet-router`.
-3. **Run**:
-   - The runner server inside the actor immediately acknowledges `200 OK` (`{"status":"accepted"}`).
-   - In the background, it executes `ant beta:worker run` directly.
-   - Process execution is serialized so that only one `ant` process runs at a time within the sandbox actor.
-   - Once all tool calls for the current turn are finished and the idle timeout expires, `ant` exits.
-4. **Garbage Collection & Suspension**: The controller runs a background sweeper (every `--gc-interval`, default 5s) that queries `/idle` and suspends actors once they exceed `--gc-idle-threshold` (default 30s):
-
-### Idleness
-
-```
-┌────────────────────┐        GET /idle         ┌─────────────────┐
-│ ate-ant controller │ ───────────────────────► │   ate-ant run   │
-│ (GC Loop every 5s) │ ◄─────────────────────── │     (Actor)     │
-└─────────┬──────────┘   {"idle_duration":"32s"}└─────────────────┘
-          │
-          │ SuspendActor (idle > 30s)
-          ▼
-┌────────────────────┐
-│  Substrate Control │
-│  Plane (`ateapi`)  │
-└────────────────────┘
-```
-
-Each runner server exposes `GET /idle` returning activity metrics:
-
-```json
-{
-  "idle_duration": "32.846s",
-  "last_active_at": "2026-08-17T03:35:00Z"
-}
-```
+See [DESIGN.md](DESIGN.md) for detailed architecture, event queuing, and actor lifecycle workflows.
 
 ## Quickstart
 
