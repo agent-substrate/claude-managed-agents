@@ -280,8 +280,9 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 			},
 		},
 		Spec: atev1alpha1.WorkerPoolSpec{
-			Replicas:   cfg.Replicas,
-			AteomImage: cfg.AteomImage,
+			Replicas:     cfg.Replicas,
+			AteomImage:   cfg.AteomImage,
+			SandboxClass: "gvisor",
 		},
 	}
 }
@@ -402,6 +403,7 @@ func BuildControllerDeployment(cfg Config) *appsv1.Deployment {
 	labels := map[string]string{"app": defaultControllerDeploymentName}
 	replicas := cfg.ControllerReplicas
 
+	expirationSeconds := int64(3600)
 	return &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -429,6 +431,25 @@ func BuildControllerDeployment(cfg Config) *appsv1.Deployment {
 								},
 							},
 						}},
+						VolumeMounts: []corev1.VolumeMount{{
+							Name:      "ateapi-token",
+							MountPath: "/var/run/secrets/tokens",
+							ReadOnly:  true,
+						}},
+					}},
+					Volumes: []corev1.Volume{{
+						Name: "ateapi-token",
+						VolumeSource: corev1.VolumeSource{
+							Projected: &corev1.ProjectedVolumeSource{
+								Sources: []corev1.VolumeProjection{{
+									ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+										Audience:          "api.ate-system.svc",
+										ExpirationSeconds: &expirationSeconds,
+										Path:              "ateapi-token",
+									},
+								}},
+							},
+						},
 					}},
 				},
 			},

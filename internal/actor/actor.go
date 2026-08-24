@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -189,12 +190,12 @@ func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) err
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 10; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-time.After(1 * time.Second):
 			}
 		}
 
@@ -449,6 +450,30 @@ func ActorName(sessionID string) string {
 	return fmt.Sprintf("%s-%s", prefix, hashSuffix)
 }
 
+const defaultTokenPath = "/var/run/secrets/tokens/ateapi-token"
+
+type tokenAuth struct {
+	tokenFile string
+}
+
+func (t tokenAuth) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
+	data, err := os.ReadFile(t.tokenFile)
+	if err != nil {
+		return nil, nil
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return nil, nil
+	}
+	return map[string]string{
+		"authorization": "Bearer " + token,
+	}, nil
+}
+
+func (t tokenAuth) RequireTransportSecurity() bool {
+	return false
+}
+
 // DialATE dials the Substrate ateapi gRPC service.
 func DialATE(endpoint string, insecureConn bool) (ateapipb.ControlClient, *grpc.ClientConn, error) {
 	var creds credentials.TransportCredentials
@@ -458,7 +483,15 @@ func DialATE(endpoint string, insecureConn bool) (ateapipb.ControlClient, *grpc.
 		creds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
 	}
 
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(creds))
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
+	}
+
+	if _, err := os.Stat(defaultTokenPath); err == nil {
+		opts = append(opts, grpc.WithPerRPCCredentials(tokenAuth{tokenFile: defaultTokenPath}))
+	}
+
+	conn, err := grpc.NewClient(endpoint, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
