@@ -190,12 +190,12 @@ func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) err
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < 10; attempt++ {
+	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(1 * time.Second):
+			case <-time.After(time.Duration(attempt) * time.Second):
 			}
 		}
 
