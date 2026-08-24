@@ -73,6 +73,9 @@ func New(cfg Config) (*Poller, error) {
 		opts := []option.RequestOption{
 			option.WithoutEnvironmentDefaults(),
 		}
+		if cfg.APIKey != "" {
+			opts = append(opts, option.WithAPIKey(cfg.APIKey))
+		}
 		if cfg.EnvironmentKey != "" {
 			opts = append(opts, option.WithAuthToken(cfg.EnvironmentKey))
 		}
