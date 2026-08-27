@@ -292,35 +292,20 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 	var env []atev1alpha1.EnvVar
 	if cfg.APIKey != "" {
 		env = append(env, atev1alpha1.EnvVar{
-			Name: "ANTHROPIC_API_KEY",
-			ValueFrom: &atev1alpha1.EnvVarSource{
-				SecretKeyRef: &atev1alpha1.SecretKeySelector{
-					Name: defaultSecretName,
-					Key:  "ANTHROPIC_API_KEY",
-				},
-			},
+			Name:  "ANTHROPIC_API_KEY",
+			Value: &cfg.APIKey,
 		})
 	}
 	if cfg.EnvironmentKey != "" {
 		env = append(env, atev1alpha1.EnvVar{
-			Name: "ANTHROPIC_ENVIRONMENT_KEY",
-			ValueFrom: &atev1alpha1.EnvVarSource{
-				SecretKeyRef: &atev1alpha1.SecretKeySelector{
-					Name: defaultSecretName,
-					Key:  "ANTHROPIC_ENVIRONMENT_KEY",
-				},
-			},
+			Name:  "ANTHROPIC_ENVIRONMENT_KEY",
+			Value: &cfg.EnvironmentKey,
 		})
 	}
 	if cfg.EnvironmentID != "" {
 		env = append(env, atev1alpha1.EnvVar{
-			Name: "ANTHROPIC_ENVIRONMENT_ID",
-			ValueFrom: &atev1alpha1.EnvVarSource{
-				SecretKeyRef: &atev1alpha1.SecretKeySelector{
-					Name: defaultSecretName,
-					Key:  "ANTHROPIC_ENVIRONMENT_ID",
-				},
-			},
+			Name:  "ANTHROPIC_ENVIRONMENT_ID",
+			Value: &cfg.EnvironmentID,
 		})
 	}
 
@@ -334,7 +319,6 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 			Namespace: cfg.Namespace,
 		},
 		Spec: atev1alpha1.ActorTemplateSpec{
-			PauseImage: defaultPauseImage,
 			WorkerSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"workload": cfg.Template,
