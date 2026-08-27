@@ -27,27 +27,32 @@ func main() {
 	flag.StringVar(&agentID, "agent", "", "existing agent to reuse; a new agent is created when empty")
 	flag.Parse()
 
+	envID := os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
+	if envID == "" {
+		fmt.Println("Error: ANTHROPIC_ENVIRONMENT_ID environment variable is required.")
+		fmt.Println("Export it with: export ANTHROPIC_ENVIRONMENT_ID=\"env_...\"")
+		os.Exit(1)
+	}
+
 	ctx := context.Background()
 	// Credentials resolve in order: ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, an
 	// 'ant auth login' profile, then workload identity federation.
 	client := anthropic.NewClient()
 
-	session, resolvedAgentID := createSession(ctx, &client, agentID, model, prompt)
+	session, resolvedAgentID := createSession(ctx, &client, envID, agentID, model, prompt)
+	sessionURL := fmt.Sprintf("https://platform.claude.com/workspaces/default/sessions/%s", session.ID)
 
-	fmt.Printf("💬 Prompt:  %s\n", prompt)
-	fmt.Printf("🤖 Agent:   %s\n", resolvedAgentID)
-	fmt.Printf("🚀 Session: %s\n", session.ID)
-	fmt.Printf("🔗 Click to view session & send more inputs: https://platform.claude.com/workspaces/default/sessions/%s\n", session.ID)
+	fmt.Printf("Prompt:       %s\n", prompt)
+	fmt.Printf("Model:        %s\n", model)
+	fmt.Printf("Agent:        %s\n", resolvedAgentID)
+	fmt.Printf("Session:      %s\n", session.ID)
+	fmt.Printf("Environment:  %s\n", envID)
+	fmt.Printf("Session URL:  %s\n", sessionURL)
 }
 
 // createSession creates the agent (unless one was supplied) and opens a session
 // on the self-hosted environment.
-func createSession(ctx context.Context, client *anthropic.Client, agentID, model, prompt string) (*anthropic.BetaManagedAgentsSession, string) {
-	envID := os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
-	if envID == "" {
-		log.Fatal("Error: ANTHROPIC_ENVIRONMENT_ID environment variable is required.\nExport it with: export ANTHROPIC_ENVIRONMENT_ID=\"env_...\"")
-	}
-
+func createSession(ctx context.Context, client *anthropic.Client, envID, agentID, model, prompt string) (*anthropic.BetaManagedAgentsSession, string) {
 	if agentID == "" {
 		agent, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
 			Name: "Agent Substrate Example Agent",
