@@ -51,8 +51,8 @@ make push
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image      gcr.io/dberkov-gke-dev3/ate-ant@sha256:cd1c68b8ded5ea89cb878aa53599c7f9cfa5dad1114e80a138becf6acc719da7 \
-  --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor@sha256:9992059c51c9af88a3489104c1c792644f4c28d22073af7bdbed07c1f2c7d1f1 \
+  --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:ea2cc38b92a04a2d4df315841b2925d3fc85d8a1d231b2441bda983d17ffbbd7 \
+  --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
   --anthropic-env-id  "$ANTHROPIC_ENVIRONMENT_ID" \

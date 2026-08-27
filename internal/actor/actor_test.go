@@ -87,12 +87,12 @@ func (f *fakeControlClient) CreateActor(ctx context.Context, in *ateapipb.Create
 		return nil, status.Error(codes.AlreadyExists, "actor already exists")
 	}
 	actor := proto.Clone(in.GetActor()).(*ateapipb.Actor)
-	actor.Status = ateapipb.Actor_STATUS_RUNNING
+	actor.Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING}
 	f.createdActors[key] = actor
 	return proto.Clone(actor).(*ateapipb.Actor), nil
 }
 
-func (f *fakeControlClient) UpdateActor(ctx context.Context, in *ateapipb.UpdateActorRequest, opts ...grpc.CallOption) (*ateapipb.UpdateActorResponse, error) {
+func (f *fakeControlClient) UpdateActor(ctx context.Context, in *ateapipb.UpdateActorRequest, opts ...grpc.CallOption) (*ateapipb.Actor, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
 }
 
@@ -104,7 +104,7 @@ func (f *fakeControlClient) SuspendActor(ctx context.Context, in *ateapipb.Suspe
 	}
 	key := in.GetActor().Atespace + "/" + in.GetActor().Name
 	if a, ok := f.createdActors[key]; ok {
-		a.Status = ateapipb.Actor_STATUS_SUSPENDED
+		a.Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED}
 	}
 	f.suspendedActors[key]++
 	return &ateapipb.SuspendActorResponse{}, nil
@@ -124,7 +124,7 @@ func (f *fakeControlClient) ResumeActor(ctx context.Context, in *ateapipb.Resume
 	if _, ok := f.createdActors[key]; !ok {
 		return nil, status.Error(codes.NotFound, "actor not found")
 	}
-	f.createdActors[key].Status = ateapipb.Actor_STATUS_RUNNING
+	f.createdActors[key].Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING}
 	f.resumedActors[key]++
 	return &ateapipb.ResumeActorResponse{Actor: proto.Clone(f.createdActors[key]).(*ateapipb.Actor), Resumed: true}, nil
 }
@@ -137,11 +137,15 @@ func (f *fakeControlClient) GetActorSnapshot(ctx context.Context, in *ateapipb.G
 	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
 }
 
+func (f *fakeControlClient) GetActorSnapshotTag(ctx context.Context, in *ateapipb.GetActorSnapshotTagRequest, opts ...grpc.CallOption) (*ateapipb.ActorSnapshotTag, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
+}
+
 func (f *fakeControlClient) ListActorSnapshots(ctx context.Context, in *ateapipb.ListActorSnapshotsRequest, opts ...grpc.CallOption) (*ateapipb.ListActorSnapshotsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
 }
 
-func (f *fakeControlClient) TagActorSnapshot(ctx context.Context, in *ateapipb.TagActorSnapshotRequest, opts ...grpc.CallOption) (*ateapipb.ActorSnapshotTag, error) {
+func (f *fakeControlClient) CreateActorSnapshotTag(ctx context.Context, in *ateapipb.CreateActorSnapshotTagRequest, opts ...grpc.CallOption) (*ateapipb.ActorSnapshotTag, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
 }
 
@@ -154,6 +158,42 @@ func (f *fakeControlClient) DeleteActorSnapshotTag(ctx context.Context, in *atea
 }
 
 func (f *fakeControlClient) ListWorkers(ctx context.Context, in *ateapipb.ListWorkersRequest, opts ...grpc.CallOption) (*ateapipb.ListWorkersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
+}
+
+func (f *fakeControlClient) GetWorker(ctx context.Context, in *ateapipb.GetWorkerRequest, opts ...grpc.CallOption) (*ateapipb.Worker, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
+}
+
+func (f *fakeControlClient) CreateWorker(ctx context.Context, in *ateapipb.CreateWorkerRequest, opts ...grpc.CallOption) (*ateapipb.Worker, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
+}
+
+func (f *fakeControlClient) UpdateWorker(ctx context.Context, in *ateapipb.UpdateWorkerRequest, opts ...grpc.CallOption) (*ateapipb.Worker, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
+}
+
+func (f *fakeControlClient) DeleteWorker(ctx context.Context, in *ateapipb.DeleteWorkerRequest, opts ...grpc.CallOption) (*ateapipb.Worker, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
+}
+
+func (f *fakeControlClient) DrainWorker(ctx context.Context, in *ateapipb.DrainWorkerRequest, opts ...grpc.CallOption) (*ateapipb.Worker, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
+}
+
+func (f *fakeControlClient) CreateActorTemplate(ctx context.Context, in *ateapipb.CreateActorTemplateRequest, opts ...grpc.CallOption) (*ateapipb.ActorTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
+}
+
+func (f *fakeControlClient) GetActorTemplate(ctx context.Context, in *ateapipb.GetActorTemplateRequest, opts ...grpc.CallOption) (*ateapipb.ActorTemplate, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
+}
+
+func (f *fakeControlClient) ListActorTemplates(ctx context.Context, in *ateapipb.ListActorTemplatesRequest, opts ...grpc.CallOption) (*ateapipb.ListActorTemplatesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
+}
+
+func (f *fakeControlClient) DeleteActorTemplate(ctx context.Context, in *ateapipb.DeleteActorTemplateRequest, opts ...grpc.CallOption) (*ateapipb.ActorTemplate, error) {
 	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
 }
 
@@ -265,14 +305,14 @@ func TestManagerSuspendIdleActors(t *testing.T) {
 			Atespace: "test-ns",
 			Name:     actorName1,
 		},
-		Status: ateapipb.Actor_STATUS_RUNNING,
+		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
 	}
 	fakeClient.createdActors["test-ns/"+actorName2] = &ateapipb.Actor{
 		Metadata: &ateapipb.ResourceMetadata{
 			Atespace: "test-ns",
 			Name:     actorName2,
 		},
-		Status: ateapipb.Actor_STATUS_RUNNING,
+		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
 	}
 
 	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
@@ -327,7 +367,7 @@ func TestManagerSuspendIdleActors_Cooldown(t *testing.T) {
 			Atespace: "test-ns",
 			Name:     actorName,
 		},
-		Status: ateapipb.Actor_STATUS_RUNNING,
+		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
 	}
 
 	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
@@ -405,7 +445,7 @@ func TestSuspendIgnoredWithinCooldown(t *testing.T) {
 
 	fakeClient.createdActors["test-ns/"+aName] = &ateapipb.Actor{
 		Metadata: &ateapipb.ResourceMetadata{Atespace: "test-ns", Name: aName},
-		Status:   ateapipb.Actor_STATUS_RUNNING,
+		Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
 	}
 
 	// 1. Resume sets timestamp to now
@@ -450,7 +490,7 @@ func TestManagerStartGC_Success(t *testing.T) {
 			Atespace: "test-ns",
 			Name:     actorName1,
 		},
-		Status: ateapipb.Actor_STATUS_RUNNING,
+		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
 	}
 
 	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {

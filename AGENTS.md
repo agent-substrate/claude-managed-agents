@@ -30,7 +30,7 @@ Generate the Kubernetes and Substrate manifests using `ate-ant manifest` and app
 ```bash
 go run ./cmd/ate-ant manifest \
   --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:... \
-  --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor@sha256:9992059c51c9af88a3489104c1c792644f4c28d22073af7bdbed07c1f2c7d1f1 \
+  --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
   --anthropic-env-id  "$ANTHROPIC_ENVIRONMENT_ID" \

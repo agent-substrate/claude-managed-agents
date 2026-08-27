@@ -16,9 +16,6 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// DefaultPauseImage is the digest-pinned pause image recommended for Agent Substrate.
-const defaultPauseImage = "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
-
 // Default constants for names and paths.
 const (
 	DefaultNamespace          = "ate-ant"
@@ -293,19 +290,19 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 	if cfg.APIKey != "" {
 		env = append(env, atev1alpha1.EnvVar{
 			Name:  "ANTHROPIC_API_KEY",
-			Value: &cfg.APIKey,
+			Value: cfg.APIKey,
 		})
 	}
 	if cfg.EnvironmentKey != "" {
 		env = append(env, atev1alpha1.EnvVar{
 			Name:  "ANTHROPIC_ENVIRONMENT_KEY",
-			Value: &cfg.EnvironmentKey,
+			Value: cfg.EnvironmentKey,
 		})
 	}
 	if cfg.EnvironmentID != "" {
 		env = append(env, atev1alpha1.EnvVar{
 			Name:  "ANTHROPIC_ENVIRONMENT_ID",
-			Value: &cfg.EnvironmentID,
+			Value: cfg.EnvironmentID,
 		})
 	}
 
@@ -451,6 +448,13 @@ func WriteManifests(w io.Writer, objs []any) error {
 		var m map[string]any
 		if err := json.Unmarshal(jsonBytes, &m); err != nil {
 			return fmt.Errorf("decoding json: %w", err)
+		}
+		if m["kind"] == "ActorTemplate" {
+			if spec, ok := m["spec"].(map[string]any); ok {
+				if _, has := spec["pauseImage"]; !has {
+					spec["pauseImage"] = "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
+				}
+			}
 		}
 		delete(m, "status")
 		prune(m)

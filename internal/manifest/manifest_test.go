@@ -196,7 +196,7 @@ func TestBuildManifestsWithAPIKey(t *testing.T) {
 	for _, env := range template.Spec.Containers[0].Env {
 		if env.Name == "ANTHROPIC_API_KEY" {
 			foundAPIKey = true
-			if env.Value == nil || *env.Value != "sk-ant-api03-test-key" {
+			if env.Value != "sk-ant-api03-test-key" {
 				t.Errorf("unexpected ANTHROPIC_API_KEY env: %+v", env)
 			}
 		}
