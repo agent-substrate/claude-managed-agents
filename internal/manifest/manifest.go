@@ -20,6 +20,7 @@ import (
 const (
 	DefaultNamespace          = "ate-ant"
 	DefaultTemplate           = "ate-ant-actor-template"
+	DefaultReplicas           = 3
 	DefaultControllerReplicas = 1
 	DefaultAteapiAddr         = "api.ate-system.svc.cluster.local:443"
 	DefaultAtenetRouterAddr   = "atenet-router.ate-system.svc.cluster.local:80"
