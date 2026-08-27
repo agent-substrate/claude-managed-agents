@@ -291,19 +291,19 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 	if cfg.APIKey != "" {
 		env = append(env, atev1alpha1.EnvVar{
 			Name:  "ANTHROPIC_API_KEY",
-			Value: cfg.APIKey,
+			Value: &cfg.APIKey,
 		})
 	}
 	if cfg.EnvironmentKey != "" {
 		env = append(env, atev1alpha1.EnvVar{
 			Name:  "ANTHROPIC_ENVIRONMENT_KEY",
-			Value: cfg.EnvironmentKey,
+			Value: &cfg.EnvironmentKey,
 		})
 	}
 	if cfg.EnvironmentID != "" {
 		env = append(env, atev1alpha1.EnvVar{
 			Name:  "ANTHROPIC_ENVIRONMENT_ID",
-			Value: cfg.EnvironmentID,
+			Value: &cfg.EnvironmentID,
 		})
 	}
 

@@ -328,7 +328,7 @@ func (m *Manager) suspendIdleActors(ctx context.Context, threshold time.Duration
 		if actor == nil || actor.GetMetadata() == nil {
 			continue
 		}
-		if actor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
+		if actor.GetStatus() == ateapipb.Actor_STATUS_SUSPENDED {
 			continue
 		}
 

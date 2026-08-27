@@ -3,15 +3,15 @@ module github.com/agent-substrate/claude-managed-agents
 go 1.26.5
 
 require (
-	github.com/agent-substrate/substrate v0.0.0-20260827005035-b6b5e949c513
+	github.com/agent-substrate/substrate v0.0.0-20260802031337-3ed6aa07e167
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/anthropics/anthropic-sdk-go v1.63.0
 	github.com/spf13/cobra v1.10.2
 	github.com/valkey-io/valkey-go v1.0.77
-	google.golang.org/grpc v1.83.0
+	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
-	k8s.io/api v0.37.0-rc.0
-	k8s.io/apimachinery v0.37.0-rc.0
+	k8s.io/api v0.36.1
+	k8s.io/apimachinery v0.36.1
 	sigs.k8s.io/yaml v1.6.0
 )
 
