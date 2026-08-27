@@ -14,6 +14,9 @@ func TestPollCommand(t *testing.T) {
 	if cmd.Use != "poll" {
 		t.Errorf("cmd.Use = %q, want poll", cmd.Use)
 	}
+	if cmd.Flags().Lookup("handoff-ttl-seconds") == nil {
+		t.Error("missing flag --handoff-ttl-seconds on poll command")
+	}
 }
 
 func TestRootCommandSubcommands(t *testing.T) {

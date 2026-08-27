@@ -42,8 +42,9 @@ This project runs Claude Managed Agents work (e.g. tool calls like bash, file op
    ┌────────────────────────────────────────────────────────┐
    │ Actor (`ate-ant run`)                                  │
    │  ┌──────────────┐         ┌─────────────────────────┐  │
-   │  │ HTTP Server  │ ──────► │ `ant beta:worker run`   │  │
-   │  │  (:80)       │ (forks) │ (Tool execution)        │  │
+   │  │ HTTP Server  │ ──────► │ Environment worker      │  │
+   │  │  (:80)       │ (in-    │ (Tool execution +       │  │
+   │  │              │ process)│  lease heartbeat)       │  │
    │  └──────────────┘         └─────────────────────────┘  │
    │                                                        │
    │  Isolated session actor                                │
@@ -52,10 +53,10 @@ This project runs Claude Managed Agents work (e.g. tool calls like bash, file op
 
 ### Components
 
-- **Poller**: An always-on daemon running `ate-ant poll`. It polls the Claude Managed Agents API for new work items and enqueues lifecycle events into the queue.
+- **Poller**: An always-on daemon running `ate-ant poll`. It polls the Claude Managed Agents API for new work items, acknowledges each one and takes a short lease on it, and enqueues lifecycle events into the queue.
 - **Queue**: An in-cluster Valkey/Redis instance buffering session lifecycle events, providing durable work distribution and decoupling ingestion from execution.
 - **Controller**: It consumes lifecycle events from the queue, manages Substrate actor lifecycles (creating, resuming, suspending), and notifies actors of work payloads via `atenet-router`.
-- **Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) via `ant beta:worker run` and preserve session state across turns via snapshot persistence.
+- **Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) with the SDK's environment worker running in-process, continue the lease the poller took, and preserve session state across turns via snapshot persistence.
 
 ### Event Queue
 
@@ -67,7 +68,7 @@ An in-cluster Valkey/Redis instance acts as the durable buffer between the polle
 │ (Work Ingestion Loop) │
 └──────────┬────────────┘
            │ XADD stream:events *
-           │ data: {action, session_id, work_id}
+           │ data: {action, session_id, work_id, last_heartbeat}
            ▼
 ┌───────────────────────────────────────┐
 │             Valkey Stream             │
@@ -113,8 +114,29 @@ The event queue provides:
 
 - The `ate-ant` poller runs continuously in a tight polling loop against the Anthropic Managed Agents API.
 - When an agent turn generates tool calls (e.g. bash commands, file edits), Anthropic creates a work item containing `session_id` and `work_id`.
-- The poller claims the work item and pushes a `resume` event into the Valkey queue.
+- The poller claims the work item, acknowledges it, sends its first heartbeat (see [Lease hand-off](#lease-hand-off)), and pushes a `resume` event into the Valkey queue carrying the heartbeat token.
 - The poller does not wait for the sandbox to wake up or execute; it immediately returns to the polling loop to claim subsequent work items.
+
+### Lease hand-off
+
+The work queue's contract, as the API exposes it, has three steps a worker must take on every item it polls. A poll claims the item and returns it with a per-delivery `secret`. An item that is not acknowledged is re-delivered to a later poll once it is older than `reclaim_older_than_ms` (5 seconds by default). `POST .../work/{id}/ack` confirms the claim, and `POST .../work/{id}/heartbeat` keeps the item's lease alive: the first heartbeat sends `expected_last_heartbeat=NO_HEARTBEAT`, and every later one must echo the `last_heartbeat` string the previous response returned, or the API answers `412 Precondition Failed`. An item that has been acknowledged but never heartbeated is never reclaimed by the API.
+
+Those rules shape the bridge in two ways. First, the poller must acknowledge every item it enqueues; otherwise the item stays reclaimable and the poller's own next polls re-deliver it after the reclaim window, which produces duplicate `resume` events. Second, acknowledging alone is not enough: if the controller crashed between the ack and the actor start, the acknowledged item would never be heartbeated and the session would wait forever. So the poller also establishes the lease before the hand-off, and the in-actor worker continues that lease instead of claiming a new one:
+
+1. The poller polls and receives the item (and its `secret`).
+2. The poller sends `ack`.
+3. The poller sends the first heartbeat with `expected_last_heartbeat=NO_HEARTBEAT` and `desired_ttl_seconds` set to `--handoff-ttl-seconds` (default 120). The response's `last_heartbeat` is the lease token.
+4. The poller enqueues `{action: resume, session_id, work_id, last_heartbeat}`.
+5. The controller restores the actor and sends `POST /work` with `{session_id, work_id, last_heartbeat}`.
+6. The worker inside the actor sends its first heartbeat with `expected_last_heartbeat` set to that token, then heartbeats on its own schedule, echoing each response as usual.
+
+The hand-off TTL is the time the controller has to bring the actor up. If the worker starts late, one of three things happens on its first heartbeat:
+
+- The lease is still held: the heartbeat succeeds and the worker continues normally.
+- The lease lapsed but nobody has re-claimed the item: the API answers `200` with `lease_extended: false` and `state: "stopped"`, and the worker exits.
+- The lease lapsed and the item was requeued and picked up by a later poll: the API answers `412`, because the token no longer matches. The worker exits without force-stopping the item, since the item now belongs to the queue or to another actor.
+
+The poller sets `reclaim_older_than_ms` to the API default of 5000 explicitly; since every enqueued item is acknowledged right after the poll, that window only needs to cover the poll-to-ack round trip. An item whose ack fails is skipped and left for the API to re-deliver. An item whose ack succeeded but whose first heartbeat failed is force-stopped by the poller, because nothing else would ever release it.
 
 ### Consuming
 
@@ -133,16 +155,16 @@ It checks the session's actor status:
 
 ### Notifying
 
-- Once the actor container is running and healthy (passing `/healthz` on port 80), the controller sends an HTTP `POST /work` request with the JSON payload `{ "session_id": "...", "work_id": "..." }`.
+- Once the actor container is running and healthy (passing `/healthz` on port 80), the controller sends an HTTP `POST /work` request with the JSON payload `{ "session_id": "...", "work_id": "...", "last_heartbeat": "..." }`.
 - The request is routed through Substrate's network router (`atenet-router`), which inspects the session ID and directs the HTTP traffic to the specific actor.
 
 ### Running the Work
 
 - Inside the actor sandbox, the `ate-ant run` daemon receives the `POST /work` request on `:80`.
 - It immediately acknowledges the notification with `200 OK` (`{"status":"accepted"}`) so intermediate routers and proxies do not time out.
-- In the background, it launches the Anthropic worker runtime (`ant beta:worker run`).
-- The `ant` process connects to Anthropic, executes all tool calls inside the actor (running commands in bash, modifying files, executing skills), and streams results back to Anthropic.
-- When all tool calls for the turn are complete and the idle timeout expires, `ant` exits.
+- In the background, it runs the Anthropic SDK's environment worker in-process, quoting the `last_heartbeat` token so the worker continues the lease the poller took (see [Lease hand-off](#lease-hand-off)).
+- The worker connects to Anthropic, executes all tool calls inside the actor (running commands in bash, modifying files, executing skills), streams results back to Anthropic, and heartbeats the lease while it runs.
+- When all tool calls for the turn are complete and the idle timeout expires, the worker stops the work item and returns.
 - The `ate-ant run` daemon marks the work as finished.
 
 ### Idleness Detection and Suspension
@@ -231,7 +253,7 @@ Controller            atenet-router        Actor (:80)                 ateapi
 
 We want to harden reliability by removing our bespoke internal queue in favor of the CMA queue as the source of truth. Currently, managing a duplicate queue leads to state drift with the Anthropic event queue. Relying on CMA directly as a pub/sub style service would drastically simplify our implementation. Some additional capabilities like suspension/sleep signals directly coming from CMA would simplify our idleness detection.
 
-- **Work item acknowledgment**: A mechanism to acknowledge polled items upon receipt and queuing, prior to completion.
+- **Work item acknowledgment**: Done; see [Lease hand-off](#lease-hand-off). With the CMA queue holding the claim and the lease, the Valkey queue could be removed.
 - **Completion with error status**: The ability to complete events with an error status so tool calls fail rather than hanging forever.
 - **Pollable sleep event**: Delivering an "sleep" event through the polling API alongside work items. Managed Agents should serve as the single source of truth rather than requiring external serialization of these lifecycle events.
 - **Allow rescheduling under load**: Similar to model request call reschedules, it would be great if there is a way to automatically reschedule work at a later time.

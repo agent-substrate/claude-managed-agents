@@ -24,10 +24,10 @@ This project runs Claude Managed Agents work (e.g. tool calls like bash, file op
 
 ### Components
 
-- **Poller**: An always-on daemon running `ate-ant poll`. It polls the Claude Managed Agents API for new work items and enqueues lifecycle events into the queue.
+- **Poller**: An always-on daemon running `ate-ant poll`. It polls the Claude Managed Agents API for new work items, acknowledges each one and takes a short lease on it, and enqueues lifecycle events into the queue. The lease is handed to the actor that runs the item (see [Lease hand-off](DESIGN.md#lease-hand-off)).
 - **Queue**: An in-cluster Valkey/Redis instance buffering session lifecycle events, providing durable work distribution and decoupling ingestion from execution.
 - **Controller**: It consumes lifecycle events from the queue, manages Substrate actor lifecycles (creating, resuming, suspending), and notifies actors of work payloads via `atenet-router`.
-- **Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) via `ant beta:worker run` and preserve session state across turns via snapshot persistence.
+- **Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) with the Anthropic SDK's environment worker in-process and preserve session state across turns via snapshot persistence.
 
 See [DESIGN.md](DESIGN.md) for detailed architecture, event queuing, and actor lifecycle workflows.
 

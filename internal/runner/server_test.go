@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,7 @@ func TestRunnerHTTPHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	r.antBinary = "true"
+	r.handleItem = func(context.Context, WorkRequest) error { return nil }
 
 	server := httptest.NewServer(r.Handler())
 	defer server.Close()
@@ -75,9 +76,9 @@ func TestRunnerStartWorkMissingIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	r.antBinary = "true"
+	r.handleItem = func(context.Context, WorkRequest) error { return nil }
 
-	if _, _, err := r.StartWork(t.Context(), WorkRequest{SessionID: ""}); err == nil {
+	if err := r.StartWork(t.Context(), WorkRequest{SessionID: ""}); err == nil {
 		t.Error("expected error when sessionID is empty, got nil")
 	}
 }
@@ -87,12 +88,29 @@ func TestRunnerStartWorkExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	r.antBinary = "true"
+	var got WorkRequest
+	r.handleItem = func(_ context.Context, req WorkRequest) error {
+		got = req
+		return nil
+	}
 
-	if _, _, err := r.StartWork(t.Context(), WorkRequest{
-		SessionID: "sesn_test_123",
+	if err := r.StartWork(t.Context(), WorkRequest{
+		SessionID:     "sesn_test_123",
+		WorkID:        "work_test_123",
+		LastHeartbeat: "2026-08-16T22:00:01Z",
 	}); err != nil {
 		t.Fatalf("StartWork: %v", err)
+	}
+	if got.SessionID != "sesn_test_123" || got.WorkID != "work_test_123" || got.LastHeartbeat != "2026-08-16T22:00:01Z" {
+		t.Errorf("handleItem received %+v", got)
+	}
+
+	// A missing work id falls back to the session id, as before.
+	if err := r.StartWork(t.Context(), WorkRequest{SessionID: "sesn_test_123"}); err != nil {
+		t.Fatalf("StartWork: %v", err)
+	}
+	if got.WorkID != "sesn_test_123" {
+		t.Errorf("WorkID = %q, want session id fallback", got.WorkID)
 	}
 }
 
@@ -101,7 +119,7 @@ func TestRunnerSingleExecutionConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	r.antBinary = "true"
+	r.handleItem = func(context.Context, WorkRequest) error { return nil }
 
 	server := httptest.NewServer(r.Handler())
 	defer server.Close()
@@ -125,7 +143,7 @@ func TestRunnerIdleEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	r.antBinary = "true"
+	r.handleItem = func(context.Context, WorkRequest) error { return nil }
 
 	server := httptest.NewServer(r.Handler())
 	defer server.Close()

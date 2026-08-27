@@ -58,8 +58,9 @@ func newControllerCommand() *cobra.Command {
 							return fmt.Errorf("resuming session %s: %w", ev.SessionID, err)
 						}
 						payload := runner.WorkRequest{
-							SessionID: ev.SessionID,
-							WorkID:    ev.WorkID,
+							SessionID:     ev.SessionID,
+							WorkID:        ev.WorkID,
+							LastHeartbeat: ev.LastHeartbeat,
 						}
 						if err := am.Notify(ctx, ev.SessionID, payload); err != nil {
 							return fmt.Errorf("notifying session %s: %w", ev.SessionID, err)
