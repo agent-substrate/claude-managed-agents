@@ -56,3 +56,17 @@ kubectl logs -n ate-ant -l app=ate-ant --all-containers --tail=50
 ```bash
 kubectl exec -n ate-ant valkey-0 -- valkey-cli xinfo groups stream:events
 ```
+
+## Manifest Reference
+
+| Resource | Kind | Description |
+| --- | --- | --- |
+| `ate-ant` | `Namespace` | Target Kubernetes namespace |
+| `ate-ant-creds` | `Secret` | Stores Anthropic credentials and Valkey connection string |
+| `ate-ant-creds-reader` | `Role` / `RoleBinding` | RBAC allowing `ate-api-server` to resolve credentials for actor resumption |
+| `valkey` | `Service` & `StatefulSet` | Single-replica Valkey instance backing the session lifecycle event queue |
+| `ate-ant-workerpool` | `WorkerPool` (`ate.dev/v1alpha1`) | Pool of gVisor/microVM runners for sandbox actors (10 replicas) |
+| `ate-ant-actor-template` | `ActorTemplate` (`ate.dev/v1alpha1`) | Sandbox container definition (`ate-ant run`) and GCS snapshot location |
+| `ate-ant` | `Deployment` | Always-on poller daemon claiming work items from Anthropic |
+| `ate-ant-controller` | `Deployment` | Event controller orchestrating actor lifecycle and routing work items (1 replica) |
+
