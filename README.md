@@ -24,10 +24,10 @@ This project runs Claude Managed Agents work (e.g. tool calls like bash, file op
 
 ### Components
 
-- **Poller**: An always-on daemon running `ate-ant poll`. It polls the Claude Managed Agents API for new work items and enqueues lifecycle events into the queue.
+- **Poller**: An always-on daemon running `ate-ant poll`. It polls the Claude Managed Agents API for new work items, acknowledges each one and takes a short lease on it, and enqueues lifecycle events into the queue. The lease is handed to the actor that runs the item (see [Lease hand-off](DESIGN.md#lease-hand-off)).
 - **Queue**: An in-cluster Valkey/Redis instance buffering session lifecycle events, providing durable work distribution and decoupling ingestion from execution.
 - **Controller**: It consumes lifecycle events from the queue, manages Substrate actor lifecycles (creating, resuming, suspending), and notifies actors of work payloads via `atenet-router`.
-- **Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) via `ant beta:worker run` and preserve session state across turns via snapshot persistence.
+- **Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) with the Anthropic SDK's environment worker in-process and preserve session state across turns via snapshot persistence.
 
 See [DESIGN.md](DESIGN.md) for detailed architecture, event queuing, and actor lifecycle workflows.
 
@@ -55,7 +55,7 @@ Update the container images before applying the manifests.
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:db346eb5c2efd562be12bf7c16323cb3d62b7221e91013a07cb642158a71997e \
+  --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:1cb860e407c3aa804a5831c4c37ab300d4822590d94b34b5c3da531f697ac1b6 \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
