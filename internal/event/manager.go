@@ -32,11 +32,15 @@ const (
 
 // Event represents a session lifecycle event in the stream.
 type Event struct {
-	ID        string    `json:"id,omitempty"`
-	Action    Action    `json:"action"`
-	SessionID string    `json:"session_id"`
-	WorkID    string    `json:"work_id,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string `json:"id,omitempty"`
+	Action    Action `json:"action"`
+	SessionID string `json:"session_id"`
+	WorkID    string `json:"work_id,omitempty"`
+	// LastHeartbeat is the lease token from the poller's first heartbeat on
+	// WorkID; the worker that services the item must quote it as its first
+	// expected_last_heartbeat.
+	LastHeartbeat string    `json:"last_heartbeat,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // ValkeyConfig configures the Valkey client connection.
@@ -168,16 +172,18 @@ func (m *Manager) ensureGroup(ctx context.Context) error {
 	return nil
 }
 
-// QueueResume pushes a "resume" event to the stream.
-func (m *Manager) QueueResume(ctx context.Context, sessionID, workID string) (*Event, error) {
+// QueueResume pushes a "resume" event to the stream. lastHeartbeat is the
+// lease token for workID (see Event.LastHeartbeat).
+func (m *Manager) QueueResume(ctx context.Context, sessionID, workID, lastHeartbeat string) (*Event, error) {
 	if sessionID == "" {
 		return nil, errors.New("event: session_id is required")
 	}
 	event := &Event{
-		Action:    ActionResume,
-		SessionID: sessionID,
-		WorkID:    workID,
-		CreatedAt: time.Now().UTC(),
+		Action:        ActionResume,
+		SessionID:     sessionID,
+		WorkID:        workID,
+		LastHeartbeat: lastHeartbeat,
+		CreatedAt:     time.Now().UTC(),
 	}
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -221,12 +227,14 @@ func (m *Manager) parseEntry(entry valkey.XRangeEntry) (*Event, error) {
 		action := entry.FieldValues["action"]
 		sessionID := entry.FieldValues["session_id"]
 		workID := entry.FieldValues["work_id"]
+		lastHeartbeat := entry.FieldValues["last_heartbeat"]
 		if sessionID != "" {
 			return &Event{
-				ID:        entry.ID,
-				Action:    Action(action),
-				SessionID: sessionID,
-				WorkID:    workID,
+				ID:            entry.ID,
+				Action:        Action(action),
+				SessionID:     sessionID,
+				WorkID:        workID,
+				LastHeartbeat: lastHeartbeat,
 			}, nil
 		}
 		return nil, fmt.Errorf("event: missing data field in stream entry %s", entry.ID)

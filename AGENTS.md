@@ -4,9 +4,13 @@ Redeploying takes a long time, only start doing this if user explicitly
 asks for you to redeploy.
 Follow these steps to build, update, and redeploy the worker stack:
 
-## 1. Delete Existing Namespace
+## 1. Cleanup
 
-First delete everything but not the running actors.
+First, cleanup:
+
+```bash
+kubectl delete deployments,statefulsets,workerpools,actortemplates,services,secrets --all -n ate-ant
+```
 
 ## 2. Build and Push Container Image
 

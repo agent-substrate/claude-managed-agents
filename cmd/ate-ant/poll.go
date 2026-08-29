@@ -6,7 +6,6 @@ import (
 
 	"github.com/agent-substrate/claude-managed-agents/internal/event"
 	"github.com/agent-substrate/claude-managed-agents/internal/poller"
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/spf13/cobra"
 )
 
@@ -35,14 +34,17 @@ func newPollCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("creating poller: %w", err)
 			}
-			return p.Poll(ctx, func(ctx context.Context, item *anthropic.BetaSelfHostedWork) error {
-				sessID := item.Data.ID
-				workID := item.ID
-				_, err := em.QueueResume(ctx, sessID, workID)
+			return p.Poll(ctx, func(ctx context.Context, claim poller.Claim) error {
+				sessID := claim.Work.Data.ID
+				workID := claim.Work.ID
+				_, err := em.QueueResume(ctx, sessID, workID, claim.LastHeartbeat)
 				return err
 			})
 		},
 	}
+
+	cmd.Flags().Int64Var(&cfg.HandoffTTLSeconds, "handoff-ttl-seconds", poller.DefaultHandoffTTLSeconds,
+		"lease the poller takes on each work item before queueing it: the time the controller has to start the sandbox before the lease lapses and the item is requeued")
 
 	return cmd
 }

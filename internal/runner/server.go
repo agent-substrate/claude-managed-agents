@@ -1,29 +1,39 @@
 package runner
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/agent-substrate/claude-managed-agents/internal/envworker"
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/tools/agenttoolset"
 )
 
 const (
 	DefaultRunnerAddr = ":80"
 	defaultRunTimeout = 10 * time.Minute
+
+	// workerMaxIdle is how long the worker keeps the session open after the
+	// agent's turn ends before exiting and releasing the actor.
+	workerMaxIdle = 1 * time.Second
 )
 
 // WorkRequest is the JSON payload accepted by the runner HTTP server.
 type WorkRequest struct {
 	SessionID string `json:"session_id"`
 	WorkID    string `json:"work_id,omitempty"`
+	// LastHeartbeat is the lease token the poller obtained when it acked the
+	// work item and sent its first heartbeat. The worker quotes it as its
+	// first expected_last_heartbeat, continuing that lease instead of
+	// claiming a new one. Empty means the worker claims the lease itself.
+	LastHeartbeat string `json:"last_heartbeat,omitempty"`
 }
 
 // WorkResponse is the JSON payload returned by the runner HTTP server.
@@ -51,12 +61,16 @@ func (c *RunnerConfig) Defaults() {
 }
 
 // Runner runs a lightweight HTTP server inside a Substrate actor container.
-// On /work, it executes 'ant beta:worker run' directly against Anthropic API.
+// On /work, it services the work item in-process with the SDK's environment
+// worker: it runs the session's tool calls against the Anthropic API while
+// heartbeating the work-item lease.
 type Runner struct {
-	addr      string
-	antBinary string
+	addr string
 
-	// workMu ensures that only one 'ant beta:worker run' subprocess executes at a time.
+	// handleItem services one work item; tests replace it.
+	handleItem func(ctx context.Context, req WorkRequest) error
+
+	// workMu ensures that only one work item is serviced at a time.
 	workMu sync.Mutex
 
 	stateMu      sync.RWMutex
@@ -70,9 +84,42 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 
 	return &Runner{
 		addr:         cfg.Addr,
-		antBinary:    "ant",
+		handleItem:   handleItem,
 		lastActiveAt: time.Now(),
 	}, nil
+}
+
+// handleItem runs one work item's session with the in-process environment worker.
+// The environment id and key come from ANTHROPIC_ENVIRONMENT_ID and
+// ANTHROPIC_ENVIRONMENT_KEY, which the actor template injects. The worker does
+// not require ANTHROPIC_API_KEY. The tools are the standard agent toolset rooted
+// at the process working directory, with the file tools allowed outside it.
+// The lease token and the environment key never reach the logs.
+func handleItem(ctx context.Context, req WorkRequest) error {
+	workdir, err := os.Getwd()
+	if err != nil {
+		workdir = "."
+	}
+	env := &agenttoolset.AgentToolContext{
+		Workdir:           workdir,
+		UnrestrictedPaths: true,
+	}
+	toolset := agenttoolset.BetaAgentToolset20260401(env)
+	defer agenttoolset.CloseAll(toolset)
+
+	maxIdle := workerMaxIdle
+	worker := envworker.NewEnvironmentWorker(anthropic.NewClient(), envworker.EnvironmentWorkerOptions{
+		Tools:             toolset,
+		Workdir:           workdir,
+		UnrestrictedPaths: true,
+		MaxIdle:           &maxIdle,
+		Logger:            slog.Default(),
+	})
+	return worker.HandleItem(ctx, envworker.HandleItemOptions{
+		WorkID:                req.WorkID,
+		SessionID:             req.SessionID,
+		ExpectedLastHeartbeat: req.LastHeartbeat,
+	})
 }
 
 func (r *Runner) logger() *slog.Logger {
@@ -90,7 +137,7 @@ func (r *Runner) Handler() http.Handler {
 }
 
 // handleWork parses the session ID, marks the actor as running, returns 200 accepted immediately,
-// and runs 'ant beta:worker run' in a background goroutine.
+// and services the work item in a background goroutine.
 func (r *Runner) handleWork(rw http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost && req.Method != http.MethodPut {
 		http.Error(rw, `{"error": "method not allowed, use POST"}`, http.StatusMethodNotAllowed)
@@ -129,8 +176,8 @@ func (r *Runner) handleWork(rw http.ResponseWriter, req *http.Request) {
 			r.stateMu.Unlock()
 		}()
 
-		if _, _, err := r.StartWork(context.Background(), payload); err != nil {
-			r.logger().Error("Background ant worker process failed",
+		if err := r.StartWork(context.Background(), payload); err != nil {
+			r.logger().Error("Background worker failed",
 				slog.String("session_id", sessionID),
 				slog.Any("error", err),
 			)
@@ -182,16 +229,13 @@ func (r *Runner) handleHealthz(rw http.ResponseWriter, req *http.Request) {
 	})
 }
 
-// StartWork executes 'ant beta:worker run' synchronously.
-func (r *Runner) StartWork(ctx context.Context, req WorkRequest) (stdout string, stderr string, err error) {
+// StartWork services one work item synchronously: it runs the session's tool
+// calls in-process while heartbeating the lease, and returns when the session
+// goes idle, is stopped, or the lease is lost.
+func (r *Runner) StartWork(ctx context.Context, req WorkRequest) error {
 	sessionID := strings.TrimSpace(req.SessionID)
 	if sessionID == "" {
-		return "", "", errors.New("session_id is required")
-	}
-
-	bin := r.antBinary
-	if bin == "" {
-		bin = "ant"
+		return errors.New("session_id is required")
 	}
 
 	workID := strings.TrimSpace(req.WorkID)
@@ -199,40 +243,25 @@ func (r *Runner) StartWork(ctx context.Context, req WorkRequest) (stdout string,
 		workID = sessionID
 	}
 
-	args := []string{
-		"beta:worker", "run",
-		"--unrestricted-paths", // TODO(jbd): Make this flag optional.
-		"--max-idle", "1s",
+	req = WorkRequest{
+		SessionID:     sessionID,
+		WorkID:        workID,
+		LastHeartbeat: strings.TrimSpace(req.LastHeartbeat),
 	}
 
-	env := append(os.Environ(),
-		"ANTHROPIC_SESSION_ID="+sessionID,
-		"ANTHROPIC_WORK_ID="+workID,
+	r.logger().Info("Running worker",
+		slog.String("session_id", sessionID),
+		slog.String("work_id", workID),
+		slog.Bool("lease_handoff", req.LastHeartbeat != ""),
 	)
 
-	r.logger().Info("Running ant worker process",
-		slog.String("binary", bin),
-		slog.Any("args", args),
+	err := r.handleItem(ctx, req)
+	r.logger().Info("Worker finished",
 		slog.String("session_id", sessionID),
-	)
-
-	var outBuf, errBuf bytes.Buffer
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Stdout = io.MultiWriter(os.Stdout, &outBuf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &errBuf)
-	cmd.Stdin = os.Stdin
-	cmd.Env = env
-
-	err = cmd.Run()
-	stdout = outBuf.String()
-	stderr = errBuf.String()
-	r.logger().Info("ant worker process finished",
-		slog.String("session_id", sessionID),
-		slog.String("stdout", stdout),
-		slog.String("stderr", stderr),
+		slog.String("work_id", workID),
 		slog.Any("error", err),
 	)
-	return stdout, stderr, err
+	return err
 }
 
 // Run starts the HTTP server using r.addr with 10-minute timeouts.

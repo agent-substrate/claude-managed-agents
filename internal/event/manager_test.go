@@ -33,11 +33,11 @@ func TestManagerUnacknowledgedEventReplayed(t *testing.T) {
 	ctx := context.Background()
 
 	// Queue two events
-	ev1, err := mgr.QueueResume(ctx, "session-1", "work-100")
+	ev1, err := mgr.QueueResume(ctx, "session-1", "work-100", "2026-08-16T22:00:01Z")
 	if err != nil {
 		t.Fatalf("QueueResume: %v", err)
 	}
-	ev2, err := mgr.QueueResume(ctx, "session-2", "work-200")
+	ev2, err := mgr.QueueResume(ctx, "session-2", "work-200", "")
 	if err != nil {
 		t.Fatalf("QueueResume: %v", err)
 	}
@@ -115,11 +115,11 @@ func TestManagerQueueAndPop(t *testing.T) {
 	ctx := context.Background()
 
 	// QueueResume
-	ev1, err := mgr.QueueResume(ctx, "session-1", "work-100")
+	ev1, err := mgr.QueueResume(ctx, "session-1", "work-100", "2026-08-16T22:00:01Z")
 	if err != nil {
 		t.Fatalf("QueueResume: %v", err)
 	}
-	if ev1.SessionID != "session-1" || ev1.WorkID != "work-100" || ev1.Action != ActionResume || ev1.ID == "" {
+	if ev1.SessionID != "session-1" || ev1.WorkID != "work-100" || ev1.LastHeartbeat != "2026-08-16T22:00:01Z" || ev1.Action != ActionResume || ev1.ID == "" {
 		t.Errorf("unexpected ev1: %+v", ev1)
 	}
 
@@ -227,7 +227,7 @@ func TestManagerReconcile(t *testing.T) {
 	}()
 
 	// Queue events
-	if _, err := mgr.QueueResume(ctx, "session-resume-1", "work-1"); err != nil {
+	if _, err := mgr.QueueResume(ctx, "session-resume-1", "work-1", ""); err != nil {
 		t.Fatalf("QueueResume: %v", err)
 	}
 	if _, err := mgr.QueueSuspend(ctx, "session-suspend-1"); err != nil {
@@ -312,7 +312,7 @@ func TestManagerReconcile_MultipleConsumersDeduplication(t *testing.T) {
 
 	// Queue 10 events
 	for i := 1; i <= 10; i++ {
-		_, err := consumers[0].QueueResume(ctx, fmt.Sprintf("session-%d", i), fmt.Sprintf("work-%d", i))
+		_, err := consumers[0].QueueResume(ctx, fmt.Sprintf("session-%d", i), fmt.Sprintf("work-%d", i), "")
 		if err != nil {
 			t.Fatalf("QueueResume %d: %v", i, err)
 		}
