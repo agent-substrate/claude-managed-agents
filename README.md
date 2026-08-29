@@ -55,7 +55,7 @@ Update the container images before applying the manifests.
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:1cb860e407c3aa804a5831c4c37ab300d4822590d94b34b5c3da531f697ac1b6 \
+  --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:ec79dd62224d934c8219e5f1b1ed14b1e2b80f7ce4db1006f2efede5f953939a \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ \
   --anthropic-api-key "$ANTHROPIC_API_KEY" \
