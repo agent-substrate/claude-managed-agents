@@ -89,14 +89,12 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 	}, nil
 }
 
-// handleItem runs one work item's session with the SDK's environment worker.
-// The client takes its settings from the process environment (ANTHROPIC_API_KEY,
-// ANTHROPIC_BASE_URL), and the environment id and key come from
-// ANTHROPIC_ENVIRONMENT_ID and ANTHROPIC_ENVIRONMENT_KEY, which the actor
-// template injects. The tools are the standard agent toolset rooted at the
-// process working directory, with the file tools allowed outside it, matching
-// how `ant beta:worker run --unrestricted-paths` is invoked. The lease token
-// and the environment key never reach the logs.
+// handleItem runs one work item's session with the in-process environment worker.
+// The environment id and key come from ANTHROPIC_ENVIRONMENT_ID and
+// ANTHROPIC_ENVIRONMENT_KEY, which the actor template injects. The worker does
+// not require ANTHROPIC_API_KEY. The tools are the standard agent toolset rooted
+// at the process working directory, with the file tools allowed outside it.
+// The lease token and the environment key never reach the logs.
 func handleItem(ctx context.Context, req WorkRequest) error {
 	workdir, err := os.Getwd()
 	if err != nil {

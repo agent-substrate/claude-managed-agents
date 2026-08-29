@@ -192,16 +192,9 @@ func TestBuildManifestsWithAPIKey(t *testing.T) {
 	}
 
 	template := find[*atev1alpha1.ActorTemplate](t, objs, cfg.Template)
-	foundAPIKey := false
 	for _, env := range template.Spec.Containers[0].Env {
 		if env.Name == "ANTHROPIC_API_KEY" {
-			foundAPIKey = true
-			if env.Value == nil || *env.Value != "sk-ant-api03-test-key" {
-				t.Errorf("unexpected ANTHROPIC_API_KEY env: %+v", env)
-			}
+			t.Errorf("expected no ANTHROPIC_API_KEY in ActorTemplate container env, found: %+v", env)
 		}
-	}
-	if !foundAPIKey {
-		t.Errorf("ANTHROPIC_API_KEY not found in ActorTemplate container env: %+v", template.Spec.Containers[0].Env)
 	}
 }

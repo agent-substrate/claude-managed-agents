@@ -101,7 +101,6 @@ To shell into the container locally with your Anthropic environment variables:
 ```bash
 podman run -it --rm \
   --entrypoint bash \
-  -e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
   -e ANTHROPIC_ENVIRONMENT_ID="$ANTHROPIC_ENVIRONMENT_ID" \
   -e ANTHROPIC_ENVIRONMENT_KEY="$ANTHROPIC_ENVIRONMENT_KEY" \
   gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant:latest
