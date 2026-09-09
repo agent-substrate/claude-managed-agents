@@ -17,6 +17,9 @@ func TestPollCommand(t *testing.T) {
 	if cmd.Flags().Lookup("handoff-ttl-seconds") == nil {
 		t.Error("missing flag --handoff-ttl-seconds on poll command")
 	}
+	if cmd.Flags().Lookup("anthropic-base-url") == nil {
+		t.Error("missing flag --anthropic-base-url on poll command")
+	}
 }
 
 func TestRootCommandSubcommands(t *testing.T) {

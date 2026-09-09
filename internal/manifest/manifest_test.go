@@ -198,3 +198,37 @@ func TestBuildManifestsWithAPIKey(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildManifestsWithBaseURL(t *testing.T) {
+	cfg := testConfig()
+	cfg.BaseURL = "http://managed-agents.example.svc.cluster.local:8400"
+
+	objs := BuildManifests(cfg)
+	secret := find[*corev1.Secret](t, objs, defaultSecretName)
+	if secret.StringData["ANTHROPIC_BASE_URL"] != cfg.BaseURL {
+		t.Errorf("secret ANTHROPIC_BASE_URL = %q, want %q", secret.StringData["ANTHROPIC_BASE_URL"], cfg.BaseURL)
+	}
+	template := find[*atev1alpha1.ActorTemplate](t, objs, cfg.Template)
+	if got := actorEnv(template, "ANTHROPIC_BASE_URL"); got != cfg.BaseURL {
+		t.Errorf("ActorTemplate ANTHROPIC_BASE_URL = %q, want %q", got, cfg.BaseURL)
+	}
+
+	objs = BuildManifests(testConfig())
+	secret = find[*corev1.Secret](t, objs, defaultSecretName)
+	if _, ok := secret.StringData["ANTHROPIC_BASE_URL"]; ok {
+		t.Errorf("expected no ANTHROPIC_BASE_URL in secret when unset")
+	}
+	template = find[*atev1alpha1.ActorTemplate](t, objs, cfg.Template)
+	if got := actorEnv(template, "ANTHROPIC_BASE_URL"); got != "" {
+		t.Errorf("expected no ANTHROPIC_BASE_URL in ActorTemplate container env when unset, got %q", got)
+	}
+}
+
+func actorEnv(template *atev1alpha1.ActorTemplate, name string) string {
+	for _, env := range template.Spec.Containers[0].Env {
+		if env.Name == name && env.Value != nil {
+			return *env.Value
+		}
+	}
+	return ""
+}

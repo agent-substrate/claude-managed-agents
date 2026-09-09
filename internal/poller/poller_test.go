@@ -506,3 +506,45 @@ func TestLeaseReleasesItemWhenHeartbeatFails(t *testing.T) {
 		t.Errorf("stop body = %s, want force:true", stopBody)
 	}
 }
+
+// TestNewPollerBaseURL proves the poller's own client sends requests to the
+// configured base URL, from Config.BaseURL first and ANTHROPIC_BASE_URL
+// otherwise, instead of the SDK's production default.
+func TestNewPollerBaseURL(t *testing.T) {
+	var polled int32
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		atomic.AddInt32(&polled, 1)
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(workItemJSON("work_url_1", "sesn_url_1"))
+	}))
+	defer server.Close()
+
+	for _, tc := range []struct {
+		name       string
+		cfg        Config
+		envBaseURL string
+	}{
+		{"config field", Config{EnvironmentID: "env_123", APIKey: "test-api-key", BaseURL: server.URL}, "http://127.0.0.1:1"},
+		{"environment", Config{EnvironmentID: "env_123", APIKey: "test-api-key"}, server.URL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ANTHROPIC_BASE_URL", tc.envBaseURL)
+			atomic.StoreInt32(&polled, 0)
+
+			p, err := New(tc.cfg)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			item, err := p.PollOnce(context.Background())
+			if err != nil {
+				t.Fatalf("PollOnce: %v", err)
+			}
+			if item.ID != "work_url_1" {
+				t.Errorf("ID = %q, want 'work_url_1'", item.ID)
+			}
+			if atomic.LoadInt32(&polled) != 1 {
+				t.Errorf("poll requests at the configured base URL = %d, want 1", polled)
+			}
+		})
+	}
+}

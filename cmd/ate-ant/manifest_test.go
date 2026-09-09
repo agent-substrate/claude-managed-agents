@@ -19,6 +19,7 @@ func TestManifestCommand(t *testing.T) {
 		"--namespace", "test-ns",
 		"--anthropic-env-id", "env_test_abc",
 		"--anthropic-env-key", "key_test_xyz",
+		"--anthropic-base-url", "http://managed-agents.example.svc.cluster.local:8400",
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -32,6 +33,7 @@ func TestManifestCommand(t *testing.T) {
 		"kind: Secret",
 		"name: ate-ant-creds",
 		"ANTHROPIC_ENVIRONMENT_ID: env_test_abc",
+		"ANTHROPIC_BASE_URL: http://managed-agents.example.svc.cluster.local:8400",
 		"kind: Service",
 		"name: valkey",
 		"kind: StatefulSet",
