@@ -68,7 +68,7 @@ An in-cluster Valkey/Redis instance acts as the durable buffer between the polle
 │ (Work Ingestion Loop) │
 └──────────┬────────────┘
            │ XADD stream:events *
-           │ data: {action, session_id, work_id, last_heartbeat}
+           │ data: {action, session_id, work_id, last_heartbeat, work_secret}
            ▼
 ┌───────────────────────────────────────┐
 │             Valkey Stream             │
@@ -114,7 +114,7 @@ The event queue provides:
 
 - The `ate-ant` poller runs continuously in a tight polling loop against the Anthropic Managed Agents API.
 - When an agent turn generates tool calls (e.g. bash commands, file edits), Anthropic creates a work item containing `session_id` and `work_id`.
-- The poller claims the work item, acknowledges it, sends its first heartbeat (see [Lease hand-off](#lease-hand-off)), and pushes a `resume` event into the Valkey queue carrying the heartbeat token.
+- The poller claims the work item, acknowledges it, sends its first heartbeat (see [Lease hand-off](#lease-hand-off)), and pushes a `resume` event into the Valkey queue carrying the heartbeat token and the item's secret.
 - The poller does not wait for the sandbox to wake up or execute; it immediately returns to the polling loop to claim subsequent work items.
 
 ### Lease hand-off
@@ -126,8 +126,8 @@ Those rules shape the bridge in two ways. First, the poller must acknowledge eve
 1. The poller polls and receives the item (and its `secret`).
 2. The poller sends `ack`.
 3. The poller sends the first heartbeat with `expected_last_heartbeat=NO_HEARTBEAT` and `desired_ttl_seconds` set to `--handoff-ttl-seconds` (default 120). The response's `last_heartbeat` is the lease token.
-4. The poller enqueues `{action: resume, session_id, work_id, last_heartbeat}`.
-5. The controller restores the actor and sends `POST /work` with `{session_id, work_id, last_heartbeat}`.
+4. The poller enqueues `{action: resume, session_id, work_id, last_heartbeat, work_secret}`, where `work_secret` is the `secret` from step 1.
+5. The controller restores the actor and sends `POST /work` with `{session_id, work_id, last_heartbeat, work_secret}`.
 6. The worker inside the actor sends its first heartbeat with `expected_last_heartbeat` set to that token, then heartbeats on its own schedule, echoing each response as usual.
 
 The hand-off TTL is the time the controller has to bring the actor up. If the worker starts late, one of three things happens on its first heartbeat:
@@ -137,6 +137,12 @@ The hand-off TTL is the time the controller has to bring the actor up. If the wo
 - The lease lapsed and the item was requeued and picked up by a later poll: the API answers `412`, because the token no longer matches. The worker exits without force-stopping the item, since the item now belongs to the queue or to another actor.
 
 The poller sets `reclaim_older_than_ms` to the API default of 5000 explicitly; since every enqueued item is acknowledged right after the poll, that window only needs to cover the poll-to-ack round trip. An item whose ack fails is skipped and left for the API to re-deliver. An item whose ack succeeded but whose first heartbeat failed is force-stopped by the poller, because nothing else would ever release it.
+
+### Credentials
+
+Only the poller and the controller hold the environment key, from the `ate-ant-creds` Secret. The environment key authorizes every work-queue call, so a process holding it can claim, heartbeat, stop, and run any session in the environment; it is therefore never placed in the `ActorTemplate`, where it would be readable by anyone who can read the template and would be captured in every actor snapshot.
+
+The `secret` a poll returns is a per-delivery payload: URL-safe base64 of a JSON object whose `sessions_token` is the bearer credential for that one item's heartbeat, stop, skill download, and session event calls.
 
 ### Consuming
 
@@ -155,7 +161,7 @@ It checks the session's actor status:
 
 ### Notifying
 
-- Once the actor container is running and healthy (passing `/healthz` on port 80), the controller sends an HTTP `POST /work` request with the JSON payload `{ "session_id": "...", "work_id": "...", "last_heartbeat": "..." }`.
+- Once the actor container is running and healthy (passing `/healthz` on port 80), the controller sends an HTTP `POST /work` request with the JSON payload `{ "session_id": "...", "work_id": "...", "last_heartbeat": "...", "work_secret": "..." }`.
 - The request is routed through Substrate's network router (`atenet-router`), which inspects the session ID and directs the HTTP traffic to the specific actor.
 
 ### Running the Work

@@ -39,8 +39,13 @@ type Event struct {
 	// LastHeartbeat is the lease token from the poller's first heartbeat on
 	// WorkID; the worker that services the item must quote it as its first
 	// expected_last_heartbeat.
-	LastHeartbeat string    `json:"last_heartbeat,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	LastHeartbeat string `json:"last_heartbeat,omitempty"`
+	// WorkSecret is the per-delivery secret payload the poll response carried
+	// for WorkID. It authorizes the worker's calls for this item alone; the
+	// entry holding it is deleted from the stream once the event is
+	// acknowledged.
+	WorkSecret string    `json:"work_secret,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // ValkeyConfig configures the Valkey client connection.
@@ -173,8 +178,9 @@ func (m *Manager) ensureGroup(ctx context.Context) error {
 }
 
 // QueueResume pushes a "resume" event to the stream. lastHeartbeat is the
-// lease token for workID (see Event.LastHeartbeat).
-func (m *Manager) QueueResume(ctx context.Context, sessionID, workID, lastHeartbeat string) (*Event, error) {
+// lease token for workID and workSecret its per-delivery secret payload (see
+// Event).
+func (m *Manager) QueueResume(ctx context.Context, sessionID, workID, lastHeartbeat, workSecret string) (*Event, error) {
 	if sessionID == "" {
 		return nil, errors.New("event: session_id is required")
 	}
@@ -183,6 +189,7 @@ func (m *Manager) QueueResume(ctx context.Context, sessionID, workID, lastHeartb
 		SessionID:     sessionID,
 		WorkID:        workID,
 		LastHeartbeat: lastHeartbeat,
+		WorkSecret:    workSecret,
 		CreatedAt:     time.Now().UTC(),
 	}
 	data, err := json.Marshal(event)
@@ -228,6 +235,7 @@ func (m *Manager) parseEntry(entry valkey.XRangeEntry) (*Event, error) {
 		sessionID := entry.FieldValues["session_id"]
 		workID := entry.FieldValues["work_id"]
 		lastHeartbeat := entry.FieldValues["last_heartbeat"]
+		workSecret := entry.FieldValues["work_secret"]
 		if sessionID != "" {
 			return &Event{
 				ID:            entry.ID,
@@ -235,6 +243,7 @@ func (m *Manager) parseEntry(entry valkey.XRangeEntry) (*Event, error) {
 				SessionID:     sessionID,
 				WorkID:        workID,
 				LastHeartbeat: lastHeartbeat,
+				WorkSecret:    workSecret,
 			}, nil
 		}
 		return nil, fmt.Errorf("event: missing data field in stream entry %s", entry.ID)
@@ -290,13 +299,18 @@ func (m *Manager) ack(ctx context.Context, event *Event) error {
 	return m.ackID(ctx, event.ID)
 }
 
-// ackID acknowledges an event by its stream entry ID.
+// ackID acknowledges an event by its stream entry ID and deletes the entry,
+// so a resume event's work secret does not outlive its hand-off in the stream.
 func (m *Manager) ackID(ctx context.Context, id string) error {
 	if id == "" {
 		return nil
 	}
-	cmd := m.vkClient.B().Xack().Key(m.streamKey).Group(m.groupName).Id(id).Build()
-	return m.vkClient.Do(ctx, cmd).Error()
+	ack := m.vkClient.B().Xack().Key(m.streamKey).Group(m.groupName).Id(id).Build()
+	if err := m.vkClient.Do(ctx, ack).Error(); err != nil {
+		return err
+	}
+	del := m.vkClient.B().Xdel().Key(m.streamKey).Id(id).Build()
+	return m.vkClient.Do(ctx, del).Error()
 }
 
 // Reconcile continuously pops events from the stream, dispatches them to OnResume/OnSuspend,

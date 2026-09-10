@@ -111,8 +111,14 @@ func TestBuildManifests(t *testing.T) {
 	if len(template.Spec.Containers[0].Command) < 2 || template.Spec.Containers[0].Command[0] != "ate-ant" || template.Spec.Containers[0].Command[1] != "run" {
 		t.Errorf("template container command = %v, want ['ate-ant', 'run', ...]", template.Spec.Containers[0].Command)
 	}
-	if len(template.Spec.Containers[0].Env) == 0 {
-		t.Errorf("template container env is empty, expected secretKeyRefs")
+	templateEnv := map[string]string{}
+	for _, env := range template.Spec.Containers[0].Env {
+		if env.Value != nil {
+			templateEnv[env.Name] = *env.Value
+		}
+	}
+	if !maps.Equal(templateEnv, map[string]string{"ANTHROPIC_ENVIRONMENT_ID": "env_test_123"}) {
+		t.Errorf("template container env = %v, want only the environment id (no credential)", templateEnv)
 	}
 	if template.Spec.Containers[0].Readyz == nil || template.Spec.Containers[0].Readyz.HTTPGet == nil || template.Spec.Containers[0].Readyz.HTTPGet.Path != "/healthz" || template.Spec.Containers[0].Readyz.HTTPGet.Port != 80 {
 		t.Errorf("template container readyz = %+v, want path '/healthz' and port 80", template.Spec.Containers[0].Readyz)
@@ -192,12 +198,6 @@ func TestBuildManifestsWithEnvironmentSecrets(t *testing.T) {
 		t.Errorf("secret data = %v, want %v", secret.StringData, want)
 	}
 
-	template := find[*atev1alpha1.ActorTemplate](t, objs, cfg.Template)
-	for _, env := range template.Spec.Containers[0].Env {
-		if env.Name == "ANTHROPIC_API_KEY" {
-			t.Errorf("expected no ANTHROPIC_API_KEY in ActorTemplate container env, found: %+v", env)
-		}
-	}
 }
 
 func TestBuildManifestsWithBaseURL(t *testing.T) {
