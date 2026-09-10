@@ -43,7 +43,6 @@ const (
 type Config struct {
 	Client         *anthropic.Client
 	BaseURL        string
-	APIKey         string
 	EnvironmentID  string
 	EnvironmentKey string
 	PollInterval   time.Duration
@@ -62,9 +61,6 @@ func (c *Config) Defaults() {
 	}
 	if c.EnvironmentKey == "" {
 		c.EnvironmentKey = os.Getenv("ANTHROPIC_ENVIRONMENT_KEY")
-	}
-	if c.APIKey == "" {
-		c.APIKey = os.Getenv("ANTHROPIC_API_KEY")
 	}
 	if c.BaseURL == "" {
 		c.BaseURL = os.Getenv("ANTHROPIC_BASE_URL")
@@ -96,17 +92,15 @@ func New(cfg Config) (*Poller, error) {
 
 	client := cfg.Client
 	if client == nil {
+		if cfg.EnvironmentKey == "" {
+			return nil, errors.New("environment_key is required (set ANTHROPIC_ENVIRONMENT_KEY)")
+		}
 		opts := []option.RequestOption{
 			option.WithoutEnvironmentDefaults(),
+			option.WithAuthToken(cfg.EnvironmentKey),
 		}
 		if cfg.BaseURL != "" {
 			opts = append(opts, option.WithBaseURL(cfg.BaseURL))
-		}
-		if cfg.APIKey != "" {
-			opts = append(opts, option.WithAPIKey(cfg.APIKey))
-		}
-		if cfg.EnvironmentKey != "" {
-			opts = append(opts, option.WithAuthToken(cfg.EnvironmentKey))
 		}
 		if cfg.HTTPClient != nil {
 			opts = append(opts, option.WithHTTPClient(cfg.HTTPClient))

@@ -47,7 +47,6 @@ type Config struct {
 	ControllerReplicas int32  `json:"controller_replicas"`
 	EnvironmentID      string `json:"environment_id"`
 	EnvironmentKey     string `json:"environment_key"`
-	APIKey             string `json:"api_key"`
 	BaseURL            string `json:"base_url"`
 	AteapiAddr         string `json:"ateapi_addr"`
 	AtenetRouterAddr   string `json:"atenet_router_addr"`
@@ -136,9 +135,6 @@ func BuildSecret(cfg Config) *corev1.Secret {
 	}
 	if cfg.EnvironmentKey != "" {
 		stringData["ANTHROPIC_ENVIRONMENT_KEY"] = cfg.EnvironmentKey
-	}
-	if cfg.APIKey != "" {
-		stringData["ANTHROPIC_API_KEY"] = cfg.APIKey
 	}
 	if cfg.BaseURL != "" {
 		stringData["ANTHROPIC_BASE_URL"] = cfg.BaseURL

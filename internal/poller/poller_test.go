@@ -25,7 +25,13 @@ func TestNewPollerValidation(t *testing.T) {
 		t.Error("expected error when environment_id is empty, got nil")
 	}
 
-	p, err := New(Config{EnvironmentID: "env_test_123"})
+	t.Setenv("ANTHROPIC_ENVIRONMENT_KEY", "")
+	_, err = New(Config{EnvironmentID: "env_test_123"})
+	if err == nil {
+		t.Error("expected error when environment_key is empty, got nil")
+	}
+
+	p, err := New(Config{EnvironmentID: "env_test_123", EnvironmentKey: "key_test_123"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -524,8 +530,8 @@ func TestNewPollerBaseURL(t *testing.T) {
 		cfg        Config
 		envBaseURL string
 	}{
-		{"config field", Config{EnvironmentID: "env_123", APIKey: "test-api-key", BaseURL: server.URL}, "http://127.0.0.1:1"},
-		{"environment", Config{EnvironmentID: "env_123", APIKey: "test-api-key"}, server.URL},
+		{"config field", Config{EnvironmentID: "env_123", EnvironmentKey: "test-env-key", BaseURL: server.URL}, "http://127.0.0.1:1"},
+		{"environment", Config{EnvironmentID: "env_123", EnvironmentKey: "test-env-key"}, server.URL},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ANTHROPIC_BASE_URL", tc.envBaseURL)
