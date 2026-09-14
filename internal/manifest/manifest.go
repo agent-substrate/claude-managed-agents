@@ -48,6 +48,7 @@ type Config struct {
 	EnvironmentID      string `json:"environment_id"`
 	EnvironmentKey     string `json:"environment_key"`
 	APIKey             string `json:"api_key"`
+	BaseURL            string `json:"base_url"`
 	AteapiAddr         string `json:"ateapi_addr"`
 	AtenetRouterAddr   string `json:"atenet_router_addr"`
 	ValkeyAddr         string `json:"valkey_addr"`
@@ -138,6 +139,9 @@ func BuildSecret(cfg Config) *corev1.Secret {
 	}
 	if cfg.APIKey != "" {
 		stringData["ANTHROPIC_API_KEY"] = cfg.APIKey
+	}
+	if cfg.BaseURL != "" {
+		stringData["ANTHROPIC_BASE_URL"] = cfg.BaseURL
 	}
 
 	return &corev1.Secret{
@@ -298,6 +302,12 @@ func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 		env = append(env, atev1alpha1.EnvVar{
 			Name:  "ANTHROPIC_ENVIRONMENT_ID",
 			Value: &cfg.EnvironmentID,
+		})
+	}
+	if cfg.BaseURL != "" {
+		env = append(env, atev1alpha1.EnvVar{
+			Name:  "ANTHROPIC_BASE_URL",
+			Value: &cfg.BaseURL,
 		})
 	}
 

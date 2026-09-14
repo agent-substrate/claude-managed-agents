@@ -36,7 +36,7 @@ See [DESIGN.md](DESIGN.md) for detailed architecture, event queuing, and actor l
 ### Prerequisites
 
 1. An [Agent Substrate](https://github.com/agent-substrate/substrate) cluster.
-2. Anthropic credentials: `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and optional `ANTHROPIC_ENVIRONMENT_KEY` (see [Creating a Self-Hosted Environment](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes#create-an-environment)).
+2. Anthropic credentials: `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and optional `ANTHROPIC_ENVIRONMENT_KEY` (see [Creating a Self-Hosted Environment](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes#create-an-environment)). To use a custom Anthropic API URL instead of the public API, also set `ANTHROPIC_BASE_URL` (or pass `--anthropic-base-url`).
 3. Google Cloud project (`GOOGLE_CLOUD_PROJECT`) and GCS bucket for snapshots (`gs://$GOOGLE_CLOUD_PROJECT/ate-ant/`).
 4. Podman (or Docker) for building container images.
 

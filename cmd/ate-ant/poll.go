@@ -43,6 +43,8 @@ func newPollCommand() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().StringVar(&cfg.BaseURL, "anthropic-base-url", "",
+		"custom Anthropic API base URL (default $ANTHROPIC_BASE_URL, else the public API)")
 	cmd.Flags().Int64Var(&cfg.HandoffTTLSeconds, "handoff-ttl-seconds", poller.DefaultHandoffTTLSeconds,
 		"lease the poller takes on each work item before queueing it: the time the controller has to start the sandbox before the lease lapses and the item is requeued")
 

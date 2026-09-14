@@ -42,6 +42,7 @@ const (
 // Config configures the Poller client and lifecycle.
 type Config struct {
 	Client         *anthropic.Client
+	BaseURL        string
 	APIKey         string
 	EnvironmentID  string
 	EnvironmentKey string
@@ -64,6 +65,9 @@ func (c *Config) Defaults() {
 	}
 	if c.APIKey == "" {
 		c.APIKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if c.BaseURL == "" {
+		c.BaseURL = os.Getenv("ANTHROPIC_BASE_URL")
 	}
 	if c.PollInterval <= 0 {
 		c.PollInterval = defaultPollInterval
@@ -94,6 +98,9 @@ func New(cfg Config) (*Poller, error) {
 	if client == nil {
 		opts := []option.RequestOption{
 			option.WithoutEnvironmentDefaults(),
+		}
+		if cfg.BaseURL != "" {
+			opts = append(opts, option.WithBaseURL(cfg.BaseURL))
 		}
 		if cfg.APIKey != "" {
 			opts = append(opts, option.WithAPIKey(cfg.APIKey))

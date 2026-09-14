@@ -31,6 +31,9 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 			if cfg.APIKey == "" {
 				cfg.APIKey = os.Getenv("ANTHROPIC_API_KEY")
 			}
+			if cfg.BaseURL == "" {
+				cfg.BaseURL = os.Getenv("ANTHROPIC_BASE_URL")
+			}
 			if err := cfg.Validate(); err != nil {
 				return err
 			}
@@ -48,6 +51,7 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (e.g. env_...)")
 	cmd.Flags().StringVar(&cfg.EnvironmentKey, "anthropic-env-key", "", "Anthropic environment key")
 	cmd.Flags().StringVar(&cfg.APIKey, "anthropic-api-key", "", "Anthropic API key")
+	cmd.Flags().StringVar(&cfg.BaseURL, "anthropic-base-url", "", "custom Anthropic API base URL (default $ANTHROPIC_BASE_URL, else the public API)")
 	cmd.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", manifest.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", manifest.DefaultAtenetRouterAddr, "Substrate atenet HTTP router endpoint")
 	cmd.Flags().StringVar(&cfg.ValkeyAddr, "valkey-addr", manifest.DefaultValkeyAddr, "Valkey service endpoint")
