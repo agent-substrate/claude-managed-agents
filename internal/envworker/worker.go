@@ -56,15 +56,14 @@ func helperReqOpts(credential string, helper helperTag) ([]option.RequestOption,
 
 // EnvironmentWorkerOptions configures an EnvironmentWorker.
 type EnvironmentWorkerOptions struct {
-	EnvironmentID     string
-	Workdir           string
-	UnrestrictedPaths bool
-	MaxFileBytes      int64
-	Tools             []anthropic.BetaTool
-	ToolsFunc         func(env *agenttoolset.AgentToolContext) []anthropic.BetaTool
-	MaxIdle           *time.Duration
-	RequestOptions    []option.RequestOption
-	Logger            *slog.Logger
+	EnvironmentID  string
+	Workdir        string
+	MaxFileBytes   int64
+	Tools          []anthropic.BetaTool
+	ToolsFunc      func(env *agenttoolset.AgentToolContext) []anthropic.BetaTool
+	MaxIdle        *time.Duration
+	RequestOptions []option.RequestOption
+	Logger         *slog.Logger
 }
 
 // HandleItemOptions configures a work item execution.
@@ -151,9 +150,8 @@ func (w *EnvironmentWorker) HandleItem(ctx context.Context, opts HandleItemOptio
 	}()
 
 	env := &agenttoolset.AgentToolContext{
-		Workdir:           w.opts.Workdir,
-		UnrestrictedPaths: w.opts.UnrestrictedPaths,
-		MaxFileBytes:      w.opts.MaxFileBytes,
+		Workdir:      w.opts.Workdir,
+		MaxFileBytes: w.opts.MaxFileBytes,
 	}
 
 	if err := env.SetupSkills(sessCtx, w.client, sessionID, hbStopOpts...); err != nil {

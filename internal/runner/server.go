@@ -13,7 +13,6 @@ import (
 
 	"github.com/agent-substrate/claude-managed-agents/internal/envworker"
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/tools/agenttoolset"
 )
 
 const (
@@ -96,27 +95,18 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 // The environment id comes from ANTHROPIC_ENVIRONMENT_ID, which the actor
 // template injects; the item's credential is the sessions token in the work
 // secret. The tools are the standard agent toolset rooted at the process
-// working directory, with the file tools allowed outside it.
+// working directory, which the file tools are confined to.
 // The lease token and the work secret never reach the logs.
 func handleItem(ctx context.Context, req WorkRequest) error {
 	workdir, err := os.Getwd()
 	if err != nil {
 		workdir = "."
 	}
-	env := &agenttoolset.AgentToolContext{
-		Workdir:           workdir,
-		UnrestrictedPaths: true,
-	}
-	toolset := agenttoolset.BetaAgentToolset20260401(env)
-	defer agenttoolset.CloseAll(toolset)
-
 	maxIdle := workerMaxIdle
 	worker := envworker.NewEnvironmentWorker(anthropic.NewClient(), envworker.EnvironmentWorkerOptions{
-		Tools:             toolset,
-		Workdir:           workdir,
-		UnrestrictedPaths: true,
-		MaxIdle:           &maxIdle,
-		Logger:            slog.Default(),
+		Workdir: workdir,
+		MaxIdle: &maxIdle,
+		Logger:  slog.Default(),
 	})
 	return worker.HandleItem(ctx, envworker.HandleItemOptions{
 		WorkID:                req.WorkID,
