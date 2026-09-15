@@ -2,6 +2,7 @@ package manifest
 
 import (
 	"bytes"
+	"maps"
 	"strings"
 	"testing"
 
@@ -177,18 +178,18 @@ func TestWriteManifests(t *testing.T) {
 	}
 }
 
-func TestBuildManifestsWithAPIKey(t *testing.T) {
+func TestBuildManifestsWithEnvironmentSecrets(t *testing.T) {
 	cfg := testConfig()
-	cfg.EnvironmentKey = ""
-	cfg.APIKey = "sk-ant-api03-test-key"
-
 	objs := BuildManifests(cfg)
 	secret := find[*corev1.Secret](t, objs, defaultSecretName)
-	if secret.StringData["ANTHROPIC_API_KEY"] != "sk-ant-api03-test-key" {
-		t.Errorf("secret ANTHROPIC_API_KEY = %q", secret.StringData["ANTHROPIC_API_KEY"])
+
+	want := map[string]string{
+		"ANTHROPIC_ENVIRONMENT_ID":  "env_test_123",
+		"ANTHROPIC_ENVIRONMENT_KEY": "key_test_123",
+		"VALKEY_ADDR":               DefaultValkeyAddr,
 	}
-	if _, ok := secret.StringData["ANTHROPIC_ENVIRONMENT_KEY"]; ok {
-		t.Errorf("expected no ANTHROPIC_ENVIRONMENT_KEY in secret")
+	if !maps.Equal(secret.StringData, want) {
+		t.Errorf("secret data = %v, want %v", secret.StringData, want)
 	}
 
 	template := find[*atev1alpha1.ActorTemplate](t, objs, cfg.Template)

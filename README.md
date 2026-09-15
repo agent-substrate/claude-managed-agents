@@ -36,7 +36,7 @@ See [DESIGN.md](DESIGN.md) for detailed architecture, event queuing, and actor l
 ### Prerequisites
 
 1. An [Agent Substrate](https://github.com/agent-substrate/substrate) cluster.
-2. Anthropic credentials: `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and optional `ANTHROPIC_ENVIRONMENT_KEY` (see [Creating a Self-Hosted Environment](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes#create-an-environment)). To use a custom Anthropic API URL instead of the public API, also set `ANTHROPIC_BASE_URL` (or pass `--anthropic-base-url`).
+2. Anthropic environment credentials: `ANTHROPIC_ENVIRONMENT_ID` and `ANTHROPIC_ENVIRONMENT_KEY` (see [Creating a Self-Hosted Environment](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes#create-an-environment)). To use a custom Anthropic API URL instead of the public API, also set `ANTHROPIC_BASE_URL` (or pass `--anthropic-base-url`).
 3. Google Cloud project (`GOOGLE_CLOUD_PROJECT`) and GCS bucket for snapshots (`gs://$GOOGLE_CLOUD_PROJECT/ate-ant/`).
 4. Podman (or Docker) for building container images.
 
@@ -58,7 +58,6 @@ go run ./cmd/ate-ant manifest \
   --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:ec79dd62224d934c8219e5f1b1ed14b1e2b80f7ce4db1006f2efede5f953939a \
   --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
   --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ \
-  --anthropic-api-key "$ANTHROPIC_API_KEY" \
   --anthropic-env-id  "$ANTHROPIC_ENVIRONMENT_ID" \
   --anthropic-env-key "$ANTHROPIC_ENVIRONMENT_KEY" | kubectl apply -f -
 ```
