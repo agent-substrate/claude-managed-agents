@@ -13,7 +13,6 @@ import (
 
 	"github.com/agent-substrate/claude-managed-agents/internal/envworker"
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/tools/agenttoolset"
 )
 
 const (
@@ -34,6 +33,9 @@ type WorkRequest struct {
 	// first expected_last_heartbeat, continuing that lease instead of
 	// claiming a new one. Empty means the worker claims the lease itself.
 	LastHeartbeat string `json:"last_heartbeat,omitempty"`
+	// WorkSecret is the per-delivery secret payload from the poll response.
+	// The sessions token inside it authorizes this item's calls.
+	WorkSecret string `json:"work_secret,omitempty"`
 }
 
 // WorkResponse is the JSON payload returned by the runner HTTP server.
@@ -90,35 +92,27 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 }
 
 // handleItem runs one work item's session with the in-process environment worker.
-// The environment id and key come from ANTHROPIC_ENVIRONMENT_ID and
-// ANTHROPIC_ENVIRONMENT_KEY, which the actor template injects. The tools are
-// the standard agent toolset rooted at the process working directory, with the
-// file tools allowed outside it.
-// The lease token and the environment key never reach the logs.
+// The environment id comes from ANTHROPIC_ENVIRONMENT_ID, which the actor
+// template injects; the item's credential is the sessions token in the work
+// secret. The tools are the standard agent toolset rooted at the process
+// working directory, which the file tools are confined to.
+// The lease token and the work secret never reach the logs.
 func handleItem(ctx context.Context, req WorkRequest) error {
 	workdir, err := os.Getwd()
 	if err != nil {
 		workdir = "."
 	}
-	env := &agenttoolset.AgentToolContext{
-		Workdir:           workdir,
-		UnrestrictedPaths: true,
-	}
-	toolset := agenttoolset.BetaAgentToolset20260401(env)
-	defer agenttoolset.CloseAll(toolset)
-
 	maxIdle := workerMaxIdle
 	worker := envworker.NewEnvironmentWorker(anthropic.NewClient(), envworker.EnvironmentWorkerOptions{
-		Tools:             toolset,
-		Workdir:           workdir,
-		UnrestrictedPaths: true,
-		MaxIdle:           &maxIdle,
-		Logger:            slog.Default(),
+		Workdir: workdir,
+		MaxIdle: &maxIdle,
+		Logger:  slog.Default(),
 	})
 	return worker.HandleItem(ctx, envworker.HandleItemOptions{
 		WorkID:                req.WorkID,
 		SessionID:             req.SessionID,
 		ExpectedLastHeartbeat: req.LastHeartbeat,
+		WorkSecret:            req.WorkSecret,
 	})
 }
 
@@ -247,6 +241,7 @@ func (r *Runner) StartWork(ctx context.Context, req WorkRequest) error {
 		SessionID:     sessionID,
 		WorkID:        workID,
 		LastHeartbeat: strings.TrimSpace(req.LastHeartbeat),
+		WorkSecret:    strings.TrimSpace(req.WorkSecret),
 	}
 
 	r.logger().Info("Running worker",

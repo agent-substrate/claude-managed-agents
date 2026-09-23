@@ -12,9 +12,10 @@ func newRunCommand() *cobra.Command {
 		Use:   "run",
 		Short: "Run the HTTP server inside a Substrate actor sandbox",
 		Long: `Run runs a lightweight HTTP server inside a Substrate actor container.
-When it receives POST /work with {session_id, work_id, last_heartbeat}, it
-services the work item in-process: it runs the session's tool calls and
-continues the work-item lease from the given heartbeat token.`,
+When it receives POST /work with {session_id, work_id, last_heartbeat, work_secret},
+it services the work item in-process: it runs the session's tool calls and
+continues the work-item lease from the given heartbeat token, authenticating
+with the sessions token carried in the work secret.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := runner.NewRunner(runner.RunnerConfig{

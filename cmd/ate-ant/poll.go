@@ -37,7 +37,7 @@ func newPollCommand() *cobra.Command {
 			return p.Poll(ctx, func(ctx context.Context, claim poller.Claim) error {
 				sessID := claim.Work.Data.ID
 				workID := claim.Work.ID
-				_, err := em.QueueResume(ctx, sessID, workID, claim.LastHeartbeat)
+				_, err := em.QueueResume(ctx, sessID, workID, claim.LastHeartbeat, claim.Work.Secret)
 				return err
 			})
 		},

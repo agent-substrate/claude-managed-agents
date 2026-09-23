@@ -98,10 +98,11 @@ func TestRunnerStartWorkExecution(t *testing.T) {
 		SessionID:     "sesn_test_123",
 		WorkID:        "work_test_123",
 		LastHeartbeat: "2026-08-16T22:00:01Z",
+		WorkSecret:    "c2VjcmV0",
 	}); err != nil {
 		t.Fatalf("StartWork: %v", err)
 	}
-	if got.SessionID != "sesn_test_123" || got.WorkID != "work_test_123" || got.LastHeartbeat != "2026-08-16T22:00:01Z" {
+	if got.SessionID != "sesn_test_123" || got.WorkID != "work_test_123" || got.LastHeartbeat != "2026-08-16T22:00:01Z" || got.WorkSecret != "c2VjcmV0" {
 		t.Errorf("handleItem received %+v", got)
 	}
 

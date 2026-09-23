@@ -3,11 +3,14 @@ package envworker
 import (
 	"cmp"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
@@ -33,18 +36,18 @@ func withHelperTag(v helperTag) option.RequestOption {
 	return option.WithHeader("x-stainless-helper", string(v))
 }
 
-func bearerReqOpts(environmentKey string) ([]option.RequestOption, error) {
-	if environmentKey == "" {
-		return nil, errors.New("environments: environment key is required")
+func bearerReqOpts(credential string) ([]option.RequestOption, error) {
+	if credential == "" {
+		return nil, errors.New("environments: a sessions token is required")
 	}
 	return []option.RequestOption{
 		option.WithHeaderDel("X-Api-Key"),
-		option.WithAuthToken(environmentKey),
+		option.WithAuthToken(credential),
 	}, nil
 }
 
-func helperReqOpts(environmentKey string, helper helperTag) ([]option.RequestOption, error) {
-	opts, err := bearerReqOpts(environmentKey)
+func helperReqOpts(credential string, helper helperTag) ([]option.RequestOption, error) {
+	opts, err := bearerReqOpts(credential)
 	if err != nil {
 		return nil, err
 	}
@@ -53,16 +56,14 @@ func helperReqOpts(environmentKey string, helper helperTag) ([]option.RequestOpt
 
 // EnvironmentWorkerOptions configures an EnvironmentWorker.
 type EnvironmentWorkerOptions struct {
-	EnvironmentID     string
-	EnvironmentKey    string
-	Workdir           string
-	UnrestrictedPaths bool
-	MaxFileBytes      int64
-	Tools             []anthropic.BetaTool
-	ToolsFunc         func(env *agenttoolset.AgentToolContext) []anthropic.BetaTool
-	MaxIdle           *time.Duration
-	RequestOptions    []option.RequestOption
-	Logger            *slog.Logger
+	EnvironmentID  string
+	Workdir        string
+	MaxFileBytes   int64
+	Tools          []anthropic.BetaTool
+	ToolsFunc      func(env *agenttoolset.AgentToolContext) []anthropic.BetaTool
+	MaxIdle        *time.Duration
+	RequestOptions []option.RequestOption
+	Logger         *slog.Logger
 }
 
 // HandleItemOptions configures a work item execution.
@@ -70,8 +71,8 @@ type HandleItemOptions struct {
 	WorkID                string
 	EnvironmentID         string
 	SessionID             string
-	EnvironmentKey        string
 	ExpectedLastHeartbeat string
+	WorkSecret            string
 }
 
 // EnvironmentWorker executes session work items with tool dispatch and heartbeat management.
@@ -98,18 +99,28 @@ func (w *EnvironmentWorker) HandleItem(ctx context.Context, opts HandleItemOptio
 	workID := cmp.Or(opts.WorkID, os.Getenv("ANTHROPIC_WORK_ID"))
 	environmentID := cmp.Or(opts.EnvironmentID, os.Getenv("ANTHROPIC_ENVIRONMENT_ID"))
 	sessionID := cmp.Or(opts.SessionID, os.Getenv("ANTHROPIC_SESSION_ID"))
-	environmentKey := cmp.Or(opts.EnvironmentKey, w.opts.EnvironmentKey, os.Getenv("ANTHROPIC_ENVIRONMENT_KEY"))
 	expectedLastHeartbeat := cmp.Or(opts.ExpectedLastHeartbeat, os.Getenv("ANTHROPIC_WORK_LAST_HEARTBEAT"))
+	workSecret := cmp.Or(opts.WorkSecret, os.Getenv("ANTHROPIC_WORK_SECRET"))
 
 	for _, req := range []struct{ name, val, env string }{
 		{"work_id", workID, "ANTHROPIC_WORK_ID"},
 		{"environment_id", environmentID, "ANTHROPIC_ENVIRONMENT_ID"},
 		{"session_id", sessionID, "ANTHROPIC_SESSION_ID"},
-		{"environment_key", environmentKey, "ANTHROPIC_ENVIRONMENT_KEY"},
 	} {
 		if req.val == "" {
 			return fmt.Errorf("EnvironmentWorker.HandleItem: %s is required — pass it in HandleItemOptions or set %s", req.name, req.env)
 		}
+	}
+
+	log := w.opts.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	log = log.With(slog.String("work_id", workID), slog.String("session_id", sessionID))
+
+	sessionsToken := sessionsTokenFromSecret(workSecret)
+	if sessionsToken == "" {
+		return errors.New("EnvironmentWorker.HandleItem: the work item carries no sessions token — pass the poll response's secret as WorkSecret or set ANTHROPIC_WORK_SECRET")
 	}
 
 	work := &anthropic.BetaSelfHostedWork{
@@ -120,13 +131,7 @@ func (w *EnvironmentWorker) HandleItem(ctx context.Context, opts HandleItemOptio
 		},
 	}
 
-	log := w.opts.Logger
-	if log == nil {
-		log = slog.Default()
-	}
-	log = log.With(slog.String("work_id", work.ID), slog.String("session_id", sessionID))
-
-	helperOpts, err := helperReqOpts(environmentKey, helperEnvironmentsWorker)
+	helperOpts, err := helperReqOpts(sessionsToken, helperEnvironmentsWorker)
 	if err != nil {
 		return err
 	}
@@ -145,9 +150,8 @@ func (w *EnvironmentWorker) HandleItem(ctx context.Context, opts HandleItemOptio
 	}()
 
 	env := &agenttoolset.AgentToolContext{
-		Workdir:           w.opts.Workdir,
-		UnrestrictedPaths: w.opts.UnrestrictedPaths,
-		MaxFileBytes:      w.opts.MaxFileBytes,
+		Workdir:      w.opts.Workdir,
+		MaxFileBytes: w.opts.MaxFileBytes,
 	}
 
 	if err := env.SetupSkills(sessCtx, w.client, sessionID, hbStopOpts...); err != nil {
@@ -177,7 +181,7 @@ func (w *EnvironmentWorker) HandleItem(ctx context.Context, opts HandleItemOptio
 		defer agenttoolset.CloseAll(tools)
 	}
 
-	runnerBearerOpts, err := bearerReqOpts(environmentKey)
+	runnerBearerOpts, err := bearerReqOpts(sessionsToken)
 	if err != nil {
 		return err
 	}
@@ -310,6 +314,24 @@ func runHeartbeat(ctx context.Context, cancel context.CancelFunc, client anthrop
 			return lost
 		}
 	}
+}
+
+// sessionsTokenFromSecret extracts the sessions token from a work item's
+// secret payload: URL-safe base64, with or without padding, of a JSON object
+// whose sessions_token is the bearer credential for that item. It returns ""
+// when the payload is missing, does not decode, or carries no token.
+func sessionsTokenFromSecret(secret string) string {
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(secret, "="))
+	if err != nil {
+		return ""
+	}
+	var payload struct {
+		SessionsToken string `json:"sessions_token"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	return payload.SessionsToken
 }
 
 func clampDur(v, lo, hi time.Duration) time.Duration {

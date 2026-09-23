@@ -61,6 +61,7 @@ func newControllerCommand() *cobra.Command {
 							SessionID:     ev.SessionID,
 							WorkID:        ev.WorkID,
 							LastHeartbeat: ev.LastHeartbeat,
+							WorkSecret:    ev.WorkSecret,
 						}
 						if err := am.Notify(ctx, ev.SessionID, payload); err != nil {
 							return fmt.Errorf("notifying session %s: %w", ev.SessionID, err)

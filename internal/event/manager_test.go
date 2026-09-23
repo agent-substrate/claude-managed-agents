@@ -33,11 +33,11 @@ func TestManagerUnacknowledgedEventReplayed(t *testing.T) {
 	ctx := context.Background()
 
 	// Queue two events
-	ev1, err := mgr.QueueResume(ctx, "session-1", "work-100", "2026-08-16T22:00:01Z")
+	ev1, err := mgr.QueueResume(ctx, "session-1", "work-100", "2026-08-16T22:00:01Z", "")
 	if err != nil {
 		t.Fatalf("QueueResume: %v", err)
 	}
-	ev2, err := mgr.QueueResume(ctx, "session-2", "work-200", "")
+	ev2, err := mgr.QueueResume(ctx, "session-2", "work-200", "", "")
 	if err != nil {
 		t.Fatalf("QueueResume: %v", err)
 	}
@@ -115,11 +115,11 @@ func TestManagerQueueAndPop(t *testing.T) {
 	ctx := context.Background()
 
 	// QueueResume
-	ev1, err := mgr.QueueResume(ctx, "session-1", "work-100", "2026-08-16T22:00:01Z")
+	ev1, err := mgr.QueueResume(ctx, "session-1", "work-100", "2026-08-16T22:00:01Z", "c2VjcmV0")
 	if err != nil {
 		t.Fatalf("QueueResume: %v", err)
 	}
-	if ev1.SessionID != "session-1" || ev1.WorkID != "work-100" || ev1.LastHeartbeat != "2026-08-16T22:00:01Z" || ev1.Action != ActionResume || ev1.ID == "" {
+	if ev1.SessionID != "session-1" || ev1.WorkID != "work-100" || ev1.LastHeartbeat != "2026-08-16T22:00:01Z" || ev1.WorkSecret != "c2VjcmV0" || ev1.Action != ActionResume || ev1.ID == "" {
 		t.Errorf("unexpected ev1: %+v", ev1)
 	}
 
@@ -137,7 +137,7 @@ func TestManagerQueueAndPop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pop 1: %v", err)
 	}
-	if pop1 == nil || pop1.SessionID != "session-1" || pop1.WorkID != "work-100" || pop1.Action != ActionResume || pop1.ID != ev1.ID {
+	if pop1 == nil || pop1.SessionID != "session-1" || pop1.WorkID != "work-100" || pop1.WorkSecret != "c2VjcmV0" || pop1.Action != ActionResume || pop1.ID != ev1.ID {
 		t.Fatalf("unexpected pop1: %+v", pop1)
 	}
 
@@ -150,9 +150,12 @@ func TestManagerQueueAndPop(t *testing.T) {
 		t.Fatalf("expected pending ev1 replayed before ACK, got %+v", pop1Pending)
 	}
 
-	// Acknowledge ev1
+	// Acknowledge ev1; the entry, and the work secret in it, leave the stream.
 	if err := mgr.ack(ctx, pop1); err != nil {
 		t.Fatalf("Ack ev1: %v", err)
+	}
+	if entries, err := mini.Stream(mgr.streamKey); err != nil || len(entries) != 1 || entries[0].ID != ev2.ID {
+		t.Fatalf("stream after ack = %+v (err %v), want only ev2", entries, err)
 	}
 
 	// Pop second event (ev2)
@@ -227,7 +230,7 @@ func TestManagerReconcile(t *testing.T) {
 	}()
 
 	// Queue events
-	if _, err := mgr.QueueResume(ctx, "session-resume-1", "work-1", ""); err != nil {
+	if _, err := mgr.QueueResume(ctx, "session-resume-1", "work-1", "", ""); err != nil {
 		t.Fatalf("QueueResume: %v", err)
 	}
 	if _, err := mgr.QueueSuspend(ctx, "session-suspend-1"); err != nil {
@@ -312,7 +315,7 @@ func TestManagerReconcile_MultipleConsumersDeduplication(t *testing.T) {
 
 	// Queue 10 events
 	for i := 1; i <= 10; i++ {
-		_, err := consumers[0].QueueResume(ctx, fmt.Sprintf("session-%d", i), fmt.Sprintf("work-%d", i), "")
+		_, err := consumers[0].QueueResume(ctx, fmt.Sprintf("session-%d", i), fmt.Sprintf("work-%d", i), "", "")
 		if err != nil {
 			t.Fatalf("QueueResume %d: %v", i, err)
 		}
@@ -331,5 +334,3 @@ func TestManagerReconcile_MultipleConsumersDeduplication(t *testing.T) {
 		t.Errorf("processedCount = %d, want exactly 10 (each event popped and processed once)", count)
 	}
 }
-
-

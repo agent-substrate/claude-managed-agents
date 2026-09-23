@@ -288,12 +288,6 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 // BuildActorTemplate constructs the Substrate ActorTemplate CRD.
 func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
 	var env []atev1alpha1.EnvVar
-	if cfg.EnvironmentKey != "" {
-		env = append(env, atev1alpha1.EnvVar{
-			Name:  "ANTHROPIC_ENVIRONMENT_KEY",
-			Value: &cfg.EnvironmentKey,
-		})
-	}
 	if cfg.EnvironmentID != "" {
 		env = append(env, atev1alpha1.EnvVar{
 			Name:  "ANTHROPIC_ENVIRONMENT_ID",
