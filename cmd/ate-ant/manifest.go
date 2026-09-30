@@ -15,6 +15,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
@@ -27,13 +28,16 @@ func newManifestCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "manifest",
 		Aliases: []string{"deploy"},
-		Short:   "Generate Kubernetes and Agent Substrate manifests",
+		Short:   "Generate Kubernetes manifests to deploy the system",
 		Long: `Manifest generates Kubernetes manifests for everything needed to run Anthropic's
 self-hosted sandbox worker on a cluster with Agent Substrate installed:
 the target namespace, Secret for credentials, a WorkerPool of pre-warmed workers,
-the ActorTemplate for sandboxed execution, and the worker daemon Deployment.
+and the worker daemon Deployments.
 
-It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
+It prints YAML to stdout without touching the cluster; pipe to kubectl apply.
+
+To generate the Substrate ActorTemplate manifest (for kubectl-ate), use
+the "template" subcommand: ate-ant manifest template`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cfg.EnvironmentID == "" {
@@ -59,9 +63,8 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 	cmd.Flags().StringVar(&cfg.Template, "template", manifest.DefaultTemplate, "Substrate ActorTemplate name")
 	cmd.Flags().StringVar(&cfg.WorkerImage, "worker-image", "", "digest-pinned worker container image (repo@sha256:...)")
 	cmd.Flags().StringVar(&cfg.AteomImage, "ateom-image", "", "digest-pinned ateom image for the worker pool (e.g. ateom-gvisor)")
-	cmd.Flags().StringVar(&cfg.SnapshotsBucket, "snapshots-bucket", "", "object-storage bucket (with prefix) for actor snapshots (e.g. gs://bucket/snapshots/)")
 	cmd.Flags().Int32Var(&cfg.Replicas, "replicas", manifest.DefaultReplicas, "number of pre-warmed worker pool pods")
-	cmd.Flags().Int32Var(&cfg.ControllerReplicas, "controller-replicas", manifest.DefaultControllerReplicas, "number of controller daemon pods")
+	cmd.Flags().Int32Var(&cfg.ControllerReplicas, "controller-replicas", 0, "number of controller daemon pods (defaults to --replicas)")
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (e.g. env_...)")
 	cmd.Flags().StringVar(&cfg.EnvironmentKey, "anthropic-env-key", "", "Anthropic environment key")
 	cmd.Flags().StringVar(&cfg.APIKey, "anthropic-api-key", "", "Anthropic API key")
@@ -73,6 +76,51 @@ It prints YAML to stdout without touching the cluster; pipe to kubectl apply.`,
 
 	_ = cmd.MarkFlagRequired("worker-image")
 	_ = cmd.MarkFlagRequired("ateom-image")
+
+	cmd.AddCommand(newManifestTemplateCommand())
+
+	return cmd
+}
+
+func newManifestTemplateCommand() *cobra.Command {
+	cfg := manifest.Config{}
+
+	cmd := &cobra.Command{
+		Use:   "template",
+		Short: "Generate Substrate ActorTemplate manifest",
+		Long: `Generate Substrate ActorTemplate manifest to register with kubectl-ate.
+It prints YAML to stdout without touching the cluster.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cfg.EnvironmentID == "" {
+				cfg.EnvironmentID = os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
+			}
+			if cfg.EnvironmentKey == "" {
+				cfg.EnvironmentKey = os.Getenv("ANTHROPIC_ENVIRONMENT_KEY")
+			}
+			if cfg.BaseURL == "" {
+				cfg.BaseURL = os.Getenv("ANTHROPIC_BASE_URL")
+			}
+			if cfg.WorkerImage == "" {
+				return errors.New("--worker-image is required")
+			}
+			if cfg.SnapshotsBucket == "" {
+				return errors.New("--snapshots-bucket is required")
+			}
+			cfg.Defaults()
+			return manifest.WriteActorTemplate(cmd.OutOrStdout(), manifest.BuildActorTemplate(cfg))
+		},
+	}
+
+	cmd.Flags().StringVar(&cfg.Namespace, "namespace", manifest.DefaultNamespace, "Kubernetes namespace / atespace for the ActorTemplate")
+	cmd.Flags().StringVar(&cfg.Template, "template", manifest.DefaultTemplate, "Substrate ActorTemplate name")
+	cmd.Flags().StringVar(&cfg.WorkerImage, "worker-image", "", "digest-pinned worker container image (repo@sha256:...)")
+	cmd.Flags().StringVar(&cfg.SnapshotsBucket, "snapshots-bucket", "", "object-storage bucket (with prefix) for actor snapshots (e.g. gs://bucket/snapshots/)")
+	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (e.g. env_...)")
+	cmd.Flags().StringVar(&cfg.EnvironmentKey, "anthropic-env-key", "", "Anthropic environment key")
+	cmd.Flags().StringVar(&cfg.BaseURL, "anthropic-base-url", "", "custom Anthropic API base URL (default $ANTHROPIC_BASE_URL, else the public API)")
+
+	_ = cmd.MarkFlagRequired("worker-image")
 	_ = cmd.MarkFlagRequired("snapshots-bucket")
 
 	return cmd

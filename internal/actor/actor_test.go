@@ -59,12 +59,14 @@ func TestActorName(t *testing.T) {
 }
 
 type fakeControlClient struct {
+	ateapipb.ControlClient
 	mu sync.Mutex
 
-	createdAtespaces map[string]*ateapipb.Atespace
-	createdActors    map[string]*ateapipb.Actor
-	resumedActors    map[string]int
-	suspendedActors  map[string]int
+	createdAtespaces       map[string]*ateapipb.Atespace
+	createdActors          map[string]*ateapipb.Actor
+	createdEgressPolicies  map[string]*ateapipb.EgressPolicy
+	resumedActors          map[string]int
+	suspendedActors        map[string]int
 
 	resumeErr  error
 	createErr  error
@@ -73,11 +75,24 @@ type fakeControlClient struct {
 
 func newFakeControlClient() *fakeControlClient {
 	return &fakeControlClient{
-		createdAtespaces: make(map[string]*ateapipb.Atespace),
-		createdActors:    make(map[string]*ateapipb.Actor),
-		resumedActors:    make(map[string]int),
-		suspendedActors:  make(map[string]int),
+		createdAtespaces:      make(map[string]*ateapipb.Atespace),
+		createdActors:         make(map[string]*ateapipb.Actor),
+		createdEgressPolicies: make(map[string]*ateapipb.EgressPolicy),
+		resumedActors:         make(map[string]int),
+		suspendedActors:       make(map[string]int),
 	}
+}
+
+func (f *fakeControlClient) CreateActorEgressPolicy(ctx context.Context, in *ateapipb.CreateActorEgressPolicyRequest, opts ...grpc.CallOption) (*ateapipb.EgressPolicy, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := in.GetActor().GetAtespace() + "/" + in.GetActor().GetName()
+	if _, ok := f.createdEgressPolicies[key]; ok {
+		return nil, status.Error(codes.AlreadyExists, "egress policy already exists")
+	}
+	policy := proto.Clone(in.GetEgressPolicy()).(*ateapipb.EgressPolicy)
+	f.createdEgressPolicies[key] = policy
+	return policy, nil
 }
 
 func (f *fakeControlClient) GetActor(ctx context.Context, in *ateapipb.GetActorRequest, opts ...grpc.CallOption) (*ateapipb.Actor, error) {
@@ -101,13 +116,9 @@ func (f *fakeControlClient) CreateActor(ctx context.Context, in *ateapipb.Create
 		return nil, status.Error(codes.AlreadyExists, "actor already exists")
 	}
 	actor := proto.Clone(in.GetActor()).(*ateapipb.Actor)
-	actor.Status = ateapipb.Actor_STATUS_RUNNING
+	actor.Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING}
 	f.createdActors[key] = actor
 	return proto.Clone(actor).(*ateapipb.Actor), nil
-}
-
-func (f *fakeControlClient) UpdateActor(ctx context.Context, in *ateapipb.UpdateActorRequest, opts ...grpc.CallOption) (*ateapipb.UpdateActorResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
 }
 
 func (f *fakeControlClient) SuspendActor(ctx context.Context, in *ateapipb.SuspendActorRequest, opts ...grpc.CallOption) (*ateapipb.SuspendActorResponse, error) {
@@ -118,14 +129,10 @@ func (f *fakeControlClient) SuspendActor(ctx context.Context, in *ateapipb.Suspe
 	}
 	key := in.GetActor().Atespace + "/" + in.GetActor().Name
 	if a, ok := f.createdActors[key]; ok {
-		a.Status = ateapipb.Actor_STATUS_SUSPENDED
+		a.Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED}
 	}
 	f.suspendedActors[key]++
 	return &ateapipb.SuspendActorResponse{}, nil
-}
-
-func (f *fakeControlClient) PauseActor(ctx context.Context, in *ateapipb.PauseActorRequest, opts ...grpc.CallOption) (*ateapipb.PauseActorResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
 }
 
 func (f *fakeControlClient) ResumeActor(ctx context.Context, in *ateapipb.ResumeActorRequest, opts ...grpc.CallOption) (*ateapipb.ResumeActorResponse, error) {
@@ -138,40 +145,10 @@ func (f *fakeControlClient) ResumeActor(ctx context.Context, in *ateapipb.Resume
 	if _, ok := f.createdActors[key]; !ok {
 		return nil, status.Error(codes.NotFound, "actor not found")
 	}
-	f.createdActors[key].Status = ateapipb.Actor_STATUS_RUNNING
+	f.createdActors[key].Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING}
 	f.resumedActors[key]++
 	return &ateapipb.ResumeActorResponse{Actor: proto.Clone(f.createdActors[key]).(*ateapipb.Actor), Resumed: true}, nil
 }
-
-func (f *fakeControlClient) DeleteActor(ctx context.Context, in *ateapipb.DeleteActorRequest, opts ...grpc.CallOption) (*ateapipb.Actor, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
-}
-
-func (f *fakeControlClient) GetActorSnapshot(ctx context.Context, in *ateapipb.GetActorSnapshotRequest, opts ...grpc.CallOption) (*ateapipb.ActorSnapshot, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
-}
-
-func (f *fakeControlClient) ListActorSnapshots(ctx context.Context, in *ateapipb.ListActorSnapshotsRequest, opts ...grpc.CallOption) (*ateapipb.ListActorSnapshotsResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
-}
-
-func (f *fakeControlClient) TagActorSnapshot(ctx context.Context, in *ateapipb.TagActorSnapshotRequest, opts ...grpc.CallOption) (*ateapipb.ActorSnapshotTag, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
-}
-
-func (f *fakeControlClient) UpdateActorSnapshotTag(ctx context.Context, in *ateapipb.UpdateActorSnapshotTagRequest, opts ...grpc.CallOption) (*ateapipb.ActorSnapshotTag, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
-}
-
-func (f *fakeControlClient) DeleteActorSnapshotTag(ctx context.Context, in *ateapipb.DeleteActorSnapshotTagRequest, opts ...grpc.CallOption) (*ateapipb.ActorSnapshotTag, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
-}
-
-func (f *fakeControlClient) ListWorkers(ctx context.Context, in *ateapipb.ListWorkersRequest, opts ...grpc.CallOption) (*ateapipb.ListWorkersResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
-}
-
-
 
 func (f *fakeControlClient) ListActors(ctx context.Context, in *ateapipb.ListActorsRequest, opts ...grpc.CallOption) (*ateapipb.ListActorsResponse, error) {
 	f.mu.Lock()
@@ -207,14 +184,6 @@ func (f *fakeControlClient) GetAtespace(ctx context.Context, in *ateapipb.GetAte
 	return nil, status.Error(codes.NotFound, "atespace not found")
 }
 
-func (f *fakeControlClient) ListAtespaces(ctx context.Context, in *ateapipb.ListAtespacesRequest, opts ...grpc.CallOption) (*ateapipb.ListAtespacesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
-}
-
-func (f *fakeControlClient) DeleteAtespace(ctx context.Context, in *ateapipb.DeleteAtespaceRequest, opts ...grpc.CallOption) (*ateapipb.Atespace, error) {
-	return nil, status.Error(codes.Unimplemented, "not implemented in fake")
-}
-
 func TestManagerLifecycle(t *testing.T) {
 	fakeClient := newFakeControlClient()
 	mgr := NewManager(fakeClient, "test-template", "test-ns")
@@ -230,6 +199,11 @@ func TestManagerLifecycle(t *testing.T) {
 	fakeClient.mu.Lock()
 	if _, ok := fakeClient.createdActors["test-ns/"+name]; !ok {
 		t.Errorf("expected actor test-ns/%s to be created", name)
+	}
+	if policy, ok := fakeClient.createdEgressPolicies["test-ns/"+name]; !ok {
+		t.Errorf("expected egress policy test-ns/%s to be created", name)
+	} else if len(policy.GetRules()) == 0 {
+		t.Errorf("expected egress policy to have rules")
 	}
 	fakeClient.mu.Unlock()
 
@@ -281,14 +255,14 @@ func TestManagerSuspendIdleActors(t *testing.T) {
 			Atespace: "test-ns",
 			Name:     actorName1,
 		},
-		Status: ateapipb.Actor_STATUS_RUNNING,
+		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
 	}
 	fakeClient.createdActors["test-ns/"+actorName2] = &ateapipb.Actor{
 		Metadata: &ateapipb.ResourceMetadata{
 			Atespace: "test-ns",
 			Name:     actorName2,
 		},
-		Status: ateapipb.Actor_STATUS_RUNNING,
+		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
 	}
 
 	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
@@ -343,7 +317,7 @@ func TestManagerSuspendIdleActors_Cooldown(t *testing.T) {
 			Atespace: "test-ns",
 			Name:     actorName,
 		},
-		Status: ateapipb.Actor_STATUS_RUNNING,
+		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
 	}
 
 	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
@@ -377,12 +351,13 @@ func TestManagerNotify(t *testing.T) {
 	sessionID := "session-notify-test-01"
 	aName := ActorName(sessionID)
 
-	var receivedHost, receivedPath string
+	var receivedHost, receivedPath, receivedTargetActor string
 	var receivedBody map[string]string
 
 	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
 		receivedHost = req.Host
 		receivedPath = req.URL.Path
+		receivedTargetActor = req.Header.Get("ate-target-actor")
 		_ = json.NewDecoder(req.Body).Decode(&receivedBody)
 
 		rw.Header().Set("Content-Type", "application/json")
@@ -405,6 +380,10 @@ func TestManagerNotify(t *testing.T) {
 	if receivedHost != expectedHost {
 		t.Errorf("Host = %q, want %q", receivedHost, expectedHost)
 	}
+	expectedTargetActor := "test-ns/" + aName
+	if receivedTargetActor != expectedTargetActor {
+		t.Errorf("ate-target-actor = %q, want %q", receivedTargetActor, expectedTargetActor)
+	}
 	if receivedPath != "/work" {
 		t.Errorf("Path = %q, want /work", receivedPath)
 	}
@@ -421,7 +400,7 @@ func TestSuspendIgnoredWithinCooldown(t *testing.T) {
 
 	fakeClient.createdActors["test-ns/"+aName] = &ateapipb.Actor{
 		Metadata: &ateapipb.ResourceMetadata{Atespace: "test-ns", Name: aName},
-		Status:   ateapipb.Actor_STATUS_RUNNING,
+		Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
 	}
 
 	// 1. Resume sets timestamp to now
@@ -466,7 +445,7 @@ func TestManagerStartGC_Success(t *testing.T) {
 			Atespace: "test-ns",
 			Name:     actorName1,
 		},
-		Status: ateapipb.Actor_STATUS_RUNNING,
+		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
 	}
 
 	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {

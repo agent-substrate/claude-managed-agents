@@ -7,14 +7,22 @@ This project runs Claude Managed Agents work (e.g. tool calls like bash, file op
 ## Overview
 
 ```
-┌────────────────────────┐  Poll work event  ┌────────────────────────┐
-│ Claude Managed Agents  │ ◄──────────────── │ Poller (`ate-ant poll`)│
-└────────────────────────┘                   └───────────┬────────────┘
-                                                         │ Enqueue (resume)
-                                                         ▼
-┌────────────────────────┐   Consume event   ┌───┬───┬───┬────────────┐
-│ Controller (`ate-ant   │ ────────────────► │   │   │   │ Event Queue│
-│      controller`)      │                   └───┴───┴───┴────────────┘
+┌────────────────────────┐  Poll work items
+│ Claude Managed Agents  │ ◄─────────────────────────────────────────────┐
+└────────────────────────┘                                               │
+                                                                         ▼
+                                                     ┌───────────────────────────────────────┐
+                                                     │ Controller (`ate-ant controller`)     │
+                                                     │                                       │
+                                                     │  ┌─────────────────────────────────┐  │
+                                                     │  │ Poller loop                     │  │
+                                                     │  └────────────────┬────────────────┘  │
+                                                     └───────────────────┼───────────────────┘
+                                                       Enqueue (resume)  │
+                                                                         ▼
+┌────────────────────────┐   Consume event           ┌───┬───┬───┬────────────┐
+│ Controller (`ate-ant   │ ◄──────────────────────── │   │   │   │ Event Queue│
+│      controller`)      │                           └───┴───┴───┴────────────┘
 └───────────┬────────────┘
             │
             ├── Notify (POST /work) ───────► ┌────────────────────────┐
@@ -24,9 +32,8 @@ This project runs Claude Managed Agents work (e.g. tool calls like bash, file op
 
 ### Components
 
-- **Poller**: An always-on daemon running `ate-ant poll`. It polls the Claude Managed Agents API for new work items, acknowledges each one and takes a short lease on it, and enqueues lifecycle events into the queue. The lease is handed to the actor that runs the item (see [Lease hand-off](DESIGN.md#lease-hand-off)).
+- **Controller**: A horizontally scalable daemon running `ate-ant controller`. Each replica runs an Anthropic poller loop and an event reconcile loop. Poller loops claim and acknowledge work items from the Anthropic API and enqueue them into Valkey. Controller loops consume lifecycle events from the queue (distributed among replicas via consumer groups), manage Substrate actor lifecycles (creating, resuming, suspending), and notify actors of work payloads via `atenet-router`.
 - **Queue**: An in-cluster Valkey/Redis instance buffering session lifecycle events, providing durable work distribution and decoupling ingestion from execution.
-- **Controller**: It consumes lifecycle events from the queue, manages Substrate actor lifecycles (creating, resuming, suspending), and notifies actors of work payloads via `atenet-router`.
 - **Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) with the Anthropic SDK's environment worker in-process and preserve session state across turns via snapshot persistence.
 
 See [DESIGN.md](DESIGN.md) for detailed architecture, event queuing, and actor lifecycle workflows.
@@ -47,7 +54,7 @@ export GOOGLE_CLOUD_PROJECT="your-gcp-project"
 make push
 ```
 
-### Apply Manifests
+### 1. Apply Kubernetes Manifests
 
 Update the container images before applying the manifests.
 
@@ -55,26 +62,26 @@ Update the container images before applying the manifests.
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image      gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:ec79dd62224d934c8219e5f1b1ed14b1e2b80f7ce4db1006f2efede5f953939a \
-  --ateom-image       gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor-715889664656de67e44382a8d6ab981d@sha256:b0b6e2ad834de42cb2a4c55e83b60243f66cb85ca37575d1a6818e788e0564e0 \
-  --snapshots-bucket  gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ \
-  --anthropic-api-key "$ANTHROPIC_API_KEY" \
-  --anthropic-env-id  "$ANTHROPIC_ENVIRONMENT_ID" \
-  --anthropic-env-key "$ANTHROPIC_ENVIRONMENT_KEY" | kubectl apply -f -
+  --worker-image gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:4a15116602950a0e408f448f37f4c36e0031e1f7d015fc44ef1436f458259207 \
+  --ateom-image  gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor@sha256:e3ccd735b31a0f448070bfeefded7b79c91013c40c128eecc84ae90e6b6b44f7 | kubectl apply -f -
+```
+
+### 2. Register the ActorTemplate in Substrate
+
+Substrate manages ActorTemplates directly in its control plane rather than Kubernetes CRDs. Use `ate-ant manifest template` to generate the Substrate ActorTemplate manifest:
+
+```bash
+go run ./cmd/ate-ant manifest template \
+  --worker-image     gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:4a15116602950a0e408f448f37f4c36e0031e1f7d015fc44ef1436f458259207 \
+  --snapshots-bucket gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ | kubectl-ate create actor-template -f -
 ```
 
 ### Verify Deployment
 
-Check that all worker pool, Valkey, poller, and controller pods are running:
+Check that all worker pool, Valkey, and controller pods are running:
 
 ```bash
 kubectl get pods -n ate-ant
-```
-
-Stream logs from the poller daemon:
-
-```bash
-kubectl logs -n ate-ant -l app=ate-ant -f
 ```
 
 Stream logs from the controller daemon:

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # Stage 1: Build Go binaries
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download

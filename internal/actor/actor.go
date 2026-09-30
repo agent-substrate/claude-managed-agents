@@ -154,13 +154,54 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) error {
 					Atespace: actorRef.Atespace,
 					Name:     actorRef.Name,
 				},
-				ActorTemplateNamespace: m.atespace,
-				ActorTemplateName:      m.template,
+				ActorTemplate: &ateapipb.ObjectRef{
+					Atespace: m.atespace,
+					Name:     m.template,
+				},
 			},
 		})
 		if err != nil && status.Code(err) != codes.AlreadyExists {
 			return fmt.Errorf("creating actor %s: %w", actorRef.Name, err)
 		}
+
+		// Ensure the actor has an egress policy allowing all outbound traffic.
+		// TODO: Determine the ideal egress network policy configuration rather than allowing all traffic.
+		_, err = m.client.CreateActorEgressPolicy(ctx, &ateapipb.CreateActorEgressPolicyRequest{
+			Actor: actorRef,
+			EgressPolicy: &ateapipb.EgressPolicy{
+				Metadata: &ateapipb.ResourceMetadata{
+					Atespace: actorRef.Atespace,
+					Name:     "default",
+				},
+				Rules: []*ateapipb.EgressRule{
+					{
+						Http: &ateapipb.HTTPRule{
+							Hostnames: []string{"*"},
+						},
+					},
+					{
+						Https: &ateapipb.HTTPSRule{
+							Hostnames: []string{"*"},
+						},
+					},
+					{
+						TlsPassthrough: &ateapipb.TLSPassthroughRule{
+							Hostnames: []string{"*"},
+							Ports: &ateapipb.Ports{
+								All: &ateapipb.AllPorts{},
+							},
+						},
+					},
+				},
+			},
+		})
+		if err != nil && status.Code(err) != codes.AlreadyExists {
+			m.logger.Warn("Failed to create default egress policy for actor",
+				slog.String("actor", actorRef.Name),
+				slog.Any("error", err),
+			)
+		}
+
 		m.recordResume(actorRef.Name)
 		return nil
 	} else if err != nil {
@@ -218,6 +259,7 @@ func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) err
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("ate-target-actor", fmt.Sprintf("%s/%s", m.atespace, actorName))
 		req.Header.Set("x-envoy-upstream-rq-timeout-ms", timeoutMs)
 		req.Header.Set("x-envoy-upstream-rq-per-try-timeout-ms", timeoutMs)
 		req.Host = host
@@ -306,6 +348,7 @@ func (m *Manager) actorIdleStatus(ctx context.Context, actorRef *ateapipb.Object
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("ate-target-actor", fmt.Sprintf("%s/%s", actorRef.Atespace, actorRef.Name))
 	req.Host = fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorRef.Name, actorRef.Atespace)
 
 	client := &http.Client{
@@ -342,7 +385,7 @@ func (m *Manager) suspendIdleActors(ctx context.Context, threshold time.Duration
 		if actor == nil || actor.GetMetadata() == nil {
 			continue
 		}
-		if actor.GetStatus() == ateapipb.Actor_STATUS_SUSPENDED {
+		if actor.GetStatus() != nil && actor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
 			continue
 		}
 

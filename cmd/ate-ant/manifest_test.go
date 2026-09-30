@@ -29,7 +29,6 @@ func TestManifestCommand(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--worker-image", "gcr.io/test/worker@sha256:123456",
 		"--ateom-image", "gcr.io/test/ateom@sha256:789012",
-		"--snapshots-bucket", "gs://my-bucket/snapshots/",
 		"--namespace", "test-ns",
 		"--anthropic-env-id", "env_test_abc",
 		"--anthropic-env-key", "key_test_xyz",
@@ -52,12 +51,14 @@ func TestManifestCommand(t *testing.T) {
 		"name: valkey",
 		"kind: StatefulSet",
 		"kind: WorkerPool",
-		"kind: ActorTemplate",
 		"kind: Deployment",
 	} {
 		if !strings.Contains(out, expected) {
 			t.Errorf("manifest output missing %q:\n%s", expected, out)
 		}
+	}
+	if strings.Contains(out, "kind: ActorTemplate") {
+		t.Errorf("manifest output should not contain kind: ActorTemplate")
 	}
 }
 
@@ -67,6 +68,62 @@ func TestManifestCommandMissingRequiredFlags(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{})
+
+	if err := cmd.Execute(); err == nil {
+		t.Error("expected error when required flags are missing, got nil")
+	}
+}
+
+func TestManifestTemplateCommand(t *testing.T) {
+	cmd := newManifestCommand()
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{
+		"template",
+		"--worker-image", "gcr.io/test/worker@sha256:123456",
+		"--snapshots-bucket", "gs://my-bucket/snapshots/",
+		"--namespace", "test-ns",
+		"--anthropic-env-id", "env_test_abc",
+		"--anthropic-env-key", "key_test_xyz",
+		"--anthropic-base-url", "http://managed-agents.example.svc.cluster.local:8400",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("manifest template command execute: %v", err)
+	}
+
+	out := buf.String()
+	for _, expected := range []string{
+		"name: ate-ant-actor-template",
+		"atespace: test-ns",
+		"image: gcr.io/test/worker@sha256:123456",
+		"storageLocation: gs://my-bucket/snapshots/",
+		"path: /healthz",
+		"port: 80",
+		"ANTHROPIC_ENVIRONMENT_ID",
+		"env_test_abc",
+		"ANTHROPIC_ENVIRONMENT_KEY",
+		"key_test_xyz",
+		"ANTHROPIC_BASE_URL",
+		"http://managed-agents.example.svc.cluster.local:8400",
+	} {
+		if !strings.Contains(out, expected) {
+			t.Errorf("manifest template output missing %q:\n%s", expected, out)
+		}
+	}
+	if strings.Contains(out, "status:") {
+		t.Errorf("manifest template output should not contain status fields:\n%s", out)
+	}
+}
+
+func TestManifestTemplateCommandMissingRequiredFlags(t *testing.T) {
+	cmd := newManifestCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"template"})
 
 	if err := cmd.Execute(); err == nil {
 		t.Error("expected error when required flags are missing, got nil")
