@@ -23,8 +23,10 @@ import (
 	"github.com/agent-substrate/claude-managed-agents/internal/actor"
 	"github.com/agent-substrate/claude-managed-agents/internal/event"
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
+	"github.com/agent-substrate/claude-managed-agents/internal/poller"
 	"github.com/agent-substrate/claude-managed-agents/internal/runner"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 func newControllerCommand() *cobra.Command {
@@ -36,11 +38,12 @@ func newControllerCommand() *cobra.Command {
 		insecure         bool
 		gcInterval       time.Duration
 		gcIdleThreshold  time.Duration
+		pcfg             poller.Config
 	)
 
 	cmd := &cobra.Command{
 		Use:           "controller",
-		Short:         "Consume lifecycle events from the event manager and dispatch to Agent Substrate actors",
+		Short:         "Run the unified controller: poll Anthropic for work and dispatch lifecycle events to Agent Substrate actors",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
@@ -92,7 +95,30 @@ func newControllerCommand() *cobra.Command {
 			}
 			defer em.Close()
 
-			return em.Reconcile(ctx)
+			pcfg.Defaults()
+			p, err := poller.New(pcfg)
+			if err != nil {
+				return fmt.Errorf("creating poller: %w", err)
+			}
+
+			g, gctx := errgroup.WithContext(ctx)
+
+			// 1. Run poller loop to ingest work items and queue resume events.
+			g.Go(func() error {
+				return p.Poll(gctx, func(ctx context.Context, claim poller.Claim) error {
+					sessID := claim.Work.Data.ID
+					workID := claim.Work.ID
+					_, err := em.QueueResume(ctx, sessID, workID, claim.LastHeartbeat)
+					return err
+				})
+			})
+
+			// 2. Run controller reconcile loop to process events from Valkey.
+			g.Go(func() error {
+				return em.Reconcile(gctx)
+			})
+
+			return g.Wait()
 		},
 	}
 
@@ -103,6 +129,10 @@ func newControllerCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "connect to ateapi without TLS")
 	cmd.Flags().DurationVar(&gcInterval, "gc-interval", actor.DefaultIdleCheckInterval, "interval between actor garbage collection sweeps")
 	cmd.Flags().DurationVar(&gcIdleThreshold, "gc-idle-threshold", actor.DefaultIdleThreshold, "idle duration threshold before suspending an actor")
+	cmd.Flags().StringVar(&pcfg.BaseURL, "anthropic-base-url", "",
+		"custom Anthropic API base URL (default $ANTHROPIC_BASE_URL, else the public API)")
+	cmd.Flags().Int64Var(&pcfg.HandoffTTLSeconds, "handoff-ttl-seconds", poller.DefaultHandoffTTLSeconds,
+		"lease the poller takes on each work item before queueing it: the time the controller has to start the sandbox before the lease lapses and the item is requeued")
 
 	return cmd
 }

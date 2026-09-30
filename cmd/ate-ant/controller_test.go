@@ -38,6 +38,8 @@ func TestControllerCommandFlags(t *testing.T) {
 		"insecure",
 		"gc-interval",
 		"gc-idle-threshold",
+		"anthropic-base-url",
+		"handoff-ttl-seconds",
 	}
 
 	for _, name := range flags {

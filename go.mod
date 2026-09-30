@@ -1,17 +1,17 @@
 module github.com/agent-substrate/claude-managed-agents
 
-go 1.26.5
+go 1.27.0
 
 require (
-	github.com/agent-substrate/substrate v0.0.0-20260802031337-3ed6aa07e167
+	github.com/agent-substrate/substrate v0.2.1-0.20260930022011-afb62e18fbef
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/anthropics/anthropic-sdk-go v1.63.0
 	github.com/spf13/cobra v1.10.2
 	github.com/valkey-io/valkey-go v1.0.77
 	google.golang.org/grpc v1.83.2
-	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
-	k8s.io/api v0.36.1
-	k8s.io/apimachinery v0.36.1
+	google.golang.org/protobuf v1.36.12
+	k8s.io/api v0.37.0
+	k8s.io/apimachinery v0.37.0
 	sigs.k8s.io/yaml v1.6.0
 )
 
@@ -20,7 +20,7 @@ require (
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
+	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -41,7 +41,7 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260720211330-0afa2a65878a // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260803160001-6ac0973c030d // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect

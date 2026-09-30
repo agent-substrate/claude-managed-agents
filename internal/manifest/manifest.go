@@ -21,6 +21,9 @@ import (
 	"io"
 
 	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
+	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -34,8 +37,7 @@ import (
 const (
 	DefaultNamespace          = "ate-ant"
 	DefaultTemplate           = "ate-ant-actor-template"
-	DefaultReplicas           = 3
-	DefaultControllerReplicas = 1
+	DefaultReplicas = 3
 	DefaultAteapiAddr         = "api.ate-system.svc.cluster.local:443"
 	DefaultAtenetRouterAddr   = "atenet-router.ate-system.svc.cluster.local:80"
 	DefaultValkeyImage        = "valkey/valkey:8"
@@ -78,10 +80,10 @@ func (c *Config) Defaults() {
 		c.Template = DefaultTemplate
 	}
 	if c.Replicas == 0 {
-		c.Replicas = 10
+		c.Replicas = DefaultReplicas
 	}
 	if c.ControllerReplicas == 0 {
-		c.ControllerReplicas = DefaultControllerReplicas
+		c.ControllerReplicas = c.Replicas
 	}
 	if c.AteapiAddr == "" {
 		c.AteapiAddr = DefaultAteapiAddr
@@ -101,7 +103,7 @@ func (c *Config) Defaults() {
 	}
 }
 
-// Validate ensures required fields are set before generating manifests.
+// Validate ensures required fields are set before generating Kubernetes manifests.
 func (c *Config) Validate() error {
 	c.Defaults()
 	if c.WorkerImage == "" {
@@ -110,13 +112,10 @@ func (c *Config) Validate() error {
 	if c.AteomImage == "" {
 		return errors.New("--ateom-image is required")
 	}
-	if c.SnapshotsBucket == "" {
-		return errors.New("--snapshots-bucket is required")
-	}
 	return nil
 }
 
-// BuildManifests constructs all Kubernetes and Substrate objects in apply order.
+// BuildManifests constructs all Kubernetes objects in apply order.
 func BuildManifests(cfg Config) []any {
 	cfg.Defaults()
 
@@ -128,8 +127,6 @@ func BuildManifests(cfg Config) []any {
 		BuildValkeyService(cfg),
 		BuildValkeyStatefulSet(cfg),
 		BuildWorkerPool(cfg),
-		BuildActorTemplate(cfg),
-		BuildPollerDeployment(cfg),
 		BuildControllerDeployment(cfg),
 	}
 }
@@ -297,64 +294,67 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 		},
 		Spec: atev1alpha1.WorkerPoolSpec{
 			Replicas:     cfg.Replicas,
-			AteomImage:   cfg.AteomImage,
+			WorkerImage:  cfg.AteomImage,
 			SandboxClass: "gvisor",
 		},
 	}
 }
 
-// BuildActorTemplate constructs the Substrate ActorTemplate CRD.
-func BuildActorTemplate(cfg Config) *atev1alpha1.ActorTemplate {
-	var env []atev1alpha1.EnvVar
+// BuildActorTemplate constructs the protojson-shaped ateapipb.ActorTemplate for the Substrate API.
+func BuildActorTemplate(cfg Config) *ateapipb.ActorTemplate {
+	cfg.Defaults()
+
+	var env []*ateapipb.EnvVar
 	if cfg.EnvironmentKey != "" {
-		env = append(env, atev1alpha1.EnvVar{
+		env = append(env, &ateapipb.EnvVar{
 			Name:  "ANTHROPIC_ENVIRONMENT_KEY",
-			Value: &cfg.EnvironmentKey,
+			Value: cfg.EnvironmentKey,
 		})
 	}
 	if cfg.EnvironmentID != "" {
-		env = append(env, atev1alpha1.EnvVar{
+		env = append(env, &ateapipb.EnvVar{
 			Name:  "ANTHROPIC_ENVIRONMENT_ID",
-			Value: &cfg.EnvironmentID,
+			Value: cfg.EnvironmentID,
 		})
 	}
 	if cfg.BaseURL != "" {
-		env = append(env, atev1alpha1.EnvVar{
+		env = append(env, &ateapipb.EnvVar{
 			Name:  "ANTHROPIC_BASE_URL",
-			Value: &cfg.BaseURL,
+			Value: cfg.BaseURL,
 		})
 	}
 
-	return &atev1alpha1.ActorTemplate{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: atev1alpha1.GroupVersion.String(),
-			Kind:       "ActorTemplate",
+	return &ateapipb.ActorTemplate{
+		Metadata: &ateapipb.ResourceMetadata{
+			Atespace: cfg.Namespace,
+			Name:     cfg.Template,
 		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cfg.Template,
-			Namespace: cfg.Namespace,
+		WorkerSelector: &ateapipb.Selector{
+			MatchLabels: map[string]string{
+				"workload": cfg.Template,
+			},
 		},
-		Spec: atev1alpha1.ActorTemplateSpec{
-			WorkerSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"workload": cfg.Template,
+		Containers: []*ateapipb.Container{{
+			Name:    "worker",
+			Image:   cfg.WorkerImage,
+			Command: []string{"ate-ant", "run"},
+			Env:     env,
+			WakeupProbe: &ateapipb.ContainerWakeupProbe{
+				HttpGet: &ateapipb.HTTPGetAction{
+					Path: "/healthz",
+					Port: 80,
 				},
+				TimeoutSeconds: 30,
 			},
-			Containers: []atev1alpha1.Container{{
-				Name:    "worker",
-				Image:   cfg.WorkerImage,
-				Command: []string{"ate-ant", "run"},
-				Env:     env,
-				Readyz: &atev1alpha1.ContainerReadyz{
-					HTTPGet: &atev1alpha1.HTTPGetAction{
-						Path: "/healthz",
-						Port: 80,
-					},
-				},
-			}},
-			SnapshotsConfig: atev1alpha1.SnapshotsConfig{
-				Location: cfg.SnapshotsBucket,
-			},
+		}},
+		SnapshotConfig: &ateapipb.SnapshotConfig{
+			OnPause:         ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_FULL,
+			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_FULL,
+			StorageLocation: cfg.SnapshotsBucket,
+		},
+		SandboxConfig: &ateapipb.SandboxConfig{
+			SandboxClass: ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR,
+			ConfigName:   "gvisor-default",
 		},
 	}
 }
@@ -457,23 +457,45 @@ func BuildControllerDeployment(cfg Config) *appsv1.Deployment {
 	}
 }
 
+// WriteActorTemplate writes a single Substrate ActorTemplate as protojson-shaped YAML.
+func WriteActorTemplate(w io.Writer, tmpl *ateapipb.ActorTemplate) error {
+	opts := protojson.MarshalOptions{
+		UseProtoNames: false,
+	}
+	jsonBytes, err := opts.Marshal(tmpl)
+	if err != nil {
+		return fmt.Errorf("encoding actor template json: %w", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(jsonBytes, &m); err != nil {
+		return fmt.Errorf("decoding actor template json: %w", err)
+	}
+	delete(m, "status")
+	prune(m)
+	data, err := yaml.Marshal(m)
+	if err != nil {
+		return fmt.Errorf("encoding actor template yaml: %w", err)
+	}
+	_, err = w.Write(data)
+	return err
+}
+
 // WriteManifests writes the Kubernetes objects as a multi-document YAML stream.
 func WriteManifests(w io.Writer, objs []any) error {
 	for i, obj := range objs {
-		jsonBytes, err := json.Marshal(obj)
+		var jsonBytes []byte
+		var err error
+		if m, ok := obj.(proto.Message); ok {
+			jsonBytes, err = protojson.Marshal(m)
+		} else {
+			jsonBytes, err = json.Marshal(obj)
+		}
 		if err != nil {
 			return fmt.Errorf("encoding json: %w", err)
 		}
 		var m map[string]any
 		if err := json.Unmarshal(jsonBytes, &m); err != nil {
 			return fmt.Errorf("decoding json: %w", err)
-		}
-		if m["kind"] == "ActorTemplate" {
-			if spec, ok := m["spec"].(map[string]any); ok {
-				if _, has := spec["pauseImage"]; !has {
-					spec["pauseImage"] = "registry.k8s.io/pause:3.10.2@sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
-				}
-			}
 		}
 		delete(m, "status")
 		prune(m)

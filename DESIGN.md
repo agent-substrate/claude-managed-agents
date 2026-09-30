@@ -16,26 +16,35 @@ This project runs Claude Managed Agents work (e.g. tool calls like bash, file op
   │  Claude Managed Agents  │
   └─────────────────────────┘
              ▲
-             │ Poll work
-   ┌─────────┴──────────────┐
-   │ Poller (`ate-ant poll`)│
-   └─────────┬──────────────┘
-             │ Enqueue lifecycle events
-             ▼
-   ┌───────────────────┐
-   │ Event Queue (Redis│
-   │    / Valkey)      │
-   └───────────────────┘
-             ▲
-             │ Consume events
-   ┌─────────┴─────────┐      Resume / Suspend calls
-   │    Controller     ├──────────────────────────────────────┐
-   │(`ate-ant controller`)                                    │
-   └─────────┬─────────┘                                      ▼
-             │ POST /work                       ┌────────────────────────┐
-             ▼                                  │    Agent Substrate     │
-   ┌───────────────────┐                        │        (ateapi)        │
-   │   atenet-router   │                        └────────────────────────┘
+             │ Poll work items
+   ┌─────────┴───────────────────────────────────────┐
+   │ Controller (`ate-ant controller`)               │
+   │                                                 │
+   │   ┌─────────────────────────────────────────┐   │
+   │   │ Poller loop                             │   │
+   │   └────────────────────┬────────────────────┘   │
+   └────────────────────────┼────────────────────────┘
+                            │ Enqueue lifecycle events
+                            ▼
+                  ┌───────────────────┐
+                  │ Event Queue (Redis│
+                  │    / Valkey)      │
+                  └─────────┬─────────┘
+                            │
+                            │ Consume events
+   ┌────────────────────────┴────────────────────────┐
+   │ Controller (`ate-ant controller`)               │
+   │                                                 │
+   │   ┌─────────────────────────────────────────┐   │
+   │   │ Reconcile loop                          │   │
+   │   └────────────────────┬────────────────────┘   │
+   └─────────┬──────────────┴─────┬──────────────────┘
+             │                    │ Resume / Suspend calls
+             │ POST /work         ▼
+             │          ┌────────────────────────┐
+             ▼          │    Agent Substrate     │
+   ┌───────────────────┐│        (ateapi)        │
+   │   atenet-router   │└────────────────────────┘
    └─────────┬─────────┘
              │ Route by Session ID
              ▼
@@ -53,9 +62,8 @@ This project runs Claude Managed Agents work (e.g. tool calls like bash, file op
 
 ### Components
 
-- **Poller**: An always-on daemon running `ate-ant poll`. It polls the Claude Managed Agents API for new work items, acknowledges each one and takes a short lease on it, and enqueues lifecycle events into the queue.
+- **Controller**: A horizontally scalable daemon running `ate-ant controller`. It runs the Anthropic poller loop to ingest work items and queue lifecycle events into Valkey, as well as the event reconcile loop that consumes events from Valkey, manages Substrate actor lifecycles (creating, resuming, suspending), and notifies actors of work payloads via `atenet-router`.
 - **Queue**: An in-cluster Valkey/Redis instance buffering session lifecycle events, providing durable work distribution and decoupling ingestion from execution.
-- **Controller**: It consumes lifecycle events from the queue, manages Substrate actor lifecycles (creating, resuming, suspending), and notifies actors of work payloads via `atenet-router`.
 - **Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) with the SDK's environment worker running in-process, continue the lease the poller took, and preserve session state across turns via snapshot persistence.
 
 ### Event Queue
@@ -63,13 +71,12 @@ This project runs Claude Managed Agents work (e.g. tool calls like bash, file op
 An in-cluster Valkey/Redis instance acts as the durable buffer between the poller and the controller:
 
 ```
-┌───────────────────────┐
-│     ate-ant poll      │
-│ (Work Ingestion Loop) │
-└──────────┬────────────┘
-           │ XADD stream:events *
-           │ data: {action, session_id, work_id, last_heartbeat}
-           ▼
+┌────────────────────┐ ┌────────────────────┐
+│ ate-ant controller │ │ ate-ant controller │
+│  (Pod #1 Poller)   │ │  (Pod #2 Poller)   │
+└──────────┬─────────┘ └─────────┬──────────┘
+           │ XADD stream:events  │ XADD stream:events
+           ▼                     ▼
 ┌───────────────────────────────────────┐
 │             Valkey Stream             │
 │           (`stream:events`)           │
@@ -80,7 +87,7 @@ An in-cluster Valkey/Redis instance acts as the durable buffer between the polle
            ▼                 ▼
 ┌────────────────────┐ ┌────────────────────┐
 │ ate-ant controller │ │ ate-ant controller │
-│      (Pod #1)      │ │      (Pod #2)      │
+│ (Pod #1 Reconciler)│ │ (Pod #2 Reconciler)│
 └──────────┬─────────┘ └─────────┬──────────┘
            │                     │
            │ XACK stream:events  │ XACK stream:events
