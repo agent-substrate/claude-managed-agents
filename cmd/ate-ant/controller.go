@@ -61,16 +61,14 @@ func newControllerCommand() *cobra.Command {
 				WithRouterAddr(atenetRouterAddr).
 				WithLogger(logger)
 
-			// Start background actor idle garbage collector.
-			am.StartGC(ctx, gcInterval, gcIdleThreshold)
-
-			em, err := event.New(event.ManagerConfig{
+			var em *event.Manager
+			em, err = event.New(event.ManagerConfig{
 				Logger: logger,
 				OnResume: func(ctx context.Context, ev *event.Event) error {
 					if ev.WorkID == "" {
 						return nil
 					}
-					return retry(ctx, func() error {
+					if err := retry(ctx, func() error {
 						if err := am.Resume(ctx, ev.SessionID); err != nil {
 							return fmt.Errorf("resuming session %s: %w", ev.SessionID, err)
 						}
@@ -83,10 +81,29 @@ func newControllerCommand() *cobra.Command {
 							return fmt.Errorf("notifying session %s: %w", ev.SessionID, err)
 						}
 						return nil
-					})
+					}); err != nil {
+						return err
+					}
+					if _, err := em.QueueSuspend(ctx, ev.SessionID); err != nil {
+						return fmt.Errorf("queueing suspend for session %s: %w", ev.SessionID, err)
+					}
+					return nil
 				},
 				OnSuspend: func(ctx context.Context, ev *event.Event) error {
-					// Nothing to do here, we will garbage collect the actors.
+					suspended, err := am.SuspendIfIdle(ctx, ev.SessionID, gcIdleThreshold)
+					if err != nil {
+						return fmt.Errorf("checking/suspending session %s: %w", ev.SessionID, err)
+					}
+					if !suspended {
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case <-time.After(gcInterval):
+						}
+						if _, err := em.QueueSuspend(ctx, ev.SessionID); err != nil {
+							return fmt.Errorf("re-queueing suspend for session %s: %w", ev.SessionID, err)
+						}
+					}
 					return nil
 				},
 			})

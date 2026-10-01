@@ -19,7 +19,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG TARGETOS TARGETARCH
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -buildvcs=false -o /out/ate-ant ./cmd/ate-ant
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -buildvcs=false -o /out/ate-ant ./cmd/ate-ant && \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -buildvcs=false -o /out/loadgen ./benchmarks/loadgen
 
 # Stage 2: Runtime image (Ubuntu 24.04 LTS)
 FROM ubuntu:noble
@@ -56,6 +57,7 @@ RUN set -eux; \
 
 # Copy compiled binaries from builder
 COPY --from=builder /out/ate-ant /usr/local/bin/ate-ant
+COPY --from=builder /out/loadgen /usr/local/bin/loadgen
 
 # Set default working directory
 WORKDIR /workspace

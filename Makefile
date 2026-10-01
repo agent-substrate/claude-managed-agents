@@ -40,6 +40,9 @@ image:
 	$(CONTAINER_ENGINE) build --platform $(PLATFORM) -t $(ATE_ANT_IMAGE):latest .
 
 push: image
+	@echo "Authenticating $(CONTAINER_ENGINE) with gcr.io..."
+	@(gcloud auth application-default print-access-token 2>/dev/null || gcloud auth print-access-token) | \
+		$(CONTAINER_ENGINE) login -u oauth2accesstoken --password-stdin https://gcr.io >/dev/null
 	@echo "Pushing worker image to $(ATE_ANT_IMAGE)..."
 	@digest_file=$$(mktemp); \
 	if $(CONTAINER_ENGINE) push --digestfile "$$digest_file" $(ATE_ANT_IMAGE):latest; then \
