@@ -13,16 +13,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 # Runs the 5k-actor benchmark load generator either in-cluster (recommended
-# for valkey/direct modes to avoid port-forward bottlenecks) or locally.
+# for direct mode to avoid port-forward bottlenecks) or locally.
+#
+# In-cluster runs use the deployed ate-ant worker image, which already ships
+# the loadgen binary. Rebuild and reinstall (build-images.sh, install.sh)
+# to pick up local changes to benchmarks/loadgen.
 
 set -o errexit -o nounset -o pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
-MODE="${MODE:-valkey}"
+MODE="${MODE:-direct}"
 SESSIONS="${SESSIONS:-5000}"
 CONCURRENCY="${CONCURRENCY:-100}"
 TURNS_PER_SESSION="${TURNS_PER_SESSION:-1}"
@@ -30,7 +33,6 @@ RATE="${RATE:-0}"
 TURN_INTERVAL="${TURN_INTERVAL:-0s}"
 ACTIVE_HOLD="${ACTIVE_HOLD:-0s}"
 SUSPEND_AFTER_TURN="${SUSPEND_AFTER_TURN:-true}"
-WAIT_DRAIN="${WAIT_DRAIN:-true}"
 NAMESPACE="${NAMESPACE:-ate-ant}"
 TEMPLATE="${TEMPLATE:-ate-ant-actor-template}"
 IN_CLUSTER="${IN_CLUSTER:-true}"
@@ -45,14 +47,10 @@ LOADGEN_ARGS=(
   "--turn-interval=${TURN_INTERVAL}"
   "--active-hold=${ACTIVE_HOLD}"
   "--suspend-after-turn=${SUSPEND_AFTER_TURN}"
-  "--wait-drain=${WAIT_DRAIN}"
   "--namespace=${NAMESPACE}"
   "--template=${TEMPLATE}"
+  "$@"
 )
-
-if [[ $# -gt 0 ]]; then
-  LOADGEN_ARGS+=("$@")
-fi
 
 if [[ "${IN_CLUSTER}" != "true" ]]; then
   if [[ -n "${JSON_OUT}" ]]; then
@@ -63,17 +61,10 @@ if [[ "${IN_CLUSTER}" != "true" ]]; then
 fi
 
 POD_NAME="ate-ant-loadgen"
-RUNNER_IMAGE="${RUNNER_IMAGE:-debian:bookworm-slim}"
-TMP_BIN="$(mktemp -t loadgen-linux-amd64.XXXXXX)"
+# Default to the worker image install.sh deployed; it contains /usr/local/bin/loadgen.
+RUNNER_IMAGE="${RUNNER_IMAGE:-$(kubectl get deployment ate-ant-controller -n "${NAMESPACE}" -o jsonpath='{.spec.template.spec.containers[0].image}')}"
 
-cleanup() {
-  rm -f "${TMP_BIN}"
-  kubectl delete pod "${POD_NAME}" -n "${NAMESPACE}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
-
-echo "--> Cross-compiling loadgen binary for linux/amd64..."
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -o "${TMP_BIN}" ./benchmarks/loadgen
+trap 'kubectl delete pod "${POD_NAME}" -n "${NAMESPACE}" --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT
 
 echo "--> Launching in-cluster load generator pod '${POD_NAME}' in namespace '${NAMESPACE}'..."
 kubectl delete pod "${POD_NAME}" -n "${NAMESPACE}" --ignore-not-found --wait=true >/dev/null 2>&1 || true
@@ -112,17 +103,13 @@ EOF
 echo "--> Waiting for pod '${POD_NAME}' to be Ready..."
 kubectl wait --for=condition=Ready "pod/${POD_NAME}" -n "${NAMESPACE}" --timeout=120s
 
-echo "--> Copying loadgen binary into '${POD_NAME}'..."
-kubectl cp "${TMP_BIN}" "${NAMESPACE}/${POD_NAME}:/tmp/loadgen"
-kubectl exec -n "${NAMESPACE}" "${POD_NAME}" -- chmod +x /tmp/loadgen
-
 REMOTE_JSON="/tmp/benchmark-report.json"
 if [[ -n "${JSON_OUT}" ]]; then
   LOADGEN_ARGS+=("--json-out=${REMOTE_JSON}")
 fi
 
-echo "--> Executing benchmark in cluster: /tmp/loadgen ${LOADGEN_ARGS[*]}"
-kubectl exec -n "${NAMESPACE}" "${POD_NAME}" -- /tmp/loadgen "${LOADGEN_ARGS[@]}"
+echo "--> Executing benchmark in cluster: loadgen ${LOADGEN_ARGS[*]}"
+kubectl exec -n "${NAMESPACE}" "${POD_NAME}" -- loadgen "${LOADGEN_ARGS[@]}"
 
 if [[ -n "${JSON_OUT}" ]]; then
   echo "--> Copying JSON report to ${JSON_OUT}..."

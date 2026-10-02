@@ -617,3 +617,128 @@ func TestManagerSuspendIfIdle_UnreachableReverts(t *testing.T) {
 	}
 }
 
+type pagedControlClient struct {
+	ateapipb.ControlClient
+	pages map[string]*ateapipb.ListActorsResponse
+	calls int
+}
+
+func (p *pagedControlClient) ListActors(_ context.Context, in *ateapipb.ListActorsRequest, _ ...grpc.CallOption) (*ateapipb.ListActorsResponse, error) {
+	p.calls++
+	if resp, ok := p.pages[in.GetPageToken()]; ok {
+		return resp, nil
+	}
+	return &ateapipb.ListActorsResponse{}, nil
+}
+
+func TestListAllActorsPagination(t *testing.T) {
+	client := &pagedControlClient{
+		pages: map[string]*ateapipb.ListActorsResponse{
+			"": {
+				Actors: []*ateapipb.Actor{
+					{Metadata: &ateapipb.ResourceMetadata{Atespace: "ate-ant", Name: "actor-1"}},
+					{Metadata: &ateapipb.ResourceMetadata{Atespace: "ate-ant", Name: "actor-2"}},
+				},
+				NextPageToken: "page-2",
+			},
+			"page-2": {
+				Actors: []*ateapipb.Actor{
+					{Metadata: &ateapipb.ResourceMetadata{Atespace: "ate-ant", Name: "actor-3"}},
+				},
+				NextPageToken: "page-3",
+			},
+			"page-3": {
+				Actors: []*ateapipb.Actor{
+					{Metadata: &ateapipb.ResourceMetadata{Atespace: "ate-ant", Name: "actor-4"}},
+				},
+				NextPageToken: "",
+			},
+		},
+	}
+
+	got, err := ListAllActors(context.Background(), client, "ate-ant")
+	if err != nil {
+		t.Fatalf("ListAllActors: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("len(got) = %d, want 4", len(got))
+	}
+	if client.calls != 3 {
+		t.Fatalf("ListActors calls = %d, want 3", client.calls)
+	}
+}
+
+func TestManagerCrashedActorRecovery(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("resume crashed actor reverts and resumes", func(t *testing.T) {
+		fakeClient := newFakeControlClient()
+		sessionID := "session-crashed-resume"
+		aName := ActorName(sessionID)
+		key := "test-ns/" + aName
+
+		fakeClient.createdActors[key] = &ateapipb.Actor{
+			Metadata: &ateapipb.ResourceMetadata{Atespace: "test-ns", Name: aName},
+			Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_CRASHED},
+		}
+
+		mgr := NewManager(fakeClient, "test-template", "test-ns")
+		if err := mgr.Resume(ctx, sessionID); err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		if fakeClient.revertedActors[key] != 1 {
+			t.Fatalf("revertedActors = %d, want 1", fakeClient.revertedActors[key])
+		}
+		if fakeClient.resumedActors[key] != 1 {
+			t.Fatalf("resumedActors = %d, want 1", fakeClient.resumedActors[key])
+		}
+	})
+
+	t.Run("resume falls back to recreate when snapshot restore fails", func(t *testing.T) {
+		fakeClient := newFakeControlClient()
+		fakeClient.resumeErr = status.Error(codes.Internal, "runsc restore: exit status 128")
+		sessionID := "session-unrestorable-snapshot"
+		aName := ActorName(sessionID)
+		key := "test-ns/" + aName
+
+		fakeClient.createdActors[key] = &ateapipb.Actor{
+			Metadata: &ateapipb.ResourceMetadata{Atespace: "test-ns", Name: aName},
+			Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED},
+		}
+
+		mgr := NewManager(fakeClient, "test-template", "test-ns")
+		if err := mgr.Resume(ctx, sessionID); err != nil {
+			t.Fatalf("Resume: %v", err)
+		}
+		if fakeClient.revertedActors[key] != 1 {
+			t.Fatalf("revertedActors = %d, want 1", fakeClient.revertedActors[key])
+		}
+		if fakeClient.deletedActors[key] != 1 {
+			t.Fatalf("deletedActors = %d, want 1", fakeClient.deletedActors[key])
+		}
+		if got := fakeClient.createdActors[key].GetStatus().GetState(); got != ateapipb.ActorState_ACTOR_STATE_RUNNING {
+			t.Fatalf("recreated actor state = %v, want RUNNING", got)
+		}
+	})
+
+	t.Run("gc and SuspendIfIdle revert crashed actors immediately", func(t *testing.T) {
+		fakeClient := newFakeControlClient()
+		sessionID := "session-crashed-gc"
+		aName := ActorName(sessionID)
+		key := "test-ns/" + aName
+
+		fakeClient.createdActors[key] = &ateapipb.Actor{
+			Metadata: &ateapipb.ResourceMetadata{Atespace: "test-ns", Name: aName},
+			Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_CRASHED},
+		}
+
+		mgr := NewManager(fakeClient, "test-template", "test-ns")
+		if err := mgr.suspendIdleActors(ctx, 10*time.Second); err != nil {
+			t.Fatalf("suspendIdleActors: %v", err)
+		}
+		if fakeClient.revertedActors[key] != 1 {
+			t.Fatalf("revertedActors = %d, want 1", fakeClient.revertedActors[key])
+		}
+	})
+}
+

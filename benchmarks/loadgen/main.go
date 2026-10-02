@@ -34,7 +34,6 @@ import (
 	"time"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/actor"
-	"github.com/agent-substrate/claude-managed-agents/internal/event"
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
 	"github.com/agent-substrate/claude-managed-agents/internal/runner"
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
@@ -42,16 +41,13 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/spf13/cobra"
-	"github.com/valkey-io/valkey-go"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 const (
-	ModeValkey    = "valkey"
 	ModeDirect    = "direct"
 	ModeAnthropic = "anthropic"
-	ModeBoth      = "both"
 )
 
 // Config holds all load generator parameters.
@@ -67,18 +63,14 @@ type Config struct {
 	ReportInterval   time.Duration
 	Notify           bool
 	SuspendAfterTurn bool
-	WaitDrain        bool
-	DrainTimeout     time.Duration
 	JSONOut          string
 
-	// Substrate / Valkey settings
+	// Substrate settings
 	Namespace        string
 	Template         string
 	AteapiAddr       string
 	AtenetRouterAddr string
 	Insecure         bool
-	ValkeyAddr       string
-	ValkeyPassword   string
 
 	// Anthropic API settings
 	EnvironmentID string
@@ -92,7 +84,7 @@ type Config struct {
 // Defaults populates default values for unset fields.
 func (c *Config) Defaults() {
 	if c.Mode == "" {
-		c.Mode = ModeValkey
+		c.Mode = ModeDirect
 	}
 	if c.Sessions <= 0 {
 		c.Sessions = 5000
@@ -109,9 +101,6 @@ func (c *Config) Defaults() {
 	if c.ReportInterval <= 0 {
 		c.ReportInterval = 5 * time.Second
 	}
-	if c.DrainTimeout <= 0 {
-		c.DrainTimeout = 30 * time.Minute
-	}
 	if c.Namespace == "" {
 		c.Namespace = manifest.DefaultNamespace
 	}
@@ -123,16 +112,6 @@ func (c *Config) Defaults() {
 	}
 	if c.AtenetRouterAddr == "" {
 		c.AtenetRouterAddr = manifest.DefaultAtenetRouterAddr
-	}
-	if c.ValkeyAddr == "" {
-		if env := os.Getenv("VALKEY_ADDR"); env != "" {
-			c.ValkeyAddr = env
-		} else {
-			c.ValkeyAddr = manifest.DefaultValkeyAddr
-		}
-	}
-	if c.ValkeyPassword == "" {
-		c.ValkeyPassword = os.Getenv("VALKEY_PASSWORD")
 	}
 	if c.EnvironmentID == "" {
 		c.EnvironmentID = os.Getenv("ANTHROPIC_ENVIRONMENT_ID")
@@ -159,13 +138,13 @@ func (c *Config) Defaults() {
 func (c *Config) Validate() error {
 	c.Defaults()
 	switch c.Mode {
-	case ModeValkey, ModeDirect, ModeAnthropic, ModeBoth:
+	case ModeDirect, ModeAnthropic:
 	default:
-		return fmt.Errorf("invalid --mode %q: must be one of %s, %s, %s, or %s",
-			c.Mode, ModeValkey, ModeDirect, ModeAnthropic, ModeBoth)
+		return fmt.Errorf("invalid --mode %q: must be one of %s or %s",
+			c.Mode, ModeDirect, ModeAnthropic)
 	}
-	if (c.Mode == ModeAnthropic || c.Mode == ModeBoth) && c.EnvironmentID == "" {
-		return errors.New("--anthropic-env-id (or ANTHROPIC_ENVIRONMENT_ID) is required in anthropic/both mode")
+	if c.Mode == ModeAnthropic && c.EnvironmentID == "" {
+		return errors.New("--anthropic-env-id (or ANTHROPIC_ENVIRONMENT_ID) is required in anthropic mode")
 	}
 	return nil
 }
@@ -393,120 +372,6 @@ func runWorkerPool(ctx context.Context, totalItems, concurrency int, rateLimit f
 	close(jobs)
 	wg.Wait()
 	return ctx.Err()
-}
-
-// runValkeyMode injects session resume (and optional suspend) events into Valkey stream:events
-// and optionally waits for the controller consumer group to drain all 10k session events.
-func runValkeyMode(ctx context.Context, cfg Config, rec *Recorder, logger *slog.Logger) error {
-	em, err := event.New(event.ManagerConfig{
-		Valkey: event.ValkeyConfig{
-			Addr:         cfg.ValkeyAddr,
-			Password:     cfg.ValkeyPassword,
-			DisableCache: true,
-		},
-		Logger: logger,
-	})
-	if err != nil {
-		return fmt.Errorf("connecting to valkey at %s: %w", cfg.ValkeyAddr, err)
-	}
-	defer em.Close()
-
-	for turn := 1; turn <= cfg.TurnsPerSession; turn++ {
-		if turn > 1 && cfg.TurnInterval > 0 {
-			logger.Info("Waiting between turns", slog.Int("next_turn", turn), slog.Duration("interval", cfg.TurnInterval))
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(cfg.TurnInterval):
-			}
-		}
-
-		logger.Info("Injecting session resume events into Valkey stream",
-			slog.Int("turn", turn),
-			slog.Int("sessions", cfg.Sessions),
-			slog.Int("concurrency", cfg.Concurrency),
-		)
-
-		err := runWorkerPool(ctx, cfg.Sessions, cfg.Concurrency, cfg.RateLimitPerSec, func(ctx context.Context, i int) error {
-			sessID := fmt.Sprintf("sesn_%s_%05d", cfg.SessionPrefix, i)
-			workID := fmt.Sprintf("work_%s_t%d_%05d", cfg.SessionPrefix, turn, i)
-			hb := fmt.Sprintf("hb_%s_t%d_%05d", cfg.SessionPrefix, turn, i)
-
-			start := time.Now()
-			_, qErr := em.QueueResume(ctx, sessID, workID, hb)
-			rec.Record("valkey_queue_resume", time.Since(start), qErr)
-			if qErr != nil {
-				return qErr
-			}
-
-			if cfg.SuspendAfterTurn {
-				sStart := time.Now()
-				_, sErr := em.QueueSuspend(ctx, sessID)
-				rec.Record("valkey_queue_suspend", time.Since(sStart), sErr)
-				return sErr
-			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	if cfg.WaitDrain {
-		if err := waitValkeyStreamDrain(ctx, cfg, rec, logger); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func waitValkeyStreamDrain(ctx context.Context, cfg Config, rec *Recorder, logger *slog.Logger) error {
-	vkOpt := valkey.ClientOption{
-		InitAddress:  []string{cfg.ValkeyAddr},
-		DisableCache: true,
-	}
-	if cfg.ValkeyPassword != "" {
-		vkOpt.Password = cfg.ValkeyPassword
-	}
-	vk, err := valkey.NewClient(vkOpt)
-	if err != nil {
-		return fmt.Errorf("connecting to valkey for drain check: %w", err)
-	}
-	defer vk.Close()
-
-	drainStart := time.Now()
-	drainCtx, cancel := context.WithTimeout(ctx, cfg.DrainTimeout)
-	defer cancel()
-
-	logger.Info("Waiting for controller consumer group to drain stream:events",
-		slog.Duration("timeout", cfg.DrainTimeout),
-	)
-
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-drainCtx.Done():
-			rec.Record("valkey_stream_drain", time.Since(drainStart), drainCtx.Err())
-			return fmt.Errorf("waiting for stream drain: %w", drainCtx.Err())
-		case <-ticker.C:
-			pendingCmd := vk.B().Xpending().Key("stream:events").Group("event").Build()
-			arr, pErr := vk.Do(drainCtx, pendingCmd).ToArray()
-			if pErr != nil {
-				continue
-			}
-			if len(arr) > 0 {
-				pendingCount, _ := arr[0].AsInt64()
-				if pendingCount == 0 {
-					rec.Record("valkey_stream_drain", time.Since(drainStart), nil)
-					logger.Info("Valkey stream pending queue drained", slog.Duration("drain_duration", time.Since(drainStart)))
-					return nil
-				}
-				logger.Info("Valkey stream draining in progress", slog.Int64("pending_events", pendingCount))
-			}
-		}
-	}
 }
 
 // runDirectMode drives Substrate actor lifecycle directly via ateapi and atenet-router.
@@ -780,18 +645,10 @@ func newRootCommand() *cobra.Command {
 
 			var runErr error
 			switch cfg.Mode {
-			case ModeValkey:
-				runErr = runValkeyMode(ctx, cfg, rec, logger)
 			case ModeDirect:
 				runErr = runDirectMode(ctx, cfg, rec, logger)
 			case ModeAnthropic:
 				runErr = runAnthropicMode(ctx, cfg, rec, logger)
-			case ModeBoth:
-				if err := runValkeyMode(ctx, cfg, rec, logger); err != nil {
-					runErr = err
-				} else {
-					runErr = runAnthropicMode(ctx, cfg, rec, logger)
-				}
 			}
 
 			stop()
@@ -815,7 +672,7 @@ func newRootCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&cfg.Mode, "mode", ModeValkey, "benchmark mode: valkey, direct, anthropic, or both")
+	cmd.Flags().StringVar(&cfg.Mode, "mode", ModeDirect, "benchmark mode: direct or anthropic")
 	cmd.Flags().IntVar(&cfg.Sessions, "sessions", 5000, "total number of actor sessions to benchmark")
 	cmd.Flags().IntVar(&cfg.Concurrency, "concurrency", 100, "number of concurrent worker goroutines")
 	cmd.Flags().IntVar(&cfg.TurnsPerSession, "turns-per-session", 1, "number of turns to execute per session")
@@ -825,9 +682,7 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().DurationVar(&cfg.ActiveHold, "active-hold", 0, "duration to hold actor active before suspending in direct mode")
 	cmd.Flags().DurationVar(&cfg.ReportInterval, "report-interval", 5*time.Second, "interval between progress log messages")
 	cmd.Flags().BoolVar(&cfg.Notify, "notify", true, "send HTTP POST /work via atenet-router in direct mode")
-	cmd.Flags().BoolVar(&cfg.SuspendAfterTurn, "suspend-after-turn", true, "suspend actor after each turn to multiplex 10k sessions over the warm WorkerPool")
-	cmd.Flags().BoolVar(&cfg.WaitDrain, "wait-drain", false, "wait for Valkey stream consumer group to drain all pending events")
-	cmd.Flags().DurationVar(&cfg.DrainTimeout, "drain-timeout", 30*time.Minute, "timeout when waiting for Valkey stream drain")
+	cmd.Flags().BoolVar(&cfg.SuspendAfterTurn, "suspend-after-turn", true, "suspend actor after each turn to multiplex sessions over the warm WorkerPool")
 	cmd.Flags().StringVar(&cfg.JSONOut, "json-out", "", "optional path to write JSON benchmark report")
 
 	cmd.Flags().StringVar(&cfg.Namespace, "namespace", manifest.DefaultNamespace, "Kubernetes namespace / Substrate atespace")
@@ -835,7 +690,6 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", manifest.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", manifest.DefaultAtenetRouterAddr, "Substrate atenet router HTTP endpoint")
 	cmd.Flags().BoolVar(&cfg.Insecure, "insecure", false, "connect to ateapi without TLS")
-	cmd.Flags().StringVar(&cfg.ValkeyAddr, "valkey-addr", "", "Valkey endpoint (default $VALKEY_ADDR or valkey.ate-ant.svc.cluster.local:6379)")
 
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (default $ANTHROPIC_ENVIRONMENT_ID)")
 	cmd.Flags().StringVar(&cfg.APIKey, "anthropic-api-key", "", "Anthropic API key (default $ANTHROPIC_API_KEY)")

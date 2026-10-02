@@ -132,7 +132,81 @@ func (m *Manager) EnsureAtespace(ctx context.Context) error {
 	return nil
 }
 
+func (m *Manager) createActorWithEgress(ctx context.Context, actorRef *ateapipb.ObjectRef) error {
+	if err := m.EnsureAtespace(ctx); err != nil {
+		return fmt.Errorf("ensuring atespace %q: %w", actorRef.Atespace, err)
+	}
+	_, err := m.client.CreateActor(ctx, &ateapipb.CreateActorRequest{
+		Actor: &ateapipb.Actor{
+			Metadata: &ateapipb.ResourceMetadata{
+				Atespace: actorRef.Atespace,
+				Name:     actorRef.Name,
+			},
+			ActorTemplate: &ateapipb.ObjectRef{
+				Atespace: m.atespace,
+				Name:     m.template,
+			},
+		},
+	})
+	if err != nil && status.Code(err) != codes.AlreadyExists {
+		return fmt.Errorf("creating actor %s: %w", actorRef.Name, err)
+	}
+
+	// Ensure the actor has an egress policy allowing all outbound traffic.
+	// TODO: Determine the ideal egress network policy configuration rather than allowing all traffic.
+	_, err = m.client.CreateActorEgressPolicy(ctx, &ateapipb.CreateActorEgressPolicyRequest{
+		Actor: actorRef,
+		EgressPolicy: &ateapipb.EgressPolicy{
+			Metadata: &ateapipb.ResourceMetadata{
+				Atespace: actorRef.Atespace,
+				Name:     "default",
+			},
+			Rules: []*ateapipb.EgressRule{
+				{
+					Http: &ateapipb.HTTPRule{
+						Hostnames: []string{"*"},
+					},
+				},
+				{
+					Https: &ateapipb.HTTPSRule{
+						Hostnames: []string{"*"},
+					},
+				},
+				{
+					TlsPassthrough: &ateapipb.TLSPassthroughRule{
+						Hostnames: []string{"*"},
+						Ports: &ateapipb.Ports{
+							All: &ateapipb.AllPorts{},
+						},
+					},
+				},
+			},
+		},
+	})
+	if err != nil && status.Code(err) != codes.AlreadyExists {
+		m.logger.Warn("Failed to create default egress policy for actor",
+			slog.String("actor", actorRef.Name),
+			slog.Any("error", err),
+		)
+	}
+
+	m.recordResume(actorRef.Name)
+	return nil
+}
+
+func (m *Manager) recreateActor(ctx context.Context, actorRef *ateapipb.ObjectRef) error {
+	m.logger.Warn("Deleting and recreating unrecoverable crashed actor",
+		slog.String("actor", actorRef.Name),
+	)
+	if _, err := m.client.DeleteActor(ctx, &ateapipb.DeleteActorRequest{Actor: actorRef}); err != nil && status.Code(err) != codes.NotFound {
+		return fmt.Errorf("deleting crashed actor %s: %w", actorRef.Name, err)
+	}
+	return m.createActorWithEgress(ctx, actorRef)
+}
+
 // Resume ensures the actor for sessionID exists (creating it if needed) and resumes it if suspended.
+// If the actor is in CRASHED state or fails to restore from its snapshot, it reverts and retries,
+// falling back to deleting and recreating the actor if snapshot restoration still fails.
 func (m *Manager) Resume(ctx context.Context, sessionID string) error {
 	actorRef := &ateapipb.ObjectRef{
 		Atespace: m.atespace,
@@ -145,72 +219,32 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) error {
 			slog.String("actor", actorRef.Name),
 			slog.String("atespace", actorRef.Atespace),
 		)
-		if err := m.EnsureAtespace(ctx); err != nil {
-			return fmt.Errorf("ensuring atespace %q: %w", actorRef.Atespace, err)
-		}
-		_, err = m.client.CreateActor(ctx, &ateapipb.CreateActorRequest{
-			Actor: &ateapipb.Actor{
-				Metadata: &ateapipb.ResourceMetadata{
-					Atespace: actorRef.Atespace,
-					Name:     actorRef.Name,
-				},
-				ActorTemplate: &ateapipb.ObjectRef{
-					Atespace: m.atespace,
-					Name:     m.template,
-				},
-			},
-		})
-		if err != nil && status.Code(err) != codes.AlreadyExists {
-			return fmt.Errorf("creating actor %s: %w", actorRef.Name, err)
-		}
-
-		// Ensure the actor has an egress policy allowing all outbound traffic.
-		// TODO: Determine the ideal egress network policy configuration rather than allowing all traffic.
-		_, err = m.client.CreateActorEgressPolicy(ctx, &ateapipb.CreateActorEgressPolicyRequest{
-			Actor: actorRef,
-			EgressPolicy: &ateapipb.EgressPolicy{
-				Metadata: &ateapipb.ResourceMetadata{
-					Atespace: actorRef.Atespace,
-					Name:     "default",
-				},
-				Rules: []*ateapipb.EgressRule{
-					{
-						Http: &ateapipb.HTTPRule{
-							Hostnames: []string{"*"},
-						},
-					},
-					{
-						Https: &ateapipb.HTTPSRule{
-							Hostnames: []string{"*"},
-						},
-					},
-					{
-						TlsPassthrough: &ateapipb.TLSPassthroughRule{
-							Hostnames: []string{"*"},
-							Ports: &ateapipb.Ports{
-								All: &ateapipb.AllPorts{},
-							},
-						},
-					},
-				},
-			},
-		})
-		if err != nil && status.Code(err) != codes.AlreadyExists {
-			m.logger.Warn("Failed to create default egress policy for actor",
-				slog.String("actor", actorRef.Name),
-				slog.Any("error", err),
-			)
-		}
-
-		m.recordResume(actorRef.Name)
-		return nil
+		return m.createActorWithEgress(ctx, actorRef)
 	} else if err != nil {
 		return err
 	}
 
 	if actor != nil {
+		if actor.GetStatus() != nil && actor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_CRASHED {
+			m.logger.Warn("Actor is in CRASHED state before resume, reverting to suspended",
+				slog.String("actor", actorRef.Name),
+			)
+			_ = m.revertActor(ctx, actorRef)
+		}
+
 		if _, err := m.client.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: actorRef}); err != nil {
-			m.logger.Debug("ResumeActor result", slog.String("actor", actorRef.Name), slog.Any("error", err))
+			m.logger.Warn("ResumeActor failed, reverting actor and retrying",
+				slog.String("actor", actorRef.Name),
+				slog.Any("error", err),
+			)
+			_ = m.revertActor(ctx, actorRef)
+			if _, retryErr := m.client.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: actorRef}); retryErr != nil {
+				m.logger.Warn("ResumeActor retry after revert failed, recreating actor",
+					slog.String("actor", actorRef.Name),
+					slog.Any("error", retryErr),
+				)
+				return m.recreateActor(ctx, actorRef)
+			}
 		}
 		m.recordResume(actorRef.Name)
 	}
@@ -333,6 +367,10 @@ func (m *Manager) suspendActor(ctx context.Context, actorRef *ateapipb.ObjectRef
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return nil
+		}
+		if actor, getErr := m.client.GetActor(suspendCtx, &ateapipb.GetActorRequest{Actor: actorRef}); getErr == nil && actor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_CRASHED {
+			m.logger.Warn("Actor is in CRASHED state during suspend, reverting to suspended", slog.String("actor", actorRef.Name))
+			return m.revertActor(ctx, actorRef)
 		}
 		return fmt.Errorf("suspending actor %s: %w", actorRef.Name, err)
 	}
@@ -472,34 +510,83 @@ func (m *Manager) SuspendIfIdle(ctx context.Context, sessionID string, threshold
 	if err != nil {
 		return false, fmt.Errorf("getting actor %s: %w", actorRef.Name, err)
 	}
-	if actor.GetStatus() != nil && actor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
-		return true, nil
+	if actor.GetStatus() != nil {
+		switch actor.GetStatus().GetState() {
+		case ateapipb.ActorState_ACTOR_STATE_SUSPENDED:
+			return true, nil
+		case ateapipb.ActorState_ACTOR_STATE_CRASHED:
+			m.logger.Warn("Actor is in CRASHED state during idle check, reverting to suspended",
+				slog.String("actor", actorRef.Name),
+			)
+			if err := m.revertActor(ctx, actorRef); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
 	}
 
 	return m.checkAndSuspendActor(ctx, actorRef, threshold)
 }
 
+// ListAllActors paginates through all pages of ListActors for the given atespace.
+func ListAllActors(ctx context.Context, client ateapipb.ControlClient, atespace string) ([]*ateapipb.Actor, error) {
+	var (
+		all       []*ateapipb.Actor
+		pageToken string
+	)
+	for {
+		resp, err := client.ListActors(ctx, &ateapipb.ListActorsRequest{
+			Atespace:  atespace,
+			PageSize:  1000,
+			PageToken: pageToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, resp.GetActors()...)
+		nextToken := resp.GetNextPageToken()
+		if nextToken == "" || nextToken == pageToken {
+			break
+		}
+		pageToken = nextToken
+	}
+	return all, nil
+}
+
 // suspendIdleActors lists all actors in the atespace, queries their /idle endpoint,
 // and suspends any actor that has been idle for longer than the threshold.
 func (m *Manager) suspendIdleActors(ctx context.Context, threshold time.Duration) error {
-	resp, err := m.client.ListActors(ctx, &ateapipb.ListActorsRequest{
-		Atespace: m.atespace,
-	})
+	actors, err := ListAllActors(ctx, m.client, m.atespace)
 	if err != nil {
 		return fmt.Errorf("listing actors in atespace %q: %w", m.atespace, err)
 	}
 
-	for _, actor := range resp.GetActors() {
+	for _, actor := range actors {
 		if actor == nil || actor.GetMetadata() == nil {
-			continue
-		}
-		if actor.GetStatus() != nil && actor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
 			continue
 		}
 
 		actorRef := &ateapipb.ObjectRef{
 			Atespace: actor.GetMetadata().GetAtespace(),
 			Name:     actor.GetMetadata().GetName(),
+		}
+
+		if actor.GetStatus() != nil {
+			switch actor.GetStatus().GetState() {
+			case ateapipb.ActorState_ACTOR_STATE_SUSPENDED:
+				continue
+			case ateapipb.ActorState_ACTOR_STATE_CRASHED:
+				m.logger.Warn("Reverting crashed actor found during GC scan",
+					slog.String("actor", actorRef.Name),
+				)
+				if err := m.revertActor(ctx, actorRef); err != nil {
+					m.logger.Debug("Failed to revert crashed actor",
+						slog.String("actor", actorRef.Name),
+						slog.Any("error", err),
+					)
+				}
+				continue
+			}
 		}
 
 		m.mu.Lock()

@@ -15,20 +15,76 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"google.golang.org/grpc"
 )
 
+type fakePagedControlClient struct {
+	ateapipb.ControlClient
+	pages map[string]*ateapipb.ListActorsResponse
+}
+
+func (f *fakePagedControlClient) ListActors(_ context.Context, in *ateapipb.ListActorsRequest, _ ...grpc.CallOption) (*ateapipb.ListActorsResponse, error) {
+	if resp, ok := f.pages[in.GetPageToken()]; ok {
+		return resp, nil
+	}
+	return &ateapipb.ListActorsResponse{}, nil
+}
+
+func TestDashboardCollectStatsPagination(t *testing.T) {
+	client := &fakePagedControlClient{
+		pages: map[string]*ateapipb.ListActorsResponse{
+			"": {
+				Actors: []*ateapipb.Actor{
+					{
+						Metadata: &ateapipb.ResourceMetadata{Atespace: "ate-ant", Name: "old-actor-1"},
+						Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED},
+					},
+				},
+				NextPageToken: "page-2",
+			},
+			"page-2": {
+				Actors: []*ateapipb.Actor{
+					{
+						Metadata: &ateapipb.ResourceMetadata{Atespace: "ate-ant", Name: "new-actor-2"},
+						Status: &ateapipb.ActorStatus{
+							State:            ateapipb.ActorState_ACTOR_STATE_RUNNING,
+							WorkerAssignment: &ateapipb.WorkerAssignment{WorkerPod: "worker-0"},
+						},
+					},
+				},
+				NextPageToken: "",
+			},
+		},
+	}
+
+	srv := NewServer(Config{Namespace: "ate-ant"}, client, nil, nil)
+	stats := srv.collectStats(context.Background())
+
+	if stats.Actors.Total != 2 {
+		t.Fatalf("stats.Actors.Total = %d, want 2", stats.Actors.Total)
+	}
+	if stats.Actors.Suspended != 1 {
+		t.Fatalf("stats.Actors.Suspended = %d, want 1", stats.Actors.Suspended)
+	}
+	if stats.Actors.Running != 1 {
+		t.Fatalf("stats.Actors.Running = %d, want 1", stats.Actors.Running)
+	}
+	if stats.Workers.WorkerPoolClaimed != 1 {
+		t.Fatalf("stats.Workers.WorkerPoolClaimed = %d, want 1", stats.Workers.WorkerPoolClaimed)
+	}
+}
+
 func TestDashboardEndpointsAndSecurityHeaders(t *testing.T) {
-	srv := NewServer(Config{
-		Namespace:      "ate-ant",
-		DefaultWorkers: 50,
-		DefaultControl: 20,
-	}, nil, nil, nil)
+	srv := NewServer(Config{Namespace: "ate-ant"}, nil, nil, nil)
 
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -45,14 +101,14 @@ func TestDashboardEndpointsAndSecurityHeaders(t *testing.T) {
 			method:      http.MethodGet,
 			path:        "/",
 			wantStatus:  http.StatusOK,
-			wantContent: "Dashboard",
+			wantContent: "Agent Substrate",
 		},
 		{
 			name:        "styles",
 			method:      http.MethodGet,
 			path:        "/styles.css",
 			wantStatus:  http.StatusOK,
-			wantContent: "--bg:",
+			wantContent: "--page:",
 		},
 		{
 			name:        "script",
@@ -126,8 +182,8 @@ func TestDashboardEndpointsAndSecurityHeaders(t *testing.T) {
 		if stats.Namespace != "ate-ant" {
 			t.Errorf("Namespace = %q, want ate-ant", stats.Namespace)
 		}
-		if stats.Workers.WorkerPoolDesired != 50 {
-			t.Errorf("WorkerPoolDesired = %d, want 50", stats.Workers.WorkerPoolDesired)
+		if stats.Workers.WorkerPoolDesired != 0 {
+			t.Errorf("WorkerPoolDesired = %d, want 0 outside the cluster", stats.Workers.WorkerPoolDesired)
 		}
 	})
 }

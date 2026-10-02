@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Tears down the 200-node benchmark GKE cluster and optionally deletes the
+# Tears down the 50-node benchmark GKE cluster and optionally deletes the
 # GCS snapshot bucket when PURGE_SNAPSHOTS=true.
 
 set -o errexit -o nounset -o pipefail

@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Claude Managed Agents on Agent Substrate</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="page" id="page">
+    <header class="topbar">
+      <div class="brand">
+        <h1>Claude Managed Agents <span class="brand-on">on</span> Agent Substrate</h1>
+        <div class="brand-meta">
+          <span class="pill" id="live-pill" data-state="connecting">
+            <span class="pill-dot" aria-hidden="true"></span>
+            <span id="live-text">Connecting</span>
+          </span>
+          <span class="meta">namespace <code id="ns-badge">ate-ant</code></span>
+          <span class="meta" id="collect-ms"></span>
+          <span class="meta" id="last-updated"></span>
+        </div>
+      </div>
+      <div class="controls">
+        <label class="ctrl">Refresh
+          <select id="poll-select">
+            <option value="1000" selected>1s</option>
+            <option value="2000">2s</option>
+            <option value="5000">5s</option>
+            <option value="0">Paused</option>
+          </select>
+        </label>
+        <label class="ctrl">Theme
+          <select id="theme-select">
+            <option value="dark" selected>Dark</option>
+            <option value="light">Light</option>
+            <option value="auto">Auto</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <div class="banner" id="warnings" role="status" hidden></div>
+
+    <section class="card hero">
+      <div class="hero-main">
+        <div class="label">Session actors</div>
+        <div class="hero-value" id="hero-total">0</div>
+        <div class="hero-sub">
+          multiplexed over <strong id="hero-workers">0</strong> warm gVisor sandboxes
+          <span class="dot-sep" aria-hidden="true">·</span>
+          <strong id="hero-multiplex">0.0×</strong> multiplex
+        </div>
+      </div>
+      <div class="hero-side">
+        <div class="row-between">
+          <span class="label">Actor states</span>
+          <span class="meta" id="stack-total"></span>
+        </div>
+        <div class="stack" id="state-stack" role="img" aria-label="Actor state breakdown"></div>
+        <ul class="legend legend-wrap">
+          <li><span class="swatch rect s1" aria-hidden="true"></span>Running <strong id="leg-running">0</strong></li>
+          <li><span class="swatch rect s2" aria-hidden="true"></span>Transitioning <strong id="leg-transitioning">0</strong></li>
+          <li><span class="swatch rect dim" aria-hidden="true"></span>Suspended in GCS <strong id="leg-suspended">0</strong></li>
+        </ul>
+        <div class="status-line crit" id="errored-row" hidden>
+          <span aria-hidden="true">&#9888;</span> <strong id="leg-errored">0</strong> crashed
+        </div>
+      </div>
+    </section>
+
+    <section class="kpi-grid">
+      <div class="card tile">
+        <div class="label">Running</div>
+        <div class="tile-value" id="kpi-running">0</div>
+        <svg class="spark" data-spark="running" viewBox="0 0 120 32" aria-hidden="true"></svg>
+      </div>
+      <div class="card tile">
+        <div class="label">Transitioning</div>
+        <div class="tile-value" id="kpi-transitioning">0</div>
+        <div class="tile-sub"><span id="kpi-resuming">0</span> resuming <span class="dot-sep">·</span> <span id="kpi-suspending">0</span> suspending</div>
+        <svg class="spark" data-spark="transitioning" viewBox="0 0 120 32" aria-hidden="true"></svg>
+      </div>
+      <div class="card tile">
+        <div class="label">Suspended in GCS</div>
+        <div class="tile-value" id="kpi-suspended">0</div>
+        <svg class="spark" data-spark="suspended" viewBox="0 0 120 32" aria-hidden="true"></svg>
+      </div>
+      <div class="card tile">
+        <div class="label">Queue pending</div>
+        <div class="tile-value" id="kpi-pending">0</div>
+        <div class="tile-sub">lag <span id="kpi-lag">0</span> <span class="dot-sep">·</span> <span id="kpi-consumers">0</span> consumers</div>
+        <svg class="spark" data-spark="pending" viewBox="0 0 120 32" aria-hidden="true"></svg>
+      </div>
+      <div class="card tile">
+        <div class="label">Controllers ready</div>
+        <div class="tile-value"><span id="kpi-ctrl-ready">0</span><span class="tile-denom">/<span id="kpi-ctrl-desired">0</span></span></div>
+        <div class="tile-sub">stream length <span id="kpi-stream-len">0</span></div>
+      </div>
+      <div class="card tile">
+        <div class="label">Utilization</div>
+        <div class="tile-value" id="kpi-util">0%</div>
+        <div class="meter" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="util-meter"><div class="meter-fill" id="util-fill"></div></div>
+        <div class="tile-sub"><span id="kpi-claimed">0</span> claimed <span class="dot-sep">·</span> <span id="kpi-idle">0</span> idle</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header">
+        <h2>Warm pool</h2>
+        <span class="meta"><span id="pool-ready">0</span>/<span id="pool-desired">0</span> ready</span>
+      </div>
+      <div class="worker-grid" id="worker-grid"></div>
+      <ul class="legend">
+        <li><span class="swatch rect s1" aria-hidden="true"></span>Hosting an actor</li>
+        <li><span class="swatch rect idle" aria-hidden="true"></span>Warm, idle</li>
+        <li><span class="swatch rect off" aria-hidden="true"></span>Not ready</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <div class="card-header">
+        <h2>Activity <span class="meta">last 60 samples</span></h2>
+        <div class="header-tools">
+          <ul class="legend">
+            <li><span class="swatch line s1" aria-hidden="true"></span>Running</li>
+            <li><span class="swatch line s2" aria-hidden="true"></span>Transitioning</li>
+            <li><span class="swatch line s3" aria-hidden="true"></span>Queue pending</li>
+          </ul>
+          <button type="button" class="btn" id="table-toggle" aria-pressed="false">Table</button>
+        </div>
+      </div>
+      <figure class="chart" id="activity-chart" tabindex="0" aria-label="Activity over the last 60 samples. Use arrow keys to move the crosshair.">
+        <svg width="100%" height="100%" role="img"></svg>
+      </figure>
+      <div class="table-wrap" id="activity-table" hidden>
+        <table class="data-table">
+          <thead><tr><th>Time</th><th class="num">Running</th><th class="num">Transitioning</th><th class="num">Queue pending</th></tr></thead>
+          <tbody id="activity-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-header">
+        <h2>Actors</h2>
+        <div class="filters">
+          <input type="search" id="actor-filter" placeholder="Filter by name or worker pod" aria-label="Filter actors">
+          <select id="state-filter" aria-label="Filter by state"><option value="">All states</option></select>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table actor-table">
+          <thead>
+            <tr><th>Actor</th><th>State</th><th>Worker pod</th><th>Pod IP</th><th class="num">Version</th><th class="num">Age</th></tr>
+          </thead>
+          <tbody id="actor-rows"></tbody>
+        </table>
+      </div>
+      <div class="meta" id="actor-count"></div>
+    </section>
+  </main>
+
+  <div class="tip" id="tip" role="tooltip" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -30,16 +30,15 @@ import (
 	"time"
 
 	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
-	"github.com/alicebob/miniredis/v2"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 func TestValidateConfig(t *testing.T) {
-	cfg := Config{Mode: ModeValkey}
+	cfg := Config{Mode: ModeDirect}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate valid valkey config: %v", err)
+		t.Fatalf("Validate valid direct config: %v", err)
 	}
 	if cfg.Sessions != 5000 {
 		t.Errorf("default Sessions = %d, want 5000", cfg.Sessions)
@@ -88,41 +87,11 @@ func TestRecorderAndReport(t *testing.T) {
 	}
 }
 
-func TestRunValkeyMode(t *testing.T) {
-	mr := miniredis.RunT(t)
-
-	cfg := Config{
-		Mode:             ModeValkey,
-		Sessions:         25,
-		Concurrency:      5,
-		TurnsPerSession:  2,
-		SuspendAfterTurn: true,
-		ValkeyAddr:       mr.Addr(),
-		SessionPrefix:    "testvk",
-	}
-	cfg.Defaults()
-
-	rec := NewRecorder()
-	if err := runValkeyMode(context.Background(), cfg, rec, slog.Default()); err != nil {
-		t.Fatalf("runValkeyMode: %v", err)
-	}
-
-	rep := rec.Report(cfg)
-	if len(rep.Operations) != 2 {
-		t.Fatalf("got %d operations, want 2: %+v", len(rep.Operations), rep.Operations)
-	}
-	for _, op := range rep.Operations {
-		if op.Successes != 50 || op.Errors != 0 {
-			t.Errorf("operation %s: got successes=%d errors=%d, want 50/0", op.Operation, op.Successes, op.Errors)
-		}
-	}
-}
-
 type testControlServer struct {
 	ateapipb.UnimplementedControlServer
-	mu      sync.Mutex
-	actors  map[string]*ateapipb.Actor
-	resumes int
+	mu       sync.Mutex
+	actors   map[string]*ateapipb.Actor
+	resumes  int
 	suspends int
 }
 

@@ -13,32 +13,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-# Builds and deploys the live benchmark dashboard web UI directly inside the
-# Kubernetes cluster (namespace ate-ant) and exposes it via a LoadBalancer Service.
+# Deploys the live benchmark dashboard web UI inside the Kubernetes cluster
+# (namespace ate-ant) and exposes it via a LoadBalancer Service.
+#
+# The dashboard binary ships in the ate-ant worker image. Rebuild and
+# reinstall (build-images.sh, install.sh) to pick up local changes to
+# benchmarks/dashboard.
 
 set -o errexit -o nounset -o pipefail
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "${ROOT_DIR}"
 
 NAMESPACE="${NAMESPACE:-ate-ant}"
 POD_NAME="${POD_NAME:-ate-ant-dashboard}"
 SERVICE_NAME="${SERVICE_NAME:-ate-ant-dashboard}"
 SERVICE_TYPE="${SERVICE_TYPE:-LoadBalancer}"
-RUNNER_IMAGE="${RUNNER_IMAGE:-debian:bookworm-slim}"
+# Default to the worker image install.sh deployed; it contains /usr/local/bin/dashboard.
+RUNNER_IMAGE="${RUNNER_IMAGE:-$(kubectl get deployment ate-ant-controller -n "${NAMESPACE}" -o jsonpath='{.spec.template.spec.containers[0].image}')}"
 
-TMP_BIN="$(mktemp -t dashboard-linux-amd64.XXXXXX)"
-cleanup() {
-  rm -f "${TMP_BIN}"
-}
-trap cleanup EXIT
-
-echo "--> Cross-compiling benchmark dashboard for linux/amd64..."
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -buildvcs=false -o "${TMP_BIN}" ./benchmarks/dashboard
-
-echo "--> Applying RBAC and Service (${SERVICE_TYPE}) in namespace '${NAMESPACE}'..."
-kubectl delete pod "${POD_NAME}" -n "${NAMESPACE}" --ignore-not-found --grace-period=0 --force --wait=true >/dev/null 2>&1 || true
+echo "--> Applying RBAC, Service (${SERVICE_TYPE}), and dashboard Pod in namespace '${NAMESPACE}'..."
+kubectl delete pod "${POD_NAME}" -n "${NAMESPACE}" --ignore-not-found --wait=true >/dev/null 2>&1 || true
 
 cat <<EOF | kubectl apply -f -
 apiVersion: rbac.authorization.k8s.io/v1
@@ -93,14 +85,7 @@ spec:
   containers:
   - name: dashboard
     image: ${RUNNER_IMAGE}
-    command:
-    - sh
-    - -c
-    - |
-      while [ ! -x /tmp/ate-ant-dashboard ]; do
-        sleep 0.5
-      done
-      exec /tmp/ate-ant-dashboard --addr=:8080 --namespace=${NAMESPACE}
+    command: ["dashboard", "--addr=:8080", "--namespace=${NAMESPACE}"]
     ports:
     - containerPort: 8080
       name: http
@@ -127,33 +112,13 @@ spec:
           path: ateapi-token
 EOF
 
-echo "--> Waiting for pod '${POD_NAME}' container to start..."
-for _ in $(seq 1 60); do
-  phase="$(kubectl get pod "${POD_NAME}" -n "${NAMESPACE}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-  if [[ "${phase}" == "Running" ]]; then
-    break
-  fi
-  sleep 1
-done
-
-echo "--> Uploading dashboard binary into '${POD_NAME}'..."
-kubectl cp "${TMP_BIN}" "${NAMESPACE}/${POD_NAME}:/tmp/ate-ant-dashboard.bin"
-kubectl exec -n "${NAMESPACE}" "${POD_NAME}" -- sh -c "chmod +x /tmp/ate-ant-dashboard.bin && mv /tmp/ate-ant-dashboard.bin /tmp/ate-ant-dashboard"
-
-echo "--> Waiting for dashboard readiness probe..."
-kubectl wait --for=condition=Ready "pod/${POD_NAME}" -n "${NAMESPACE}" --timeout=60s
+echo "--> Waiting for dashboard pod '${POD_NAME}' to be Ready..."
+kubectl wait --for=condition=Ready "pod/${POD_NAME}" -n "${NAMESPACE}" --timeout=120s
 
 if [[ "${SERVICE_TYPE}" == "LoadBalancer" ]]; then
   echo "--> Waiting for LoadBalancer external IP on service/${SERVICE_NAME}..."
-  EXTERNAL_IP=""
-  for _ in $(seq 1 60); do
-    EXTERNAL_IP="$(kubectl get svc "${SERVICE_NAME}" -n "${NAMESPACE}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
-    if [[ -n "${EXTERNAL_IP}" ]]; then
-      break
-    fi
-    sleep 2
-  done
-  if [[ -n "${EXTERNAL_IP}" ]]; then
+  if kubectl wait --for=jsonpath='{.status.loadBalancer.ingress[0].ip}' "svc/${SERVICE_NAME}" -n "${NAMESPACE}" --timeout=120s >/dev/null; then
+    EXTERNAL_IP="$(kubectl get svc "${SERVICE_NAME}" -n "${NAMESPACE}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
     echo ""
     echo "=========================================================="
     echo "Dashboard is live at: http://${EXTERNAL_IP}/"

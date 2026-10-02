@@ -62,7 +62,7 @@ Update the container images before applying the manifests.
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:e6d05802b220e9c0976d7a0c2639e54cf263f4e1d4d376ce0f70b520664f9a40 \
+  --worker-image gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:3fae8baea92eee9c90089c131f97369c24e26797e8b3945e78221a0123676ad2 \
   --ateom-image  gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor@sha256:7d8878129e707c2842691cdef1f919450985df3f223dbb65361baca79c789e58 | kubectl apply -f -
 ```
 
@@ -72,7 +72,7 @@ Substrate manages ActorTemplates directly in its control plane rather than Kuber
 
 ```bash
 go run ./cmd/ate-ant manifest template \
-  --worker-image     gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:e6d05802b220e9c0976d7a0c2639e54cf263f4e1d4d376ce0f70b520664f9a40 \
+  --worker-image     gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:3fae8baea92eee9c90089c131f97369c24e26797e8b3945e78221a0123676ad2 \
   --snapshots-bucket gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ | kubectl-ate create actor-template -f -
 ```
 

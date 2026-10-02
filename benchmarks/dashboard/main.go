@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -40,6 +41,15 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 )
 
+var (
+	//go:embed static/index.html
+	indexHTML string
+	//go:embed static/styles.css
+	stylesCSS string
+	//go:embed static/app.js
+	appJS string
+)
+
 // Config configures the in-cluster benchmark dashboard server.
 type Config struct {
 	Addr             string
@@ -48,8 +58,6 @@ type Config struct {
 	InsecureATE      bool
 	ValkeyAddr       string
 	ValkeyPassword   string
-	DefaultWorkers   int
-	DefaultControl   int
 	MaxActorsInTable int
 }
 
@@ -70,12 +78,6 @@ func (c *Config) Defaults() {
 	if c.ValkeyPassword == "" {
 		c.ValkeyPassword = os.Getenv("VALKEY_PASSWORD")
 	}
-	if c.DefaultWorkers <= 0 {
-		c.DefaultWorkers = 50
-	}
-	if c.DefaultControl <= 0 {
-		c.DefaultControl = 20
-	}
 	if c.MaxActorsInTable <= 0 {
 		c.MaxActorsInTable = 150
 	}
@@ -83,28 +85,28 @@ func (c *Config) Defaults() {
 
 // ActorSummary holds counts of actors by lifecycle state.
 type ActorSummary struct {
-	Total            int     `json:"total"`
-	Running          int     `json:"running"`
-	Resuming         int     `json:"resuming"`
-	Creating         int     `json:"creating"`
-	Suspending       int     `json:"suspending"`
-	Suspended        int     `json:"suspended"`
-	Errored          int     `json:"errored"`
-	Other            int     `json:"other"`
-	ActiveTotal      int     `json:"active_total"`
-	MultiplexRatio   float64 `json:"multiplex_ratio"`
-	StateBreakdown   map[string]int `json:"state_breakdown"`
+	Total          int            `json:"total"`
+	Running        int            `json:"running"`
+	Resuming       int            `json:"resuming"`
+	Creating       int            `json:"creating"`
+	Suspending     int            `json:"suspending"`
+	Suspended      int            `json:"suspended"`
+	Errored        int            `json:"errored"`
+	Other          int            `json:"other"`
+	ActiveTotal    int            `json:"active_total"`
+	MultiplexRatio float64        `json:"multiplex_ratio"`
+	StateBreakdown map[string]int `json:"state_breakdown"`
 }
 
 // WorkerSummary holds worker pool and controller replica metrics.
 type WorkerSummary struct {
-	WorkerPoolDesired   int     `json:"workerpool_desired"`
-	WorkerPoolReady     int     `json:"workerpool_ready"`
-	WorkerPoolClaimed   int     `json:"workerpool_claimed"`
-	WorkerPoolIdle      int     `json:"workerpool_idle"`
-	WorkerUtilization   float64 `json:"worker_utilization_pct"`
-	ControllerDesired   int     `json:"controller_desired"`
-	ControllerReady     int     `json:"controller_ready"`
+	WorkerPoolDesired int     `json:"workerpool_desired"`
+	WorkerPoolReady   int     `json:"workerpool_ready"`
+	WorkerPoolClaimed int     `json:"workerpool_claimed"`
+	WorkerPoolIdle    int     `json:"workerpool_idle"`
+	WorkerUtilization float64 `json:"worker_utilization_pct"`
+	ControllerDesired int     `json:"controller_desired"`
+	ControllerReady   int     `json:"controller_ready"`
 }
 
 // QueueSummary holds Valkey stream:events metrics.
@@ -132,14 +134,14 @@ type ActorItem struct {
 
 // DashboardStats is the JSON payload returned by GET /api/stats.
 type DashboardStats struct {
-	Timestamp   string        `json:"timestamp"`
-	Namespace   string        `json:"namespace"`
-	CollectMs   float64       `json:"collect_ms"`
-	Actors      ActorSummary  `json:"actors"`
-	Workers     WorkerSummary `json:"workers"`
-	Queue       QueueSummary  `json:"queue"`
-	ActorList   []ActorItem   `json:"actor_list"`
-	Warnings    []string      `json:"warnings,omitempty"`
+	Timestamp string        `json:"timestamp"`
+	Namespace string        `json:"namespace"`
+	CollectMs float64       `json:"collect_ms"`
+	Actors    ActorSummary  `json:"actors"`
+	Workers   WorkerSummary `json:"workers"`
+	Queue     QueueSummary  `json:"queue"`
+	ActorList []ActorItem   `json:"actor_list"`
+	Warnings  []string      `json:"warnings,omitempty"`
 }
 
 // Server serves the benchmark dashboard UI and JSON metrics API.
@@ -297,19 +299,13 @@ func (s *Server) collectStats(ctx context.Context) DashboardStats {
 		Actors: ActorSummary{
 			StateBreakdown: make(map[string]int),
 		},
-		Workers: WorkerSummary{
-			WorkerPoolDesired: s.cfg.DefaultWorkers,
-			WorkerPoolReady:   s.cfg.DefaultWorkers,
-			ControllerDesired: s.cfg.DefaultControl,
-			ControllerReady:   s.cfg.DefaultControl,
-		},
 		ActorList: []ActorItem{},
 	}
 
 	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex
-		claimed  int
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		claimed int
 	)
 
 	addWarning := func(msg string) {
@@ -341,9 +337,7 @@ func (s *Server) collectStats(ctx context.Context) DashboardStats {
 			addWarning("ateapi client not configured")
 			return
 		}
-		resp, err := s.ateClient.ListActors(ctx, &ateapipb.ListActorsRequest{
-			Atespace: s.cfg.Namespace,
-		})
+		actors, err := actor.ListAllActors(ctx, s.ateClient, s.cfg.Namespace)
 		if err != nil {
 			s.logger.Warn("ListActors failed", slog.Any("error", err))
 			addWarning("unavailable: ateapi ListActors")
@@ -351,13 +345,13 @@ func (s *Server) collectStats(ctx context.Context) DashboardStats {
 		}
 
 		var (
-			summary     = ActorSummary{StateBreakdown: make(map[string]int)}
-			activeItems []ActorItem
+			summary      = ActorSummary{StateBreakdown: make(map[string]int)}
+			activeItems  []ActorItem
 			dormantItems []ActorItem
-			claimedPods = make(map[string]struct{})
+			claimedPods  = make(map[string]struct{})
 		)
 
-		for _, a := range resp.GetActors() {
+		for _, a := range actors {
 			if a == nil || a.GetMetadata() == nil {
 				continue
 			}
@@ -505,8 +499,6 @@ func (s *Server) fetchK8sDeployments(ctx context.Context) (wDesired, wReady, cDe
 		return 0, 0, 0, 0, false
 	}
 
-	wDesired, wReady = s.cfg.DefaultWorkers, s.cfg.DefaultWorkers
-	cDesired, cReady = s.cfg.DefaultControl, s.cfg.DefaultControl
 	foundAny := false
 	for _, d := range list.Items {
 		switch d.Name {
@@ -593,421 +585,6 @@ func formatAge(sec int64) string {
 	return fmt.Sprintf("%dh%dm", sec/3600, (sec%3600)/60)
 }
 
-const indexHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dashboard</title>
-  <link rel="stylesheet" href="/styles.css">
-</head>
-<body>
-  <main class="container">
-    <header class="topbar">
-      <div class="brand">
-        <span class="status-dot" id="live-dot"></span>
-        <h1>Dashboard</h1>
-        <span class="subtitle">Namespace <code id="ns-badge">ate-ant</code></span>
-      </div>
-      <div class="controls">
-        <label for="poll-select" class="ctrl-label">Refresh</label>
-        <select id="poll-select" class="ctrl-select">
-          <option value="1000" selected>1s</option>
-          <option value="2000">2s</option>
-          <option value="5000">5s</option>
-          <option value="0">Paused</option>
-        </select>
-        <span class="meta-text" id="last-updated">Connecting...</span>
-      </div>
-    </header>
-
-    <section class="kpi-grid">
-      <div class="card kpi-card">
-        <div class="kpi-label">Running Actors</div>
-        <div class="kpi-value" id="kpi-running">0</div>
-        <div class="kpi-sub">
-          <div class="kpi-sub-row"><span>Resuming</span><strong id="kpi-resuming">0</strong></div>
-          <div class="kpi-sub-row"><span>Suspending</span><strong id="kpi-suspending">0</strong></div>
-        </div>
-      </div>
-
-      <div class="card kpi-card">
-        <div class="kpi-label">Total Actors</div>
-        <div class="kpi-value" id="kpi-total-actors">0</div>
-        <div class="kpi-sub">
-          <div class="kpi-sub-row"><span>Suspended</span><strong id="kpi-suspended">0</strong></div>
-          <div class="kpi-sub-row"><span>Multiplex</span><strong id="kpi-multiplex">0.0x</strong></div>
-        </div>
-      </div>
-
-      <div class="card kpi-card">
-        <div class="kpi-label">Workers (Claimed / Ready)</div>
-        <div class="kpi-value"><span id="kpi-workers-claimed">0</span> / <span id="kpi-workers-ready">50</span></div>
-        <div class="kpi-sub">
-          <div class="kpi-sub-row"><span>Idle Workers</span><strong id="kpi-workers-idle">50</strong></div>
-          <div class="kpi-sub-row"><span>Utilization</span><strong id="kpi-worker-util">0%</strong></div>
-        </div>
-      </div>
-
-      <div class="card kpi-card">
-        <div class="kpi-label">Event Queue</div>
-        <div class="kpi-value" id="kpi-queue-pending">0</div>
-        <div class="kpi-sub">
-          <div class="kpi-sub-row"><span>Stream Lag</span><strong id="kpi-queue-lag">0</strong></div>
-          <div class="kpi-sub-row"><span>Controllers</span><strong><span id="kpi-ctrl-ready">20</span>/<span id="kpi-ctrl-desired">20</span></strong></div>
-        </div>
-      </div>
-    </section>
-
-    <section class="card chart-card">
-      <div class="card-header">
-        <h2>Activity (Last 60s)</h2>
-        <div class="legend">
-          <span class="legend-item"><span class="swatch swatch-green"></span>Running</span>
-          <span class="legend-item"><span class="swatch swatch-amber"></span>Resuming / Suspending</span>
-          <span class="legend-item"><span class="swatch swatch-blue"></span>Queue Pending</span>
-        </div>
-      </div>
-      <canvas id="activity-chart" width="1100" height="280"></canvas>
-    </section>
-  </main>
-
-  <script src="/app.js"></script>
-</body>
-</html>
-`
-
-const stylesCSS = `:root {
-  --bg: #f8fafc;
-  --panel: #ffffff;
-  --border: #e2e8f0;
-  --text: #0f172a;
-  --muted: #64748b;
-  --green: #16a34a;
-  --blue: #2563eb;
-  --amber: #d97706;
-  --red: #dc2626;
-}
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-.container {
-  width: 100%;
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 32px 28px;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-.topbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 18px 24px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.brand h1 {
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-.subtitle {
-  color: var(--muted);
-  font-size: 15px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.subtitle code {
-  background: #f1f5f9;
-  padding: 3px 8px;
-  border-radius: 6px;
-  color: var(--text);
-  font-size: 14px;
-}
-.status-dot {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--green);
-  flex-shrink: 0;
-}
-.status-dot.paused { background: var(--amber); }
-.status-dot.error { background: var(--red); }
-.controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.ctrl-label, .meta-text {
-  font-size: 15px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.ctrl-select {
-  background: var(--panel);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 15px;
-}
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 24px;
-}
-.kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 20px;
-  align-items: stretch;
-}
-@media (max-width: 960px) {
-  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
-}
-@media (max-width: 560px) {
-  .kpi-grid { grid-template-columns: 1fr; }
-}
-.kpi-card {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 14px;
-}
-.kpi-label {
-  font-size: 15px;
-  color: var(--muted);
-  font-weight: 500;
-}
-.kpi-value {
-  font-size: 48px;
-  font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-}
-.kpi-sub {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-  font-size: 15px;
-  color: var(--muted);
-}
-.kpi-sub-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.kpi-sub strong {
-  color: var(--text);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 18px;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-.card-header h2 {
-  font-size: 18px;
-  font-weight: 600;
-}
-.legend {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  font-size: 14px;
-  color: var(--muted);
-}
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.swatch {
-  width: 12px;
-  height: 12px;
-  border-radius: 3px;
-  display: inline-block;
-}
-.swatch-green { background: var(--green); }
-.swatch-amber { background: var(--amber); }
-.swatch-blue { background: var(--blue); }
-canvas {
-  width: 100%;
-  height: 280px;
-  display: block;
-}
-`
-
-const appJS = `(() => {
-  const history = [];
-  const maxSamples = 60;
-  let pollMs = 1000;
-  let timerId = null;
-
-  const el = (id) => document.getElementById(id);
-  const setText = (id, val) => {
-    const node = el(id);
-    if (node) node.textContent = String(val);
-  };
-
-  function renderChart() {
-    const canvas = el('activity-chart');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const w = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-
-    const padL = 48;
-    const padR = 14;
-    const padT = 14;
-    const padB = 24;
-    const plotW = w - padL - padR;
-    const plotH = h - padT - padB;
-
-    let maxVal = 50;
-    for (const pt of history) {
-      maxVal = Math.max(maxVal, pt.running, pt.transitioning, pt.pending);
-    }
-
-    ctx.strokeStyle = '#f1f5f9';
-    ctx.lineWidth = 1;
-    ctx.fillStyle = '#64748b';
-    ctx.font = '13px -apple-system, BlinkMacSystemFont, sans-serif';
-
-    for (let i = 0; i <= 4; i++) {
-      const y = padT + (plotH * i) / 4;
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(w - padR, y);
-      ctx.stroke();
-      const labelVal = Math.round(maxVal * (1 - i / 4));
-      ctx.fillText(String(labelVal), 6, y + 5);
-    }
-
-    if (history.length < 2) return;
-
-    const drawSeries = (getter, strokeColor) => {
-      ctx.beginPath();
-      history.forEach((pt, idx) => {
-        const x = padL + (idx / (maxSamples - 1)) * plotW;
-        const y = padT + plotH - (Math.min(getter(pt), maxVal) / maxVal) * plotH;
-        if (idx === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.strokeStyle = strokeColor;
-      ctx.lineWidth = 3;
-      ctx.stroke();
-    };
-
-    drawSeries((p) => p.pending, '#2563eb');
-    drawSeries((p) => p.transitioning, '#d97706');
-    drawSeries((p) => p.running, '#16a34a');
-  }
-
-  async function fetchStats() {
-    const dot = el('live-dot');
-    try {
-      const resp = await fetch('/api/stats', { cache: 'no-store' });
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const data = await resp.json();
-
-      if (dot) dot.className = pollMs > 0 ? 'status-dot' : 'status-dot paused';
-      setText('ns-badge', data.namespace || 'ate-ant');
-      setText('last-updated', new Date(data.timestamp).toLocaleTimeString());
-
-      const actors = data.actors || {};
-      const workers = data.workers || {};
-      const queue = data.queue || {};
-
-      setText('kpi-running', actors.running || 0);
-      setText('kpi-resuming', (actors.resuming || 0) + (actors.creating || 0));
-      setText('kpi-suspending', actors.suspending || 0);
-      setText('kpi-total-actors', actors.total || 0);
-      setText('kpi-suspended', actors.suspended || 0);
-      setText('kpi-multiplex', (actors.multiplex_ratio || 0).toFixed(1) + 'x');
-
-      setText('kpi-workers-claimed', workers.workerpool_claimed || 0);
-      setText('kpi-workers-ready', workers.workerpool_ready || 0);
-      setText('kpi-workers-idle', workers.workerpool_idle || 0);
-      const utilPct = Math.min(100, Math.max(0, workers.worker_utilization_pct || 0));
-      setText('kpi-worker-util', utilPct.toFixed(0) + '%');
-
-      setText('kpi-queue-pending', queue.pending_count || 0);
-      setText('kpi-queue-lag', queue.lag || 0);
-
-      setText('kpi-ctrl-ready', workers.controller_ready || 0);
-      setText('kpi-ctrl-desired', workers.controller_desired || 0);
-
-      history.push({
-        running: actors.running || 0,
-        transitioning: (actors.resuming || 0) + (actors.creating || 0) + (actors.suspending || 0),
-        pending: (queue.pending_count || 0) + (queue.lag || 0)
-      });
-      if (history.length > maxSamples) history.shift();
-
-      renderChart();
-    } catch (_err) {
-      if (dot) dot.className = 'status-dot error';
-      setText('last-updated', 'Disconnected');
-    }
-  }
-
-  function schedulePoll() {
-    if (timerId) clearInterval(timerId);
-    timerId = null;
-    if (pollMs > 0) {
-      timerId = setInterval(fetchStats, pollMs);
-    }
-  }
-
-  document.addEventListener('DOMContentLoaded', () => {
-    const pollSelect = el('poll-select');
-    if (pollSelect) {
-      pollSelect.addEventListener('change', (ev) => {
-        pollMs = parseInt(ev.target.value, 10) || 0;
-        const dot = el('live-dot');
-        if (dot) dot.className = pollMs > 0 ? 'status-dot' : 'status-dot paused';
-        schedulePoll();
-      });
-    }
-
-    fetchStats();
-    schedulePoll();
-  });
-})();
-`
-
 func main() {
 	var cfg Config
 	flag.StringVar(&cfg.Addr, "addr", "", "HTTP listen address (default :8080)")
@@ -1015,8 +592,6 @@ func main() {
 	flag.StringVar(&cfg.AteapiAddr, "ateapi-addr", manifest.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 	flag.BoolVar(&cfg.InsecureATE, "insecure-ate", false, "Connect to ateapi without TLS")
 	flag.StringVar(&cfg.ValkeyAddr, "valkey-addr", "", "Valkey address (default $VALKEY_ADDR)")
-	flag.IntVar(&cfg.DefaultWorkers, "default-workers", 50, "Fallback WorkerPool size when outside Kubernetes")
-	flag.IntVar(&cfg.DefaultControl, "default-controllers", 20, "Fallback Controller replica count when outside Kubernetes")
 	flag.Parse()
 
 	cfg.Defaults()
