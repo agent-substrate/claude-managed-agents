@@ -38,12 +38,12 @@ import (
 )
 
 const (
-	DefaultIdleCheckInterval = 5 * time.Second
-	DefaultIdleThreshold     = 30 * time.Second
+	DefaultIdleCheckInterval = 1 * time.Second
+	DefaultIdleThreshold     = 3 * time.Second
 
 	defaultSuspendTimeout = 30 * time.Second
 	defaultNotifyTimeout  = 5 * time.Second
-	defaultResumeCooldown = 20 * time.Second
+	defaultResumeCooldown = 3 * time.Second
 )
 
 // IdleStatus is the JSON payload returned by an actor's /idle HTTP endpoint.
@@ -307,7 +307,7 @@ func (m *Manager) Suspend(ctx context.Context, sessionID string) error {
 }
 
 // SuspendActor suspends an actor by its ObjectRef. If the actor was resumed
-// within the last 10 seconds, the suspension request is ignored.
+// within defaultResumeCooldown, the suspension request is ignored.
 func (m *Manager) SuspendActor(ctx context.Context, actorRef *ateapipb.ObjectRef) error {
 	m.mu.Lock()
 	lastResume, ok := m.lastResumed[actorRef.Name]
@@ -322,6 +322,10 @@ func (m *Manager) SuspendActor(ctx context.Context, actorRef *ateapipb.ObjectRef
 		return nil
 	}
 
+	return m.suspendActor(ctx, actorRef)
+}
+
+func (m *Manager) suspendActor(ctx context.Context, actorRef *ateapipb.ObjectRef) error {
 	suspendCtx, cancel := context.WithTimeout(ctx, defaultSuspendTimeout)
 	defer cancel()
 
@@ -371,6 +375,110 @@ func (m *Manager) actorIdleStatus(ctx context.Context, actorRef *ateapipb.Object
 	return &idleResp, nil
 }
 
+func (m *Manager) revertActor(ctx context.Context, actorRef *ateapipb.ObjectRef) error {
+	opCtx, cancel := context.WithTimeout(ctx, defaultSuspendTimeout)
+	defer cancel()
+
+	_, err := m.client.RevertActor(opCtx, &ateapipb.RevertActorRequest{Actor: actorRef})
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		return fmt.Errorf("reverting actor %s: %w", actorRef.Name, err)
+	}
+	m.logger.Info("Reverted unreachable actor to suspended state", slog.String("actor", actorRef.Name))
+	return nil
+}
+
+func (m *Manager) checkAndSuspendActor(ctx context.Context, actorRef *ateapipb.ObjectRef, threshold time.Duration) (bool, error) {
+	m.mu.Lock()
+	lastResume, ok := m.lastResumed[actorRef.Name]
+	m.mu.Unlock()
+
+	if ok && time.Since(lastResume) < threshold {
+		m.logger.Debug("Skipping idle check: actor was resumed recently",
+			slog.String("actor", actorRef.Name),
+			slog.Duration("since_resume", time.Since(lastResume)),
+		)
+		return false, nil
+	}
+
+	idleResp, err := m.actorIdleStatus(ctx, actorRef)
+	if err != nil {
+		// Re-check lastResumed in case a new Resume/Notify arrived while /idle was in flight.
+		m.mu.Lock()
+		lastResume, ok = m.lastResumed[actorRef.Name]
+		m.mu.Unlock()
+		if ok && time.Since(lastResume) < threshold {
+			return false, nil
+		}
+
+		m.logger.Warn("Actor /idle check failed, reverting unreachable actor",
+			slog.String("actor", actorRef.Name),
+			slog.Any("error", err),
+		)
+		if err := m.revertActor(ctx, actorRef); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	dur, err := time.ParseDuration(idleResp.IdleDuration)
+	if err != nil {
+		return false, fmt.Errorf("parsing idle duration %q: %w", idleResp.IdleDuration, err)
+	}
+
+	if dur < threshold {
+		return false, nil
+	}
+
+	// Re-check lastResumed in case a new Resume/Notify arrived while /idle was in flight.
+	m.mu.Lock()
+	lastResume, ok = m.lastResumed[actorRef.Name]
+	m.mu.Unlock()
+	if ok && time.Since(lastResume) < threshold {
+		return false, nil
+	}
+
+	m.logger.Info("Suspending idle actor",
+		slog.String("actor", actorRef.Name),
+		slog.String("idle_duration", idleResp.IdleDuration),
+		slog.String("threshold", threshold.String()),
+	)
+	if err := m.suspendActor(ctx, actorRef); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SuspendIfIdle checks if the actor for sessionID has been idle for at least
+// threshold and suspends it if so. It returns true if the actor is now
+// suspended (or was already suspended / not found), and false if the actor is
+// still active or below the idle threshold.
+func (m *Manager) SuspendIfIdle(ctx context.Context, sessionID string, threshold time.Duration) (bool, error) {
+	if threshold <= 0 {
+		threshold = DefaultIdleThreshold
+	}
+
+	actorRef := &ateapipb.ObjectRef{
+		Atespace: m.atespace,
+		Name:     ActorName(sessionID),
+	}
+
+	actor, err := m.client.GetActor(ctx, &ateapipb.GetActorRequest{Actor: actorRef})
+	if status.Code(err) == codes.NotFound {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("getting actor %s: %w", actorRef.Name, err)
+	}
+	if actor.GetStatus() != nil && actor.GetStatus().GetState() == ateapipb.ActorState_ACTOR_STATE_SUSPENDED {
+		return true, nil
+	}
+
+	return m.checkAndSuspendActor(ctx, actorRef, threshold)
+}
+
 // suspendIdleActors lists all actors in the atespace, queries their /idle endpoint,
 // and suspends any actor that has been idle for longer than the threshold.
 func (m *Manager) suspendIdleActors(ctx context.Context, threshold time.Duration) error {
@@ -395,7 +503,7 @@ func (m *Manager) suspendIdleActors(ctx context.Context, threshold time.Duration
 		}
 
 		m.mu.Lock()
-		lastResume, ok := m.lastResumed[actorRef.Name]
+		_, ok := m.lastResumed[actorRef.Name]
 		m.mu.Unlock()
 
 		if !ok {
@@ -404,45 +512,11 @@ func (m *Manager) suspendIdleActors(ctx context.Context, threshold time.Duration
 			continue
 		}
 
-		if time.Since(lastResume) < threshold {
-			m.logger.Debug("Skipping idle check: actor was resumed recently",
-				slog.String("actor", actorRef.Name),
-				slog.Duration("since_resume", time.Since(lastResume)),
-			)
-			continue
-		}
-
-		idleResp, err := m.actorIdleStatus(ctx, actorRef)
-		if err != nil {
-			m.logger.Debug("Failed to check actor idle status",
+		if _, err := m.checkAndSuspendActor(ctx, actorRef, threshold); err != nil {
+			m.logger.Debug("Failed to check/suspend idle actor",
 				slog.String("actor", actorRef.Name),
 				slog.Any("error", err),
 			)
-			continue
-		}
-
-		dur, err := time.ParseDuration(idleResp.IdleDuration)
-		if err != nil {
-			m.logger.Warn("Failed to parse actor idle duration",
-				slog.String("actor", actorRef.Name),
-				slog.String("idle_duration", idleResp.IdleDuration),
-				slog.Any("error", err),
-			)
-			continue
-		}
-
-		if dur >= threshold {
-			m.logger.Info("Suspending idle actor",
-				slog.String("actor", actorRef.Name),
-				slog.String("idle_duration", idleResp.IdleDuration),
-				slog.String("threshold", threshold.String()),
-			)
-			if err := m.SuspendActor(ctx, actorRef); err != nil {
-				m.logger.Error("Failed to suspend idle actor",
-					slog.String("actor", actorRef.Name),
-					slog.Any("error", err),
-				)
-			}
 		}
 	}
 	return nil

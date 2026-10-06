@@ -280,7 +280,15 @@ func (m *Manager) pop(ctx context.Context) (*Event, error) {
 		return nil, fmt.Errorf("event: reading pending stream entries: %w", err)
 	}
 
-	// 2. Read new messages for this consumer group (ID: ">")
+	// 2. Claim orphaned pending messages from crashed consumers idle for > 30s
+	claimCmd := m.vkClient.B().Xautoclaim().Key(m.streamKey).Group(m.groupName).Consumer(m.consumerName).MinIdleTime("30000").Start("0-0").Count(1).Build()
+	if arr, err := m.vkClient.Do(ctx, claimCmd).ToArray(); err == nil && len(arr) >= 2 {
+		if entries, err := arr[1].AsXRange(); err == nil && len(entries) > 0 {
+			return m.parseEntry(entries[0])
+		}
+	}
+
+	// 3. Read new messages for this consumer group (ID: ">")
 	newCmd := m.vkClient.B().Xreadgroup().Group(m.groupName, m.consumerName).Count(1).Streams().Key(m.streamKey).Id(">").Build()
 	res, err = m.vkClient.Do(ctx, newCmd).AsXRead()
 	if err != nil {

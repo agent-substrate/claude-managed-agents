@@ -67,10 +67,13 @@ type fakeControlClient struct {
 	createdEgressPolicies  map[string]*ateapipb.EgressPolicy
 	resumedActors          map[string]int
 	suspendedActors        map[string]int
+	revertedActors         map[string]int
+	deletedActors          map[string]int
 
 	resumeErr  error
 	createErr  error
 	suspendErr error
+	revertErr  error
 }
 
 func newFakeControlClient() *fakeControlClient {
@@ -80,6 +83,8 @@ func newFakeControlClient() *fakeControlClient {
 		createdEgressPolicies: make(map[string]*ateapipb.EgressPolicy),
 		resumedActors:         make(map[string]int),
 		suspendedActors:       make(map[string]int),
+		revertedActors:        make(map[string]int),
+		deletedActors:         make(map[string]int),
 	}
 }
 
@@ -133,6 +138,29 @@ func (f *fakeControlClient) SuspendActor(ctx context.Context, in *ateapipb.Suspe
 	}
 	f.suspendedActors[key]++
 	return &ateapipb.SuspendActorResponse{}, nil
+}
+
+func (f *fakeControlClient) RevertActor(ctx context.Context, in *ateapipb.RevertActorRequest, opts ...grpc.CallOption) (*ateapipb.RevertActorResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.revertErr != nil {
+		return nil, f.revertErr
+	}
+	key := in.GetActor().Atespace + "/" + in.GetActor().Name
+	if a, ok := f.createdActors[key]; ok {
+		a.Status = &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_SUSPENDED}
+	}
+	f.revertedActors[key]++
+	return &ateapipb.RevertActorResponse{}, nil
+}
+
+func (f *fakeControlClient) DeleteActor(ctx context.Context, in *ateapipb.DeleteActorRequest, opts ...grpc.CallOption) (*ateapipb.Actor, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := in.GetActor().Atespace + "/" + in.GetActor().Name
+	delete(f.createdActors, key)
+	f.deletedActors[key]++
+	return &ateapipb.Actor{}, nil
 }
 
 func (f *fakeControlClient) ResumeActor(ctx context.Context, in *ateapipb.ResumeActorRequest, opts ...grpc.CallOption) (*ateapipb.ResumeActorResponse, error) {
@@ -482,3 +510,110 @@ func TestManagerStartGC_Success(t *testing.T) {
 		t.Fatalf("expected actor to be suspended by GC, got %d", fakeClient.suspendedActors["test-ns/"+actorName1])
 	}
 }
+
+func TestManagerSuspendIfIdle(t *testing.T) {
+	fakeClient := newFakeControlClient()
+	sessionID := "session-suspend-if-idle-01"
+	aName := ActorName(sessionID)
+
+	fakeClient.createdActors["test-ns/"+aName] = &ateapipb.Actor{
+		Metadata: &ateapipb.ResourceMetadata{
+			Atespace: "test-ns",
+			Name:     aName,
+		},
+		Status: &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
+	}
+
+	var calls int
+	var callsMu sync.Mutex
+	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		callsMu.Lock()
+		calls++
+		c := calls
+		callsMu.Unlock()
+
+		rw.Header().Set("Content-Type", "application/json")
+		// First check reports busy ("0s"), second check reports idle ("100ms")
+		idleStr := "0s"
+		if c >= 2 {
+			idleStr = "100ms"
+		}
+		_ = json.NewEncoder(rw).Encode(IdleStatus{
+			IdleDuration: idleStr,
+			LastActiveAt: time.Now().UTC().Format(time.RFC3339),
+		})
+	}))
+	defer routerServer.Close()
+
+	mgr := NewManager(fakeClient, "test-template", "test-ns").WithRouterAddr(routerServer.URL)
+	mgr.lastResumed[aName] = time.Now().Add(-1 * time.Second)
+
+	ctx := context.Background()
+
+	// 1. Busy actor -> not suspended
+	suspended, err := mgr.SuspendIfIdle(ctx, sessionID, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("SuspendIfIdle (busy): %v", err)
+	}
+	if suspended {
+		t.Fatalf("expected suspended = false when actor is busy")
+	}
+
+	// 2. Idle actor -> suspended
+	suspended, err = mgr.SuspendIfIdle(ctx, sessionID, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("SuspendIfIdle (idle): %v", err)
+	}
+	if !suspended {
+		t.Fatalf("expected suspended = true when actor is idle")
+	}
+
+	// 3. Already suspended actor -> returns true immediately without another SuspendActor RPC
+	suspended, err = mgr.SuspendIfIdle(ctx, sessionID, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("SuspendIfIdle (already suspended): %v", err)
+	}
+	if !suspended {
+		t.Fatalf("expected suspended = true when actor is already suspended")
+	}
+
+	fakeClient.mu.Lock()
+	defer fakeClient.mu.Unlock()
+	if fakeClient.suspendedActors["test-ns/"+aName] != 1 {
+		t.Fatalf("expected actor to be suspended once, got %d", fakeClient.suspendedActors["test-ns/"+aName])
+	}
+}
+
+func TestManagerSuspendIfIdle_UnreachableReverts(t *testing.T) {
+	fakeClient := newFakeControlClient()
+	sessionID := "session-unreachable-revert"
+	aName := ActorName(sessionID)
+
+	fakeClient.createdActors["test-ns/"+aName] = &ateapipb.Actor{
+		Metadata: &ateapipb.ResourceMetadata{Atespace: "test-ns", Name: aName},
+		Status:   &ateapipb.ActorStatus{State: ateapipb.ActorState_ACTOR_STATE_RUNNING},
+	}
+
+	routerServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.WriteHeader(http.StatusBadGateway)
+	}))
+	defer routerServer.Close()
+
+	mgr := NewManager(fakeClient, "test-template", "test-ns").WithRouterAddr(routerServer.URL)
+	mgr.lastResumed[aName] = time.Now().Add(-10 * time.Second)
+
+	ctx := context.Background()
+
+	// /idle returns 502 -> RevertActor is called
+	done, err := mgr.SuspendIfIdle(ctx, sessionID, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("SuspendIfIdle (revert): %v", err)
+	}
+	if !done {
+		t.Fatalf("expected done = true when unreachable actor is reverted")
+	}
+	if fakeClient.revertedActors["test-ns/"+aName] != 1 {
+		t.Fatalf("expected actor to be reverted once, got %d", fakeClient.revertedActors["test-ns/"+aName])
+	}
+}
+
