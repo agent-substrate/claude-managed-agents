@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Agent Substrate · Benchmark Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="backdrop" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+      <div class="brand-text">
+        <h1>Benchmark Dashboard</h1>
+      </div>
+      <span class="chip" title="Kubernetes namespace / Substrate atespace">
+        <span class="chip-key">atespace</span><code id="ns-badge">ate-ant</code>
+      </span>
+    </div>
+
+    <div class="controls">
+      <span class="status-pill" id="status-pill" data-state="connecting">
+        <span class="pulse" aria-hidden="true"></span>
+        <span id="status-text">Connecting</span>
+      </span>
+      <div class="segmented" role="radiogroup" aria-label="Refresh interval" id="poll-group">
+        <button type="button" role="radio" data-ms="1000" aria-checked="true">1s</button>
+        <button type="button" role="radio" data-ms="2000" aria-checked="false">2s</button>
+        <button type="button" role="radio" data-ms="5000" aria-checked="false">5s</button>
+        <button type="button" role="radio" data-ms="0" aria-checked="false" title="Pause">❚❚</button>
+      </div>
+      <button type="button" class="theme-toggle" id="theme-toggle" title="Theme: follows your system">
+        <span class="theme-icon" id="theme-icon" aria-hidden="true">◐</span>
+        <span id="theme-label">Auto</span>
+      </button>
+      <div class="meta">
+        <span id="last-updated">—</span>
+        <span class="meta-dim" id="collect-ms"></span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <div class="banner" id="warnings" hidden>
+      <span class="banner-icon" aria-hidden="true">!</span>
+      <ul id="warnings-list"></ul>
+    </div>
+
+    <section class="kpi-grid">
+      <article class="card kpi" data-accent="green">
+        <div class="kpi-head">
+          <span class="kpi-label">Running actors</span>
+          <span class="kpi-tag" id="kpi-active-tag">0 active</span>
+        </div>
+        <div class="kpi-value" id="kpi-running">0</div>
+        <canvas class="spark" id="spark-running" aria-hidden="true"></canvas>
+        <dl class="kpi-sub">
+          <div><dt>Resuming</dt><dd id="kpi-resuming">0</dd></div>
+          <div><dt>Suspending</dt><dd id="kpi-suspending">0</dd></div>
+        </dl>
+      </article>
+
+      <article class="card kpi" data-accent="violet">
+        <div class="kpi-head">
+          <span class="kpi-label">Total actors</span>
+          <span class="kpi-tag" id="kpi-multiplex">0.0× / worker</span>
+        </div>
+        <div class="kpi-value" id="kpi-total-actors">0</div>
+        <canvas class="spark" id="spark-total" aria-hidden="true"></canvas>
+        <dl class="kpi-sub">
+          <div><dt>Suspended</dt><dd id="kpi-suspended">0</dd></div>
+          <div><dt>Crashed</dt><dd id="kpi-errored">0</dd></div>
+        </dl>
+      </article>
+
+      <article class="card kpi" data-accent="sky">
+        <div class="kpi-head">
+          <span class="kpi-label">Worker pool</span>
+          <span class="kpi-tag"><span id="kpi-worker-util">0%</span> utilized</span>
+        </div>
+        <div class="kpi-value"><span id="kpi-workers-claimed">0</span><span class="kpi-of">/ <span id="kpi-workers-ready">0</span></span></div>
+        <div class="meter" aria-hidden="true"><div class="meter-fill" id="util-meter"></div></div>
+        <dl class="kpi-sub">
+          <div><dt>Idle workers</dt><dd id="kpi-workers-idle">0</dd></div>
+          <div><dt>Desired</dt><dd id="kpi-workers-desired">0</dd></div>
+        </dl>
+      </article>
+
+      <article class="card kpi" data-accent="amber">
+        <div class="kpi-head">
+          <span class="kpi-label">Event queue</span>
+          <span class="kpi-tag" id="kpi-queue-tag">idle</span>
+        </div>
+        <div class="kpi-value" id="kpi-queue-pending">0</div>
+        <canvas class="spark" id="spark-queue" aria-hidden="true"></canvas>
+        <dl class="kpi-sub">
+          <div><dt>Stream lag</dt><dd id="kpi-queue-lag">0</dd></div>
+          <div><dt>Controllers</dt><dd><span id="kpi-ctrl-ready">0</span>/<span id="kpi-ctrl-desired">0</span></dd></div>
+        </dl>
+      </article>
+    </section>
+
+    <section class="grid-2">
+      <article class="card chart-card">
+        <div class="card-header">
+          <div>
+            <h2>Activity</h2>
+            <p class="card-sub">Last <span id="window-label">60</span> samples</p>
+          </div>
+          <div class="legend">
+            <span class="legend-item"><span class="swatch" data-c="green"></span>Running</span>
+            <span class="legend-item"><span class="swatch" data-c="amber"></span>Resuming / suspending</span>
+            <span class="legend-item"><span class="swatch" data-c="sky"></span>Queue backlog</span>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="activity-chart" aria-label="Actor activity over time" role="img"></canvas>
+          <div class="tooltip" id="chart-tooltip" hidden></div>
+        </div>
+      </article>
+
+      <article class="card">
+        <div class="card-header">
+          <div>
+            <h2>Actor states</h2>
+            <p class="card-sub"><span id="state-total">0</span> actors</p>
+          </div>
+        </div>
+        <div class="stack" id="state-stack" aria-hidden="true"></div>
+        <ul class="state-list" id="state-list"></ul>
+
+        <div class="divider"></div>
+
+        <h3 class="mini-title">Queue</h3>
+        <dl class="facts">
+          <div><dt>Stream length</dt><dd id="q-length">0</dd></div>
+          <div><dt>Entries read</dt><dd id="q-read">0</dd></div>
+          <div><dt>Valkey</dt><dd id="q-connected">—</dd></div>
+        </dl>
+      </article>
+    </section>
+
+    <section class="card table-card">
+      <div class="card-header">
+        <div>
+          <h2>Actors</h2>
+          <p class="card-sub"><span id="table-count">0</span> shown · active first</p>
+        </div>
+        <div class="table-tools">
+          <div class="filters" id="state-filters" role="group" aria-label="Filter by state"></div>
+          <input type="search" id="actor-search" class="search" placeholder="Filter by name or pod…" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table class="actors">
+          <thead>
+            <tr><th>Actor</th><th>State</th><th>Worker pod</th><th class="num">Version</th><th class="num">Age</th></tr>
+          </thead>
+          <tbody id="actor-rows"></tbody>
+        </table>
+        <div class="empty" id="actor-empty">No actors yet. Start a session or run the load generator.</div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span>Polling <code>/api/stats</code></span>
+      <a href="/api/stats" target="_blank" rel="noopener">Raw JSON ↗</a>
+    </footer>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

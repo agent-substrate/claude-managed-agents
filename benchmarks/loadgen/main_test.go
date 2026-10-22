@@ -29,8 +29,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"github.com/alicebob/miniredis/v2"
+	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -120,9 +120,9 @@ func TestRunValkeyMode(t *testing.T) {
 
 type testControlServer struct {
 	ateapipb.UnimplementedControlServer
-	mu      sync.Mutex
-	actors  map[string]*ateapipb.Actor
-	resumes int
+	mu       sync.Mutex
+	actors   map[string]*ateapipb.Actor
+	resumes  int
 	suspends int
 }
 

@@ -37,8 +37,8 @@ CONTROLLER_REPLICAS="${CONTROLLER_REPLICAS:-20}"
 
 # Container images and snapshot storage.
 BUILD_IMAGE="${BUILD_IMAGE:-false}"
-WORKER_IMAGE="${WORKER_IMAGE:-gcr.io/${GOOGLE_CLOUD_PROJECT}/ate-ant@sha256:e6d05802b220e9c0976d7a0c2639e54cf263f4e1d4d376ce0f70b520664f9a40}"
-ATEOM_IMAGE="${ATEOM_IMAGE:-gcr.io/${GOOGLE_CLOUD_PROJECT}/ate-images/ateom-gvisor@sha256:7d8878129e707c2842691cdef1f919450985df3f223dbb65361baca79c789e58}"
+WORKER_IMAGE="${WORKER_IMAGE:-gcr.io/${GOOGLE_CLOUD_PROJECT}/ate-ant@sha256:2f5b931584f80ccbd72851058a597af39e706eeaa20dfd86a7bc2fcd7410b416}"
+ATEOM_IMAGE="${ATEOM_IMAGE:-gcr.io/${GOOGLE_CLOUD_PROJECT}/ate-images/ateworker-gvisor@sha256:c97cf56ec19ef37895a0e7cc5c6dada677cb3824c5e93fcf7f142053cfe19a85}"
 ATE_IMAGE_REPO="${ATE_IMAGE_REPO:-gcr.io/${GOOGLE_CLOUD_PROJECT}/ate-images}"
 ATE_IMAGE_TAG="${ATE_IMAGE_TAG:-latest}"
 SNAPSHOTS_BUCKET="${SNAPSHOTS_BUCKET:-gs://${GOOGLE_CLOUD_PROJECT}-ate-ant-snapshots/ate-ant/}"
@@ -120,7 +120,7 @@ elif [[ "${INSTALL_SUBSTRATE}" == "true" ]]; then
     if [[ -d "${HOME}/substrate/cmd/ate-setup" ]]; then
       SUBSTRATE_MOD_DIR="${HOME}/substrate"
     else
-      SUBSTRATE_MOD_DIR="$(go list -m -f '{{.Dir}}' github.com/agent-substrate/substrate)"
+      SUBSTRATE_MOD_DIR="$(go list -m -f '{{.Dir}}' go.ate.dev/substrate)"
     fi
   fi
   echo "--> Deploying Agent Substrate (ate-system) via ate-setup from ${SUBSTRATE_MOD_DIR}..."
@@ -176,17 +176,19 @@ echo "--> Registering Atespace '${NAMESPACE}' and ActorTemplate '${TEMPLATE}'...
 KUBECTL_ATE_BIN="$(command -v kubectl-ate || echo "${HOME}/go/bin/kubectl-ate")"
 if [[ -x "${KUBECTL_ATE_BIN}" ]]; then
   "${KUBECTL_ATE_BIN}" create atespace "${NAMESPACE}" 2>/dev/null || true
+  # ate-api enforces authorization: grant the controller and dashboard roles.
+  NAMESPACE="${NAMESPACE}" KUBECTL_ATE_BIN="${KUBECTL_ATE_BIN}" ./benchmarks/access-policy.sh
   "${KUBECTL_ATE_BIN}" delete actor-template "${TEMPLATE}" --atespace="${NAMESPACE}" 2>/dev/null || true
   go run ./cmd/ate-ant manifest template \
     --namespace="${NAMESPACE}" \
     --template="${TEMPLATE}" \
     --worker-image="${WORKER_IMAGE}" \
-    --snapshots-bucket="${SNAPSHOTS_BUCKET}" | "${KUBECTL_ATE_BIN}" create actor-template -f - || \
+    --snapshots-bucket="${SNAPSHOTS_BUCKET}" | "${KUBECTL_ATE_BIN}" create actor-template --preview -f - || \
     "${KUBECTL_ATE_BIN}" get actor-template "${TEMPLATE}" --atespace="${NAMESPACE}"
 else
   echo "WARNING: 'kubectl-ate' binary not found. To register the ActorTemplate manually, run:"
   echo "  kubectl-ate create atespace ${NAMESPACE}"
-  echo "  go run ./cmd/ate-ant manifest template --worker-image=\"${WORKER_IMAGE}\" --snapshots-bucket=\"${SNAPSHOTS_BUCKET}\" | kubectl-ate create actor-template -f -"
+  echo "  go run ./cmd/ate-ant manifest template --worker-image=\"${WORKER_IMAGE}\" --snapshots-bucket=\"${SNAPSHOTS_BUCKET}\" | kubectl-ate create actor-template --preview -f -"
 fi
 
 echo "--> Deployment summary in namespace '${NAMESPACE}':"

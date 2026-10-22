@@ -31,7 +31,7 @@ export ZONE="us-west1-a"
 
 ## 2. Rebuild Images & Install Stack
 
-To rebuild both the `ate-ant` image and Agent Substrate images (`ateapi`, `atecontroller`, `atelet`, `atenet`, `podcertcontroller`, `ateom-gvisor`) and automatically update [`install.sh`](install.sh) and [`../README.md`](../README.md) with the new `@sha256:...` digests, run [`build-images.sh`](build-images.sh):
+To rebuild both the `ate-ant` image and the Agent Substrate gVisor worker image (`ateworker-gvisor`, built with `ko` from the `go.ate.dev/substrate` version pinned in `go.mod`) and automatically update [`install.sh`](install.sh) and [`../README.md`](../README.md) with the new `@sha256:...` digests, run [`build-images.sh`](build-images.sh):
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="kubecon-na-26-keynote-demo"
@@ -39,7 +39,7 @@ export GOOGLE_CLOUD_PROJECT="kubecon-na-26-keynote-demo"
 # Rebuild ate-ant + Agent Substrate images and update install.sh with the new sha256 digests
 ./benchmarks/build-images.sh
 
-# Or skip rebuilding Agent Substrate images and only rebuild ate-ant
+# Or skip rebuilding the Agent Substrate worker image and only rebuild ate-ant
 BUILD_SUBSTRATE_IMAGES=false ./benchmarks/build-images.sh
 ```
 

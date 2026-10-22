@@ -105,7 +105,9 @@ func NewRunner(cfg RunnerConfig) (*Runner, error) {
 
 // handleItem runs one work item's session with the in-process environment worker.
 // The environment id and key come from ANTHROPIC_ENVIRONMENT_ID and
-// ANTHROPIC_ENVIRONMENT_KEY, which the actor template injects. The worker does
+// ANTHROPIC_ENVIRONMENT_KEY, which the actor template injects. The key is only
+// a placeholder: the Substrate egress gateway replaces it with the real key
+// from the ate-ant-creds Secret on the way out. The worker does
 // not require ANTHROPIC_API_KEY. The tools are the standard agent toolset rooted
 // at the process working directory, with the file tools allowed outside it.
 // The lease token and the environment key never reach the logs.
@@ -114,26 +116,35 @@ func handleItem(ctx context.Context, req WorkRequest) error {
 	if err != nil {
 		workdir = "."
 	}
-	env := &agenttoolset.AgentToolContext{
-		Workdir:           workdir,
-		UnrestrictedPaths: true,
-	}
+	env := newToolContext(workdir)
 	toolset := agenttoolset.BetaAgentToolset20260401(env)
 	defer agenttoolset.CloseAll(toolset)
 
 	maxIdle := workerMaxIdle
 	worker := envworker.NewEnvironmentWorker(anthropic.NewClient(), envworker.EnvironmentWorkerOptions{
-		Tools:             toolset,
-		Workdir:           workdir,
-		UnrestrictedPaths: true,
-		MaxIdle:           &maxIdle,
-		Logger:            slog.Default(),
+		Tools:        toolset,
+		Workdir:      workdir,
+		AllowedRoots: env.AllowedRoots,
+		MaxIdle:      &maxIdle,
+		Logger:       slog.Default(),
 	})
 	return worker.HandleItem(ctx, envworker.HandleItemOptions{
 		WorkID:                req.WorkID,
 		SessionID:             req.SessionID,
 		ExpectedLastHeartbeat: req.LastHeartbeat,
 	})
+}
+
+// newToolContext returns the agent toolset context for a session rooted at
+// workdir. The actor's gVisor sandbox is the security boundary, so the file
+// tools may reach the whole filesystem. anthropic-sdk-go rejects every tool
+// call (bash included) when the deprecated UnrestrictedPaths is set;
+// AllowedRoots "/" is its replacement.
+func newToolContext(workdir string) *agenttoolset.AgentToolContext {
+	return &agenttoolset.AgentToolContext{
+		Workdir:      workdir,
+		AllowedRoots: []string{"/"},
+	}
 }
 
 func (r *Runner) logger() *slog.Logger {

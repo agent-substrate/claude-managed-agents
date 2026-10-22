@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -62,13 +62,13 @@ type fakeControlClient struct {
 	ateapipb.ControlClient
 	mu sync.Mutex
 
-	createdAtespaces       map[string]*ateapipb.Atespace
-	createdActors          map[string]*ateapipb.Actor
-	createdEgressPolicies  map[string]*ateapipb.EgressPolicy
-	resumedActors          map[string]int
-	suspendedActors        map[string]int
-	revertedActors         map[string]int
-	deletedActors          map[string]int
+	createdAtespaces      map[string]*ateapipb.Atespace
+	createdActors         map[string]*ateapipb.Actor
+	createdEgressPolicies map[string]*ateapipb.EgressPolicy
+	resumedActors         map[string]int
+	suspendedActors       map[string]int
+	revertedActors        map[string]int
+	deletedActors         map[string]int
 
 	resumeErr  error
 	createErr  error
@@ -617,3 +617,25 @@ func TestManagerSuspendIfIdle_UnreachableReverts(t *testing.T) {
 	}
 }
 
+// denyCreateAtespaceClient mimics an atespace-scoped principal: ate-api rejects
+// CreateAtespace (which needs global owner) before checking existence.
+type denyCreateAtespaceClient struct {
+	*fakeControlClient
+}
+
+func (d denyCreateAtespaceClient) CreateAtespace(ctx context.Context, in *ateapipb.CreateAtespaceRequest, opts ...grpc.CallOption) (*ateapipb.Atespace, error) {
+	return nil, status.Error(codes.PermissionDenied, "lacks can_create_atespace on global:root")
+}
+
+func TestEnsureAtespaceExistingWithoutCreatePermission(t *testing.T) {
+	fakeClient := newFakeControlClient()
+	fakeClient.createdAtespaces["test-ns"] = &ateapipb.Atespace{Metadata: &ateapipb.ResourceMetadata{Name: "test-ns"}}
+	mgr := NewManager(denyCreateAtespaceClient{fakeClient}, "test-template", "test-ns")
+
+	if err := mgr.EnsureAtespace(context.Background()); err != nil {
+		t.Fatalf("EnsureAtespace on an existing atespace should not need CreateAtespace: %v", err)
+	}
+	if err := mgr.Resume(context.Background(), "session-authz-01"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+}

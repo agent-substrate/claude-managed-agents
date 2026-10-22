@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -29,7 +28,7 @@ import (
 	"time"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -58,7 +57,10 @@ type Manager struct {
 	template   string
 	atespace   string
 	routerAddr string
-	logger     *slog.Logger
+	// routerTransport dials atenet-router; nil uses http.DefaultTransport.
+	routerTransport http.RoundTripper
+	egress          EgressConfig
+	logger          *slog.Logger
 
 	mu          sync.Mutex
 	lastResumed map[string]time.Time
@@ -77,6 +79,7 @@ func NewManager(client ateapipb.ControlClient, template, atespace string) *Manag
 		template:    template,
 		atespace:    atespace,
 		routerAddr:  manifest.DefaultAtenetRouterAddr,
+		egress:      EgressConfig{CredentialURI: manifest.EnvironmentKeyCredentialURI(atespace)},
 		logger:      slog.Default(),
 		lastResumed: make(map[string]time.Time),
 	}
@@ -100,6 +103,41 @@ func (m *Manager) WithRouterAddr(routerAddr string) *Manager {
 	return m
 }
 
+// WithRouterTransport sets the HTTP transport used to reach actors through
+// atenet-router, e.g. the mTLS transport from RouterTransportFromFiles.
+func (m *Manager) WithRouterTransport(t http.RoundTripper) *Manager {
+	if t != nil {
+		m.routerTransport = t
+	}
+	return m
+}
+
+// routerURL returns the router URL for path, defaulting to https:// when the
+// configured address has no scheme.
+func (m *Manager) routerURL(path string) string {
+	routerAddr := m.routerAddr
+	if !strings.HasPrefix(routerAddr, "http://") && !strings.HasPrefix(routerAddr, "https://") {
+		routerAddr = "https://" + routerAddr
+	}
+	return strings.TrimSuffix(routerAddr, "/") + path
+}
+
+func (m *Manager) routerClient(timeout time.Duration) *http.Client {
+	return &http.Client{Transport: m.routerTransport, Timeout: timeout}
+}
+
+// WithEgress sets the egress policy configuration applied to new actors.
+// Empty fields keep their defaults.
+func (m *Manager) WithEgress(cfg EgressConfig) *Manager {
+	if cfg.AnthropicBaseURL != "" {
+		m.egress.AnthropicBaseURL = cfg.AnthropicBaseURL
+	}
+	if cfg.CredentialURI != "" {
+		m.egress.CredentialURI = cfg.CredentialURI
+	}
+	return m
+}
+
 // WithLogger sets the logger for the Manager.
 func (m *Manager) WithLogger(logger *slog.Logger) *Manager {
 	if logger != nil {
@@ -118,8 +156,18 @@ func (m *Manager) recordResume(actorName string) {
 }
 
 // EnsureAtespace creates the atespace if it doesn't already exist.
+//
+// ate-api authorizes calls before checking existence, and CreateAtespace
+// requires global owner, so look the atespace up first: an atespace-scoped
+// controller can then run against an atespace provisioned by an operator.
 func (m *Manager) EnsureAtespace(ctx context.Context) error {
-	_, err := m.client.CreateAtespace(ctx, &ateapipb.CreateAtespaceRequest{
+	_, err := m.client.GetAtespace(ctx, &ateapipb.GetAtespaceRequest{
+		Atespace: &ateapipb.ObjectRef{Name: m.atespace},
+	})
+	if err == nil {
+		return nil
+	}
+	_, err = m.client.CreateAtespace(ctx, &ateapipb.CreateAtespaceRequest{
 		Atespace: &ateapipb.Atespace{
 			Metadata: &ateapipb.ResourceMetadata{
 				Name: m.atespace,
@@ -164,42 +212,19 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) error {
 			return fmt.Errorf("creating actor %s: %w", actorRef.Name, err)
 		}
 
-		// Ensure the actor has an egress policy allowing all outbound traffic.
-		// TODO: Determine the ideal egress network policy configuration rather than allowing all traffic.
+		// The egress policy must exist before the actor is notified of work:
+		// it is what injects the Anthropic environment key into the worker's
+		// API calls, so without it the worker cannot authenticate.
+		policy, err := BuildEgressPolicy(actorRef.Atespace, m.egress)
+		if err != nil {
+			return fmt.Errorf("building egress policy for actor %s: %w", actorRef.Name, err)
+		}
 		_, err = m.client.CreateActorEgressPolicy(ctx, &ateapipb.CreateActorEgressPolicyRequest{
-			Actor: actorRef,
-			EgressPolicy: &ateapipb.EgressPolicy{
-				Metadata: &ateapipb.ResourceMetadata{
-					Atespace: actorRef.Atespace,
-					Name:     "default",
-				},
-				Rules: []*ateapipb.EgressRule{
-					{
-						Http: &ateapipb.HTTPRule{
-							Hostnames: []string{"*"},
-						},
-					},
-					{
-						Https: &ateapipb.HTTPSRule{
-							Hostnames: []string{"*"},
-						},
-					},
-					{
-						TlsPassthrough: &ateapipb.TLSPassthroughRule{
-							Hostnames: []string{"*"},
-							Ports: &ateapipb.Ports{
-								All: &ateapipb.AllPorts{},
-							},
-						},
-					},
-				},
-			},
+			Actor:        actorRef,
+			EgressPolicy: policy,
 		})
 		if err != nil && status.Code(err) != codes.AlreadyExists {
-			m.logger.Warn("Failed to create default egress policy for actor",
-				slog.String("actor", actorRef.Name),
-				slog.Any("error", err),
-			)
+			return fmt.Errorf("creating egress policy for actor %s: %w", actorRef.Name, err)
 		}
 
 		m.recordResume(actorRef.Name)
@@ -220,11 +245,7 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) error {
 // Notify sends an HTTP POST request to the actor's /work endpoint via the Substrate router,
 // retrying transient 5xx errors with backoff while the actor is warming up.
 func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) error {
-	routerAddr := m.routerAddr
-	if !strings.HasPrefix(routerAddr, "http://") && !strings.HasPrefix(routerAddr, "https://") {
-		routerAddr = "http://" + routerAddr
-	}
-	url := fmt.Sprintf("%s/work", routerAddr)
+	url := m.routerURL("/work")
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -235,9 +256,7 @@ func (m *Manager) Notify(ctx context.Context, sessionID string, payload any) err
 	actorName := ActorName(sessionID)
 	host := fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorName, m.atespace)
 
-	client := &http.Client{
-		Timeout: defaultNotifyTimeout,
-	}
+	client := m.routerClient(defaultNotifyTimeout)
 
 	type workResponse struct {
 		Status string `json:"status"`
@@ -342,11 +361,7 @@ func (m *Manager) suspendActor(ctx context.Context, actorRef *ateapipb.ObjectRef
 
 // actorIdleStatus queries an actor's /idle endpoint via the Substrate router.
 func (m *Manager) actorIdleStatus(ctx context.Context, actorRef *ateapipb.ObjectRef) (*IdleStatus, error) {
-	routerAddr := m.routerAddr
-	if !strings.HasPrefix(routerAddr, "http://") && !strings.HasPrefix(routerAddr, "https://") {
-		routerAddr = "http://" + routerAddr
-	}
-	url := fmt.Sprintf("%s/idle", routerAddr)
+	url := m.routerURL("/idle")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -355,9 +370,7 @@ func (m *Manager) actorIdleStatus(ctx context.Context, actorRef *ateapipb.Object
 	req.Header.Set("ate-target-actor", fmt.Sprintf("%s/%s", actorRef.Atespace, actorRef.Name))
 	req.Host = fmt.Sprintf("%s.%s.actors.resources.substrate.ate.dev", actorRef.Name, actorRef.Atespace)
 
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
+	client := m.routerClient(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("requesting /idle from router at %s (host %s): %w", url, req.Host, err)
@@ -581,7 +594,11 @@ func ActorName(sessionID string) string {
 	return fmt.Sprintf("%s-%s", prefix, hashSuffix)
 }
 
-const defaultTokenPath = "/var/run/secrets/tokens/ateapi-token"
+const (
+	defaultTokenPath = "/var/run/secrets/tokens/ateapi-token"
+	// ateapiServerName is the DNS name in ate-api's serving certificate.
+	ateapiServerName = "api.ate-system.svc"
+)
 
 type tokenAuth struct {
 	tokenFile string
@@ -605,24 +622,32 @@ func (t tokenAuth) RequireTransportSecurity() bool {
 	return false
 }
 
-// DialATE dials the Substrate ateapi gRPC service.
-func DialATE(endpoint string, insecureConn bool) (ateapipb.ControlClient, *grpc.ClientConn, error) {
+// DialATE dials the Substrate ateapi gRPC service. Unless insecureConn is set,
+// it verifies ate-api's serving certificate against the trust bundle at caFile
+// before sending the ServiceAccount bearer token.
+func DialATE(endpoint string, insecureConn bool, caFile string) (ateapipb.ControlClient, *grpc.ClientConn, error) {
 	var creds credentials.TransportCredentials
+	dialOpts := []grpc.DialOption{}
 	if insecureConn {
 		creds = insecure.NewCredentials()
 	} else {
-		creds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
+		var err error
+		creds, err = credentials.NewClientTLSFromFile(caFile, "")
+		if err != nil {
+			return nil, nil, fmt.Errorf("loading the ate-api trust bundle (mount the servicedns trust bundle or pass --servicedns-ca-file): %w", err)
+		}
+		// grpc verifies the server certificate against the connection's
+		// authority. ate-api's certificate names api.ate-system.svc, not the
+		// dialed address (api.ate-system.svc.cluster.local or a port-forward).
+		dialOpts = append(dialOpts, grpc.WithAuthority(ateapiServerName))
 	}
-
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(creds),
-	}
+	dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))
 
 	if _, err := os.Stat(defaultTokenPath); err == nil {
-		opts = append(opts, grpc.WithPerRPCCredentials(tokenAuth{tokenFile: defaultTokenPath}))
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(tokenAuth{tokenFile: defaultTokenPath}))
 	}
 
-	conn, err := grpc.NewClient(endpoint, opts...)
+	conn, err := grpc.NewClient(endpoint, dialOpts...)
 	if err != nil {
 		return nil, nil, err
 	}

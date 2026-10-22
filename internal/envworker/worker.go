@@ -67,16 +67,19 @@ func helperReqOpts(environmentKey string, helper helperTag) ([]option.RequestOpt
 
 // EnvironmentWorkerOptions configures an EnvironmentWorker.
 type EnvironmentWorkerOptions struct {
-	EnvironmentID     string
-	EnvironmentKey    string
-	Workdir           string
-	UnrestrictedPaths bool
-	MaxFileBytes      int64
-	Tools             []anthropic.BetaTool
-	ToolsFunc         func(env *agenttoolset.AgentToolContext) []anthropic.BetaTool
-	MaxIdle           *time.Duration
-	RequestOptions    []option.RequestOption
-	Logger            *slog.Logger
+	EnvironmentID  string
+	EnvironmentKey string
+	Workdir        string
+	// AllowedRoots are directories outside Workdir the file tools may also
+	// reach (agenttoolset.AgentToolContext.AllowedRoots). The SDK no longer
+	// supports UnrestrictedPaths; list "/" to reach the whole filesystem.
+	AllowedRoots   []string
+	MaxFileBytes   int64
+	Tools          []anthropic.BetaTool
+	ToolsFunc      func(env *agenttoolset.AgentToolContext) []anthropic.BetaTool
+	MaxIdle        *time.Duration
+	RequestOptions []option.RequestOption
+	Logger         *slog.Logger
 }
 
 // HandleItemOptions configures a work item execution.
@@ -159,9 +162,9 @@ func (w *EnvironmentWorker) HandleItem(ctx context.Context, opts HandleItemOptio
 	}()
 
 	env := &agenttoolset.AgentToolContext{
-		Workdir:           w.opts.Workdir,
-		UnrestrictedPaths: w.opts.UnrestrictedPaths,
-		MaxFileBytes:      w.opts.MaxFileBytes,
+		Workdir:      w.opts.Workdir,
+		AllowedRoots: w.opts.AllowedRoots,
+		MaxFileBytes: w.opts.MaxFileBytes,
 	}
 
 	if err := env.SetupSkills(sessCtx, w.client, sessionID, hbStopOpts...); err != nil {

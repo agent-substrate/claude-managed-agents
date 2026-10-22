@@ -88,6 +88,8 @@ metadata:
     app: ate-ant-loadgen
 spec:
   restartPolicy: Never
+  # router-client is allowlisted by atenet-router and holds editor on the atespace.
+  serviceAccountName: router-client
   containers:
   - name: loadgen
     image: ${RUNNER_IMAGE}
@@ -99,6 +101,12 @@ spec:
     - name: ateapi-token
       mountPath: /var/run/secrets/tokens
       readOnly: true
+    - name: podidentity
+      mountPath: /run/podidentity.podcert.ate.dev
+      readOnly: true
+    - name: servicedns-ca
+      mountPath: /run/servicedns-ca
+      readOnly: true
   volumes:
   - name: ateapi-token
     projected:
@@ -107,6 +115,22 @@ spec:
           audience: api.ate-system.svc
           expirationSeconds: 3600
           path: ateapi-token
+  - name: podidentity
+    projected:
+      sources:
+      - podCertificate:
+          signerName: podidentity.podcert.ate.dev/identity
+          keyType: ECDSAP256
+          credentialBundlePath: credential-bundle.pem
+  - name: servicedns-ca
+    projected:
+      sources:
+      - clusterTrustBundle:
+          signerName: servicedns.podcert.ate.dev/identity
+          labelSelector:
+            matchLabels:
+              podcert.ate.dev/canarying: live
+          path: trust-bundle.pem
 EOF
 
 echo "--> Waiting for pod '${POD_NAME}' to be Ready..."
