@@ -37,12 +37,12 @@ import (
 	"github.com/agent-substrate/claude-managed-agents/internal/event"
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
 	"github.com/agent-substrate/claude-managed-agents/internal/runner"
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/spf13/cobra"
 	"github.com/valkey-io/valkey-go"
+	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -76,7 +76,9 @@ type Config struct {
 	Template         string
 	AteapiAddr       string
 	AtenetRouterAddr string
+	RouterClientCert string
 	Insecure         bool
+	CAFile           string
 	ValkeyAddr       string
 	ValkeyPassword   string
 
@@ -513,14 +515,26 @@ func waitValkeyStreamDrain(ctx context.Context, cfg Config, rec *Recorder, logge
 // This exercises actor creation, warmup, HTTP /work routing, snapshot suspension, and
 // snapshot resumption across 10,000 sessions multiplexed onto the warm WorkerPool.
 func runDirectMode(ctx context.Context, cfg Config, rec *Recorder, logger *slog.Logger) error {
-	ateClient, conn, err := actor.DialATE(cfg.AteapiAddr, cfg.Insecure)
+	ateClient, conn, err := actor.DialATE(cfg.AteapiAddr, cfg.Insecure, cfg.CAFile)
 	if err != nil {
 		return fmt.Errorf("dialing ateapi at %s: %w", cfg.AteapiAddr, err)
 	}
 	defer conn.Close()
 
+	certFile := cfg.RouterClientCert
+	if _, err := os.Stat(certFile); certFile != "" && err != nil {
+		logger.Warn("Router client certificate not found; calling atenet-router without mTLS",
+			slog.String("path", certFile), slog.Any("error", err))
+		certFile = ""
+	}
+	routerTransport, err := actor.RouterTransportFromFiles(certFile, cfg.CAFile, actor.DefaultRouterServerName)
+	if err != nil {
+		return fmt.Errorf("configuring atenet-router mTLS: %w", err)
+	}
+
 	am := actor.NewManager(ateClient, cfg.Template, cfg.Namespace).
 		WithRouterAddr(cfg.AtenetRouterAddr).
+		WithRouterTransport(routerTransport).
 		WithLogger(logger)
 
 	if err := am.EnsureAtespace(ctx); err != nil {
@@ -834,7 +848,11 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.Template, "template", manifest.DefaultTemplate, "Substrate ActorTemplate name")
 	cmd.Flags().StringVar(&cfg.AteapiAddr, "ateapi-addr", manifest.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", manifest.DefaultAtenetRouterAddr, "Substrate atenet router HTTP endpoint")
+	cmd.Flags().StringVar(&cfg.RouterClientCert, "router-client-cert", actor.DefaultRouterClientCertFile,
+		"podidentity credential bundle presented to atenet-router for mTLS in direct mode (skipped if absent)")
 	cmd.Flags().BoolVar(&cfg.Insecure, "insecure", false, "connect to ateapi without TLS")
+	cmd.Flags().StringVar(&cfg.CAFile, "servicedns-ca-file", actor.DefaultServiceDNSCAFile,
+		"trust bundle that verifies ateapi's and atenet-router's serving certificates")
 	cmd.Flags().StringVar(&cfg.ValkeyAddr, "valkey-addr", "", "Valkey endpoint (default $VALKEY_ADDR or valkey.ate-ant.svc.cluster.local:6379)")
 
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (default $ANTHROPIC_ENVIRONMENT_ID)")

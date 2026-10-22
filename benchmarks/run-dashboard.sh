@@ -37,10 +37,21 @@ trap cleanup EXIT
 echo "--> Cross-compiling benchmark dashboard for linux/amd64..."
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -buildvcs=false -o "${TMP_BIN}" ./benchmarks/dashboard
 
+echo "--> Granting the dashboard viewer access to atespace '${NAMESPACE}' in ate-api..."
+NAMESPACE="${NAMESPACE}" ./benchmarks/access-policy.sh
+
 echo "--> Applying RBAC and Service (${SERVICE_TYPE}) in namespace '${NAMESPACE}'..."
 kubectl delete pod "${POD_NAME}" -n "${NAMESPACE}" --ignore-not-found --grace-period=0 --force --wait=true >/dev/null 2>&1 || true
 
 cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  # Its token authenticates the dashboard to ate-api (viewer on the atespace,
+  # granted by access-policy.sh) and to Kubernetes (deployments reader below).
+  name: ate-ant-dashboard
+  namespace: ${NAMESPACE}
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -58,7 +69,7 @@ metadata:
   namespace: ${NAMESPACE}
 subjects:
 - kind: ServiceAccount
-  name: default
+  name: ate-ant-dashboard
   namespace: ${NAMESPACE}
 roleRef:
   kind: Role
@@ -90,6 +101,7 @@ metadata:
     app: ate-ant-dashboard
 spec:
   restartPolicy: Always
+  serviceAccountName: ate-ant-dashboard
   containers:
   - name: dashboard
     image: ${RUNNER_IMAGE}
@@ -117,6 +129,9 @@ spec:
     - name: ateapi-token
       mountPath: /var/run/secrets/tokens
       readOnly: true
+    - name: servicedns-ca
+      mountPath: /run/servicedns-ca
+      readOnly: true
   volumes:
   - name: ateapi-token
     projected:
@@ -125,6 +140,16 @@ spec:
           audience: api.ate-system.svc
           expirationSeconds: 86400
           path: ateapi-token
+  # Verifies ate-api's serving certificate.
+  - name: servicedns-ca
+    projected:
+      sources:
+      - clusterTrustBundle:
+          signerName: servicedns.podcert.ate.dev/identity
+          labelSelector:
+            matchLabels:
+              podcert.ate.dev/canarying: live
+          path: trust-bundle.pem
 EOF
 
 echo "--> Waiting for pod '${POD_NAME}' container to start..."

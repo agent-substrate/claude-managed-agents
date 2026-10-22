@@ -16,6 +16,13 @@
 
 # Rebuilds container images, pushes them to gcr.io/${GOOGLE_CLOUD_PROJECT},
 # and updates benchmarks/install.sh (and README.md) with the new @sha256 digests.
+#
+# Images built:
+#   - ate-ant           (this repo, via `make push`)
+#   - ateworker-gvisor  (Agent Substrate gVisor worker, via `ate-setup publish worker-images`)
+#
+# The Agent Substrate control plane images (ateapi, atecontroller, atelet, ...)
+# are built and deployed by `ate-setup deploy ate-system`; see install.sh.
 
 set -o errexit -o nounset -o pipefail
 
@@ -26,25 +33,48 @@ GOOGLE_CLOUD_PROJECT="${GOOGLE_CLOUD_PROJECT:-kubecon-na-26-keynote-demo}"
 CONTAINER_ENGINE="${CONTAINER_ENGINE:-podman}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 
-# Rebuilds Agent Substrate images (ateapi, atecontroller, atelet, atenet,
-# podcertcontroller, ateom-gvisor) from SUBSTRATE_DIR (defaults to ~/substrate)
-# unless BUILD_SUBSTRATE_IMAGES=false is set.
+# Rebuilds the Agent Substrate worker image (ateworker-gvisor) unless
+# BUILD_SUBSTRATE_IMAGES=false. Unless SUBSTRATE_DIR is set, the worker is built
+# from a git worktree of SUBSTRATE_REPO checked out at the go.ate.dev/substrate
+# version pinned in go.mod, so it matches the API this repo is built against.
+# (The Go module cache cannot be used: it omits the nested hack/tools module
+# ate-setup needs to locate ko.)
 BUILD_SUBSTRATE_IMAGES="${BUILD_SUBSTRATE_IMAGES:-true}"
-SUBSTRATE_DIR="${SUBSTRATE_DIR:-${HOME}/substrate}"
-SKIP_IMAGES="${SKIP_IMAGES:-./cmd/ateom-microvm}"
+SUBSTRATE_REPO="${SUBSTRATE_REPO:-${HOME}/substrate}"
+SUBSTRATE_DIR="${SUBSTRATE_DIR:-}"
+ATE_IMAGE_REPO="${ATE_IMAGE_REPO:-gcr.io/${GOOGLE_CLOUD_PROJECT}/ate-images}"
 UPDATE_README="${UPDATE_README:-true}"
 
 INSTALL_SCRIPT="${ROOT_DIR}/benchmarks/install.sh"
 ROOT_README="${ROOT_DIR}/README.md"
 
+if [[ "${BUILD_SUBSTRATE_IMAGES}" == "true" && -z "${SUBSTRATE_DIR}" ]]; then
+  SUBSTRATE_VERSION="$(go list -m -f '{{.Version}}' go.ate.dev/substrate)"
+  # Pseudo-versions (v0.5.1-0.20261022032710-ab4f3dbec79b) end in a commit hash;
+  # anything else is a tag.
+  if [[ "${SUBSTRATE_VERSION}" =~ [.-][0-9]{14}-([0-9a-f]{12})$ ]]; then
+    SUBSTRATE_REV="${BASH_REMATCH[1]}"
+  else
+    SUBSTRATE_REV="${SUBSTRATE_VERSION}"
+  fi
+  SUBSTRATE_DIR="${HOME}/.cache/ate-ant/substrate-${SUBSTRATE_REV}"
+  if [[ ! -d "${SUBSTRATE_DIR}" ]]; then
+    echo "--> Creating Agent Substrate worktree at ${SUBSTRATE_REV} in ${SUBSTRATE_DIR}..."
+    git -C "${SUBSTRATE_REPO}" fetch --tags origin
+    mkdir -p "$(dirname "${SUBSTRATE_DIR}")"
+    git -C "${SUBSTRATE_REPO}" worktree add --detach "${SUBSTRATE_DIR}" "${SUBSTRATE_REV}"
+  fi
+fi
+
 echo "=================================================================="
 echo "Building and Pushing Benchmark Images"
 echo "  Project:                ${GOOGLE_CLOUD_PROJECT}"
 echo "  Container Engine:       ${CONTAINER_ENGINE} (${PLATFORM})"
-echo "  Build Substrate Images: ${BUILD_SUBSTRATE_IMAGES}"
+echo "  Build Substrate Images: ${BUILD_SUBSTRATE_IMAGES} (${SUBSTRATE_DIR})"
+echo "  Substrate Image Repo:   ${ATE_IMAGE_REPO}"
 echo "=================================================================="
 
-# 1. Ensure gcr.io Artifact Registry repository exists and authenticate with ADC token.
+# 1. Ensure gcr.io Artifact Registry repository exists.
 if ! gcloud artifacts repositories describe gcr.io --location=us --project="${GOOGLE_CLOUD_PROJECT}" >/dev/null 2>&1; then
   echo "--> Creating gcr.io Artifact Registry repository in ${GOOGLE_CLOUD_PROJECT}..."
   gcloud artifacts repositories create gcr.io \
@@ -52,10 +82,6 @@ if ! gcloud artifacts repositories describe gcr.io --location=us --project="${GO
     --location=us \
     --project="${GOOGLE_CLOUD_PROJECT}"
 fi
-
-echo "--> Authenticating ${CONTAINER_ENGINE} to gcr.io using Application Default Credentials..."
-ACCESS_TOKEN="$(gcloud auth application-default print-access-token 2>/dev/null || gcloud auth print-access-token)"
-printf '%s' "${ACCESS_TOKEN}" | "${CONTAINER_ENGINE}" login -u oauth2accesstoken --password-stdin https://gcr.io >/dev/null
 
 # 2. Build and push the ate-ant worker/controller image.
 echo "--> Building and pushing ate-ant image via 'make push'..."
@@ -77,54 +103,50 @@ if [[ -z "${WORKER_SHA}" ]]; then
 fi
 echo "--> New ate-ant digest: ${WORKER_SHA}"
 
-# 3. Optionally rebuild Agent Substrate images (including ateom-gvisor).
-ATEOM_SHA=""
+# 3. Optionally rebuild the Agent Substrate gVisor worker image with ko.
+ATEWORKER_SHA=""
 if [[ "${BUILD_SUBSTRATE_IMAGES}" == "true" ]]; then
   if [[ ! -d "${SUBSTRATE_DIR}" ]]; then
     echo "ERROR: SUBSTRATE_DIR '${SUBSTRATE_DIR}' not found." >&2
     exit 1
   fi
-  echo "--> Building and pushing Agent Substrate images from ${SUBSTRATE_DIR}..."
-  TMP_DOCKER_CONFIG="$(mktemp -d)"
-  trap 'rm -rf "${TMP_DOCKER_CONFIG}"' EXIT
-  printf '%s' "${ACCESS_TOKEN}" | "${CONTAINER_ENGINE}" login --authfile="${TMP_DOCKER_CONFIG}/config.json" -u oauth2accesstoken --password-stdin https://gcr.io >/dev/null
-
+  echo "--> Building and pushing Agent Substrate worker images from ${SUBSTRATE_DIR}..."
   substrate_output="$(
     cd "${SUBSTRATE_DIR}" && \
-    DOCKER_CONFIG="${TMP_DOCKER_CONFIG}" \
-    PROJECT_ID="${GOOGLE_CLOUD_PROJECT}" \
-    KO_DOCKER_REPO="gcr.io/${GOOGLE_CLOUD_PROJECT}/ate-images" \
-    SKIP_IMAGES="${SKIP_IMAGES}" \
-    make build-images | tee /dev/stderr
+    go run ./cmd/ate-setup publish worker-images \
+      --no-dev-env \
+      --ko-docker-repo="${ATE_IMAGE_REPO}" \
+      --ko-default-platforms="${PLATFORM}" | tee /dev/stderr
   )"
-  ATEOM_SHA="$(echo "${substrate_output}" | grep "ateom-gvisor" | grep -Eo "sha256:[a-f0-9]{64}" | tail -n1 || true)"
-  if [[ -z "${ATEOM_SHA}" ]]; then
-    ATEOM_SHA="$(gcloud container images describe "gcr.io/${GOOGLE_CLOUD_PROJECT}/ate-images/ateom-gvisor:latest" --format="value(image_summary.digest)")"
+  ATEWORKER_SHA="$(echo "${substrate_output}" | grep "^ateworker-gvisor:" | grep -Eo "sha256:[a-f0-9]{64}" | tail -n1 || true)"
+  if [[ -z "${ATEWORKER_SHA}" ]]; then
+    echo "ERROR: Could not determine sha256 digest for ateworker-gvisor" >&2
+    exit 1
   fi
-  echo "--> New ateom-gvisor digest: ${ATEOM_SHA}"
+  echo "--> New ateworker-gvisor digest: ${ATEWORKER_SHA}"
 fi
 
 # 4. Update benchmarks/install.sh (and README.md) with the new digests.
-echo "--> Updating ${INSTALL_SCRIPT} with ate-ant@${WORKER_SHA}..."
-perl -pi -e "s|(ate-ant\@)sha256:[a-f0-9]{64}|\${1}${WORKER_SHA}|g" "${INSTALL_SCRIPT}"
+update_digests() {
+  local file="$1"
+  perl -pi -e "s|(ate-ant\@)sha256:[a-f0-9]{64}|\${1}${WORKER_SHA}|g" "${file}"
+  if [[ -n "${ATEWORKER_SHA}" ]]; then
+    perl -pi -e "s|(ateworker-gvisor\@)sha256:[a-f0-9]{64}|\${1}${ATEWORKER_SHA}|g" "${file}"
+  fi
+}
 
-if [[ -n "${ATEOM_SHA}" ]]; then
-  echo "--> Updating ${INSTALL_SCRIPT} with ateom-gvisor@${ATEOM_SHA}..."
-  perl -pi -e "s|(ateom-gvisor\@)sha256:[a-f0-9]{64}|\${1}${ATEOM_SHA}|g" "${INSTALL_SCRIPT}"
-fi
+echo "--> Updating ${INSTALL_SCRIPT} with new image digest(s)..."
+update_digests "${INSTALL_SCRIPT}"
 
 if [[ "${UPDATE_README}" == "true" && -f "${ROOT_README}" ]]; then
   echo "--> Updating ${ROOT_README} with new image digest(s)..."
-  perl -pi -e "s|(ate-ant\@)sha256:[a-f0-9]{64}|\${1}${WORKER_SHA}|g" "${ROOT_README}"
-  if [[ -n "${ATEOM_SHA}" ]]; then
-    perl -pi -e "s|(ateom-gvisor\@)sha256:[a-f0-9]{64}|\${1}${ATEOM_SHA}|g" "${ROOT_README}"
-  fi
+  update_digests "${ROOT_README}"
 fi
 
 echo "=================================================================="
 echo "Image Build & Script Update Complete"
 echo "  WORKER_IMAGE: gcr.io/\${GOOGLE_CLOUD_PROJECT}/ate-ant@${WORKER_SHA}"
-if [[ -n "${ATEOM_SHA}" ]]; then
-  echo "  ATEOM_IMAGE:  gcr.io/\${GOOGLE_CLOUD_PROJECT}/ate-images/ateom-gvisor@${ATEOM_SHA}"
+if [[ -n "${ATEWORKER_SHA}" ]]; then
+  echo "  ATEOM_IMAGE:  ${ATE_IMAGE_REPO}/ateworker-gvisor@${ATEWORKER_SHA}"
 fi
 echo "=================================================================="

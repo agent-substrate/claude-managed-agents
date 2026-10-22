@@ -19,8 +19,10 @@ import (
 	"strings"
 	"testing"
 
-	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	"sigs.k8s.io/yaml"
+
+	atev1alpha1 "go.ate.dev/substrate/pkg/api/v1alpha1"
+	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -77,8 +79,31 @@ func find[T any](t *testing.T, objs []any, name string) T {
 func TestBuildManifests(t *testing.T) {
 	cfg := testConfig()
 	objs := BuildManifests(cfg)
-	if len(objs) != 8 {
-		t.Fatalf("got %d manifests, want 8", len(objs))
+	if len(objs) != 10 {
+		t.Fatalf("got %d manifests, want 10", len(objs))
+	}
+
+	find[*corev1.ServiceAccount](t, objs, RouterClientServiceAccount)
+	controller := find[*appsv1.Deployment](t, objs, defaultControllerDeploymentName)
+	if got := controller.Spec.Template.Spec.ServiceAccountName; got != RouterClientServiceAccount {
+		t.Errorf("controller serviceAccountName = %q, want %q", got, RouterClientServiceAccount)
+	}
+	var podCert, routerCA bool
+	for _, v := range controller.Spec.Template.Spec.Volumes {
+		if v.Projected == nil {
+			continue
+		}
+		for _, s := range v.Projected.Sources {
+			if s.PodCertificate != nil && s.PodCertificate.SignerName == podIdentitySigner {
+				podCert = true
+			}
+			if s.ClusterTrustBundle != nil && s.ClusterTrustBundle.SignerName != nil && *s.ClusterTrustBundle.SignerName == serviceDNSSigner {
+				routerCA = true
+			}
+		}
+	}
+	if !podCert || !routerCA {
+		t.Errorf("controller router mTLS volumes: podidentity cert = %v, servicedns trust bundle = %v; want both", podCert, routerCA)
 	}
 
 	ns := find[*corev1.Namespace](t, objs, "ate-ant")
@@ -206,6 +231,23 @@ func TestWriteActorTemplate(t *testing.T) {
 	if strings.Contains(out, "status:") {
 		t.Errorf("output should not contain status fields:\n%s", out)
 	}
+	if strings.Contains(out, cfg.EnvironmentKey) {
+		t.Errorf("ActorTemplate should not embed the real environment key:\n%s", out)
+	}
+	tmpl := BuildActorTemplate(cfg)
+	if got := actorProtoEnv(tmpl, "ANTHROPIC_ENVIRONMENT_KEY"); got != EnvironmentKeyPlaceholder {
+		t.Errorf("ActorTemplate ANTHROPIC_ENVIRONMENT_KEY = %q, want placeholder %q", got, EnvironmentKeyPlaceholder)
+	}
+	if got := actorProtoEnv(tmpl, "SSL_CERT_FILE"); got != TrustBundleFile {
+		t.Errorf("ActorTemplate SSL_CERT_FILE = %q, want %q", got, TrustBundleFile)
+	}
+	if len(tmpl.Volumes) != 1 || tmpl.Volumes[0].GetSystemInfo() == nil {
+		t.Fatalf("ActorTemplate volumes = %+v, want one systemInfo trust bundle volume", tmpl.Volumes)
+	}
+	mounts := tmpl.Containers[0].VolumeMounts
+	if len(mounts) != 1 || mounts[0].Name != tmpl.Volumes[0].Name {
+		t.Errorf("worker volume mounts = %+v, want the trust bundle volume", mounts)
+	}
 }
 
 func TestBuildManifestsWithAPIKey(t *testing.T) {
@@ -262,4 +304,33 @@ func actorProtoEnv(template *ateapipb.ActorTemplate, name string) string {
 		}
 	}
 	return ""
+}
+
+func TestBuildCredentialProviderPolicy(t *testing.T) {
+	cfg := testConfig()
+	cfg.Namespace = "team-ns"
+
+	secret := BuildSecret(cfg)
+	if secret.Labels[EgressCredentialLabel] != "true" {
+		t.Errorf("secret labels = %v, want %s=true", secret.Labels, EgressCredentialLabel)
+	}
+
+	cm := find[*corev1.ConfigMap](t, BuildManifests(cfg), CredentialProviderPolicyConfigMap)
+	if cm.Namespace != CredentialProviderNamespace || cm.Name != CredentialProviderPolicyConfigMap {
+		t.Errorf("configmap = %s/%s", cm.Namespace, cm.Name)
+	}
+	var got credentialProviderPolicy
+	if err := yaml.Unmarshal([]byte(cm.Data[CredentialProviderPolicyKey]), &got); err != nil {
+		t.Fatalf("decoding policy: %v\n%s", err, cm.Data[CredentialProviderPolicyKey])
+	}
+	if len(got.Policies) != 1 {
+		t.Fatalf("policies = %+v, want one", got.Policies)
+	}
+	p := got.Policies[0]
+	if p.Atespace != "team-ns" || len(p.AllowedNamespaces) != 1 || p.AllowedNamespaces[0] != "team-ns" {
+		t.Errorf("grant = %+v, want atespace and namespace team-ns", p)
+	}
+	if len(p.SecretSelector.MatchLabels) != 1 || p.SecretSelector.MatchLabels[EgressCredentialLabel] != "true" {
+		t.Errorf("secret selector = %+v, want %s=true", p.SecretSelector.MatchLabels, EgressCredentialLabel)
+	}
 }

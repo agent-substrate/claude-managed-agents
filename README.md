@@ -1,103 +1,102 @@
 # Claude Managed Agents on Agent Substrate
 
-Deploy [Anthropic Managed Agents Self-Hosted Sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes) workers on [Agent Substrate](https://github.com/agent-substrate/substrate).
-
-This project runs Claude Managed Agents work (e.g. tool calls like bash, file operations, skills) inside isolated Agent Substrate gVisor/microVM actors with durable orchestration.
+Run [Claude Managed Agents self-hosted sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes) work (tool calls such as bash, file operations, and skills) inside isolated [Agent Substrate](https://github.com/agent-substrate/substrate) gVisor/microVM actors.
 
 ## Overview
 
 ```
-┌────────────────────────┐  Poll work items
-│ Claude Managed Agents  │ ◄─────────────────────────────────────────────┐
-└────────────────────────┘                                               │
-                                                                         ▼
-                                                     ┌───────────────────────────────────────┐
-                                                     │ Controller (`ate-ant controller`)     │
-                                                     │                                       │
-                                                     │  ┌─────────────────────────────────┐  │
-                                                     │  │ Poller loop                     │  │
-                                                     │  └────────────────┬────────────────┘  │
-                                                     └───────────────────┼───────────────────┘
-                                                       Enqueue (resume)  │
-                                                                         ▼
-┌────────────────────────┐   Consume event           ┌───┬───┬───┬────────────┐
-│ Controller (`ate-ant   │ ◄──────────────────────── │   │   │   │ Event Queue│
-│      controller`)      │                           └───┴───┴───┴────────────┘
-└───────────┬────────────┘
-            │
-            ├── Notify (POST /work) ───────► ┌────────────────────────┐
-            │                                │  Actor (`ate-ant run`) │
-            └── GC & Suspend (idle > 30s) ─► └────────────────────────┘
+┌───────────────────────┐    poll & ack     ┌──────────────────────┐ enqueue/consume  ┌──────────────┐
+│ Claude Managed Agents │ ◄──────────────── │ Controller           │ ◄──────────────► │ Valkey queue │
+└───────────────────────┘                   │ (ate-ant controller) │                  └──────────────┘
+            ▲                               └──────────┬───────────┘
+            │                                          │ resume, POST /work,
+            │                                          │ suspend when idle
+            │   tool results, heartbeats               ▼
+            │                               ┌──────────────────────┐
+            └────────────────────────────── │ Actor (ate-ant run)  │
+                                            └──────────────────────┘
 ```
 
-### Components
+- **Controller** (`ate-ant controller`): horizontally scalable. Each replica polls the Anthropic API for work and enqueues it in Valkey, then consumes lifecycle events from the queue (shared across replicas through a consumer group), creates, resumes, and suspends Substrate actors, and delivers work to actors through `atenet-router`.
+- **Queue**: an in-cluster Valkey instance that buffers session lifecycle events, decoupling ingestion from execution.
+- **Actors** (`ate-ant run`): one isolated sandbox per agent session. Each runs the Anthropic SDK's environment worker in-process to execute tools, and keeps session state across turns through snapshots.
+- **Environment key injection**: actors never hold the Anthropic environment key. They send a placeholder bearer token, and the Substrate egress gateway replaces it with `ANTHROPIC_ENVIRONMENT_KEY` from the `ate-ant-creds` Secret on requests to the Anthropic API.
 
-- **Controller**: A horizontally scalable daemon running `ate-ant controller`. Each replica runs an Anthropic poller loop and an event reconcile loop. Poller loops claim and acknowledge work items from the Anthropic API and enqueue them into Valkey. Controller loops consume lifecycle events from the queue (distributed among replicas via consumer groups), manage Substrate actor lifecycles (creating, resuming, suspending), and notify actors of work payloads via `atenet-router`.
-- **Queue**: An in-cluster Valkey/Redis instance buffering session lifecycle events, providing durable work distribution and decoupling ingestion from execution.
-- **Actors**: Dedicated, isolated environments assigned to each agent session running `ate-ant run`. They execute tools (bash commands, file operations, skills) with the Anthropic SDK's environment worker in-process and preserve session state across turns via snapshot persistence.
-
-See [DESIGN.md](DESIGN.md) for detailed architecture, event queuing, and actor lifecycle workflows.
+See [DESIGN.md](DESIGN.md) for the detailed architecture, event queuing, and actor lifecycle.
 
 ## Quickstart
 
 ### Prerequisites
 
 1. An [Agent Substrate](https://github.com/agent-substrate/substrate) cluster.
-2. Anthropic credentials: `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and optional `ANTHROPIC_ENVIRONMENT_KEY` (see [Creating a Self-Hosted Environment](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes#create-an-environment)). To use a custom Anthropic API URL instead of the public API, also set `ANTHROPIC_BASE_URL` (or pass `--anthropic-base-url`).
-3. Google Cloud project (`GOOGLE_CLOUD_PROJECT`) and GCS bucket for snapshots (`gs://$GOOGLE_CLOUD_PROJECT/ate-ant/`).
-4. Podman (or Docker) for building container images.
+2. Anthropic credentials: `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and `ANTHROPIC_ENVIRONMENT_KEY` (see [Creating a Self-Hosted Environment](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes#create-an-environment)). To use a custom Anthropic API URL, also set `ANTHROPIC_BASE_URL` (or pass `--anthropic-base-url`).
+3. A Google Cloud project (`GOOGLE_CLOUD_PROJECT`) and a GCS bucket for snapshots (`gs://$GOOGLE_CLOUD_PROJECT/ate-ant/`).
+4. Podman (or Docker) to build the container image.
 
-### Push Container Image
+### 1. Build and Push the Image
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="your-gcp-project"
 make push
 ```
 
-### 1. Apply Kubernetes Manifests
+`make push` prints the digest-pinned image. Use it as `--worker-image` in the steps below in place of the pinned digest.
 
-Update the container images before applying the manifests.
+### 2. Apply the Kubernetes Manifests
 
-> **Note:** Building your own images is temporary; pre-built images will be distributed in an upcoming release.
+`--worker-image` is the `ate-ant` image from step 1, used by the controller and the actors. `--ateom-image` is the Agent Substrate gVisor worker that the WorkerPool runs.
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:e6d05802b220e9c0976d7a0c2639e54cf263f4e1d4d376ce0f70b520664f9a40 \
-  --ateom-image  gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateom-gvisor@sha256:7d8878129e707c2842691cdef1f919450985df3f223dbb65361baca79c789e58 | kubectl apply -f -
+  --worker-image gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:2f5b931584f80ccbd72851058a597af39e706eeaa20dfd86a7bc2fcd7410b416 \
+  --ateom-image  gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateworker-gvisor@sha256:c97cf56ec19ef37895a0e7cc5c6dada677cb3824c5e93fcf7f142053cfe19a85 | kubectl apply -f -
 ```
 
-### 2. Register the ActorTemplate in Substrate
+### 3. Restart the Credential Provider
 
-Substrate manages ActorTemplates directly in its control plane rather than Kubernetes CRDs. Use `ate-ant manifest template` to generate the Substrate ActorTemplate manifest:
+The manifests include the Kubernetes Secrets credential provider's policy, which grants the `ate-ant` atespace access to the `ate-ant-creds` Secret only. The provider reads its policy at startup:
+
+```bash
+kubectl -n ate-system rollout restart deployment/k8s-credential-provider
+```
+
+### 4. Grant the Controller Access to Substrate
+
+Agent Substrate authorizes every API call. Create the atespace and give the controller's `router-client` ServiceAccount the `editor` role, which lets it create, resume, and suspend actors:
+
+```bash
+kubectl-ate create atespace ate-ant
+kubectl-ate create access-policy -a ate-ant -f - <<EOF
+bindings:
+- role: editor
+  members:
+  - user:system:serviceaccount:ate-ant:router-client
+EOF
+```
+
+### 5. Register the ActorTemplate
+
+ActorTemplates live in the Substrate control plane, not in Kubernetes:
 
 ```bash
 go run ./cmd/ate-ant manifest template \
-  --worker-image     gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:e6d05802b220e9c0976d7a0c2639e54cf263f4e1d4d376ce0f70b520664f9a40 \
-  --snapshots-bucket gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ | kubectl-ate create actor-template -f -
+  --worker-image     gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:2f5b931584f80ccbd72851058a597af39e706eeaa20dfd86a7bc2fcd7410b416 \
+  --snapshots-bucket gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ | kubectl-ate create actor-template --preview -f -
 ```
 
-### Verify Deployment
-
-Check that all worker pool, Valkey, and controller pods are running:
+### 6. Verify
 
 ```bash
 kubectl get pods -n ate-ant
-```
-
-Stream logs from the controller daemon:
-
-```bash
 kubectl logs -n ate-ant -l app=ate-ant-controller -f
 ```
 
 ## Example Agent
 
 ```bash
-# 1. Set environment variables
 export ANTHROPIC_API_KEY="sk-ant-api..."
 export ANTHROPIC_ENVIRONMENT_ID="env_..."
 
-# 2. Run example with an initial prompt
 go run ./examples/agent --prompt "Run 'uname -a' in bash and show the output."
 ```
 
@@ -113,11 +112,4 @@ podman run -it --rm \
   gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant:latest
 ```
 
-Inside the container:
-- **Run worker manually**: `ant beta:worker run --work-id "<work-id>" --session-id "<session-id>"`
-
-## Roadmap
-
-- [ ] **Distribute prebuilt images** so deploying is one `kubectl apply` with no build step.
-- [x] **Durable session orchestration** with distributed locking, retries, crash recovery, and auto-ACKing.
-- [x] **Enable garbage collection** to automatically suspend idle actors.
+Inside the container, run a worker manually with `ant beta:worker run --work-id "<work-id>" --session-id "<session-id>"`.

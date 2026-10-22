@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"io"
 
-	atev1alpha1 "github.com/agent-substrate/substrate/pkg/api/v1alpha1"
-	"github.com/agent-substrate/substrate/pkg/proto/ateapipb"
+	atev1alpha1 "go.ate.dev/substrate/pkg/api/v1alpha1"
+	"go.ate.dev/substrate/pkg/proto/ateapipb"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	appsv1 "k8s.io/api/apps/v1"
@@ -35,13 +35,19 @@ import (
 
 // Default constants for names and paths.
 const (
-	DefaultNamespace          = "ate-ant"
-	DefaultTemplate           = "ate-ant-actor-template"
-	DefaultReplicas = 3
-	DefaultAteapiAddr         = "api.ate-system.svc.cluster.local:443"
-	DefaultAtenetRouterAddr   = "atenet-router.ate-system.svc.cluster.local:80"
-	DefaultValkeyImage        = "valkey/valkey:8"
-	DefaultValkeyAddr         = "valkey.ate-ant.svc.cluster.local:6379"
+	DefaultNamespace        = "ate-ant"
+	DefaultTemplate         = "ate-ant-actor-template"
+	DefaultReplicas         = 3
+	DefaultAteapiAddr       = "api.ate-system.svc.cluster.local:443"
+	DefaultAtenetRouterAddr = "https://atenet-router.ate-system.svc:443"
+
+	// RouterClientServiceAccount is the ServiceAccount the controller runs as.
+	// atenet-router only accepts actor traffic from allowlisted SPIFFE IDs, so
+	// the router must be installed with
+	// --ingress-allowed-spiffe-ids=spiffe://cluster.local/ns/<namespace>/sa/router-client.
+	RouterClientServiceAccount = "router-client"
+	DefaultValkeyImage         = "valkey/valkey:8"
+	DefaultValkeyAddr          = "valkey.ate-ant.svc.cluster.local:6379"
 
 	defaultWorkerPool               = "ate-ant-workerpool"
 	defaultDeploymentName           = "ate-ant"
@@ -50,6 +56,39 @@ const (
 	defaultValkeyName               = "valkey"
 	defaultValkeyPort               = 6379
 	defaultValkeyStorageSize        = "10Gi"
+
+	trustBundleVolume = "egress-trust-bundle"
+
+	// Router mTLS: the controller's podidentity client certificate and the
+	// servicedns trust bundle that verifies atenet-router's serving certificate.
+	podIdentityVolume   = "podidentity"
+	serviceDNSCAVolume  = "servicedns-ca"
+	podIdentitySigner   = "podidentity.podcert.ate.dev/identity"
+	serviceDNSSigner    = "servicedns.podcert.ate.dev/identity"
+	trustBundleDir      = "/run/ate/egress-trust-bundle"
+	trustBundleFileName = "trust-bundle.pem"
+)
+
+const (
+	// EnvironmentKeyPlaceholder is the bearer token actors send to the
+	// Anthropic API. The Substrate egress gateway discards it and injects the
+	// real environment key from the ate-ant-creds Secret.
+	EnvironmentKeyPlaceholder = "injected-by-substrate-egress"
+
+	// TrustBundleFile is the projected trust bundle (egress gateway MITM CA
+	// plus public roots) actors use as SSL_CERT_FILE.
+	TrustBundleFile = trustBundleDir + "/" + trustBundleFileName
+
+	// EgressCredentialLabel marks the Secrets the Substrate Kubernetes Secrets
+	// credential provider may resolve for this deployment's actors.
+	EgressCredentialLabel = "ate-ant.dev/egress-credential"
+
+	// CredentialProviderNamespace, CredentialProviderPolicyConfigMap, and
+	// CredentialProviderPolicyKey locate the atespace→namespace policy of
+	// Substrate's bundled Kubernetes Secrets credential provider.
+	CredentialProviderNamespace       = "ate-system"
+	CredentialProviderPolicyConfigMap = "k8s-credential-provider-namespace-policy"
+	CredentialProviderPolicyKey       = "namespace-policy.yaml"
 )
 
 // Config defines the parameters for generating Substrate and Kubernetes deployment manifests.
@@ -122,12 +161,27 @@ func BuildManifests(cfg Config) []any {
 	return []any{
 		BuildNamespace(cfg),
 		BuildSecret(cfg),
+		BuildCredentialProviderPolicy(cfg),
 		BuildSecretsReaderRole(cfg),
 		BuildSecretsReaderRoleBinding(cfg),
 		BuildValkeyService(cfg),
 		BuildValkeyStatefulSet(cfg),
 		BuildWorkerPool(cfg),
+		BuildRouterClientServiceAccount(cfg),
 		BuildControllerDeployment(cfg),
+	}
+}
+
+// BuildRouterClientServiceAccount constructs the ServiceAccount the controller
+// runs as. Its podidentity certificate authenticates the controller to
+// atenet-router, and its token authenticates it to ate-api.
+func BuildRouterClientServiceAccount(cfg Config) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ServiceAccount"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      RouterClientServiceAccount,
+			Namespace: cfg.Namespace,
+		},
 	}
 }
 
@@ -160,6 +214,9 @@ func BuildSecret(cfg Config) *corev1.Secret {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      defaultSecretName,
 			Namespace: cfg.Namespace,
+			Labels: map[string]string{
+				EgressCredentialLabel: "true",
+			},
 		},
 		Type:       corev1.SecretTypeOpaque,
 		StringData: stringData,
@@ -197,8 +254,8 @@ func BuildSecretsReaderRoleBinding(cfg Config) *rbacv1.RoleBinding {
 		}},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
-			Kind:      "Role",
-			Name:      defaultSecretName + "-reader",
+			Kind:     "Role",
+			Name:     defaultSecretName + "-reader",
 		},
 	}
 }
@@ -293,23 +350,29 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 			},
 		},
 		Spec: atev1alpha1.WorkerPoolSpec{
-			Replicas:     cfg.Replicas,
-			WorkerImage:  cfg.AteomImage,
-			SandboxClass: "gvisor",
+			Replicas:    cfg.Replicas,
+			WorkerImage: cfg.AteomImage,
+			SandboxClasses: []atev1alpha1.WorkerPoolSandboxClass{{
+				Name: atev1alpha1.SandboxClassGvisor,
+			}},
 		},
 	}
 }
 
 // BuildActorTemplate constructs the protojson-shaped ateapipb.ActorTemplate for the Substrate API.
+//
+// The real Anthropic environment key never enters the actor. The worker sends
+// EnvironmentKeyPlaceholder as its bearer token, and the Substrate egress
+// gateway replaces it with the ANTHROPIC_ENVIRONMENT_KEY value from the
+// ate-ant-creds Secret (see EnvironmentKeyCredentialURI). For the gateway to
+// intercept that HTTPS traffic, the actor trusts the gateway's MITM CA through
+// a projected trust bundle that SSL_CERT_FILE points at.
 func BuildActorTemplate(cfg Config) *ateapipb.ActorTemplate {
 	cfg.Defaults()
 
-	var env []*ateapipb.EnvVar
-	if cfg.EnvironmentKey != "" {
-		env = append(env, &ateapipb.EnvVar{
-			Name:  "ANTHROPIC_ENVIRONMENT_KEY",
-			Value: cfg.EnvironmentKey,
-		})
+	env := []*ateapipb.EnvVar{
+		{Name: "ANTHROPIC_ENVIRONMENT_KEY", Value: EnvironmentKeyPlaceholder},
+		{Name: "SSL_CERT_FILE", Value: TrustBundleFile},
 	}
 	if cfg.EnvironmentID != "" {
 		env = append(env, &ateapipb.EnvVar{
@@ -334,13 +397,30 @@ func BuildActorTemplate(cfg Config) *ateapipb.ActorTemplate {
 				"workload": cfg.Template,
 			},
 		},
+		Volumes: []*ateapipb.Volume{{
+			Name: trustBundleVolume,
+			SystemInfo: &ateapipb.SystemInfoVolumeSource{
+				DataSources: []*ateapipb.SystemInfoDataSource{{
+					TrustBundle: &ateapipb.TrustBundleDataSource{
+						// The MITM CA for intercepted (https) rules, plus public
+						// roots for passthrough traffic.
+						Names: []string{"egress-mitm.ate.dev", "system-roots.ate.dev"},
+						Path:  trustBundleFileName,
+					},
+				}},
+			},
+		}},
 		Containers: []*ateapipb.Container{{
 			Name:    "worker",
 			Image:   cfg.WorkerImage,
 			Command: []string{"ate-ant", "run"},
 			Env:     env,
-			WakeupProbe: &ateapipb.ContainerWakeupProbe{
-				HttpGet: &ateapipb.HTTPGetAction{
+			VolumeMounts: []*ateapipb.VolumeMount{{
+				Name:      trustBundleVolume,
+				MountPath: trustBundleDir,
+			}},
+			WakeupProbe: &ateapipb.WakeupProbe{
+				HttpGet: &ateapipb.HttpGetAction{
 					Path: "/healthz",
 					Port: 80,
 				},
@@ -348,13 +428,76 @@ func BuildActorTemplate(cfg Config) *ateapipb.ActorTemplate {
 			},
 		}},
 		SnapshotConfig: &ateapipb.SnapshotConfig{
-			OnPause:         ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_FULL,
-			OnCommit:        ateapipb.SnapshotContentScope_SNAPSHOT_CONTENT_SCOPE_FULL,
-			StorageLocation: cfg.SnapshotsBucket,
+			PreferredFidelity: ateapipb.SnapshotFidelity_SNAPSHOT_FIDELITY_MEMORY,
+			StorageLocation:   cfg.SnapshotsBucket,
 		},
-		SandboxConfig: &ateapipb.SandboxConfig{
-			SandboxClass: ateapipb.SandboxClass_SANDBOX_CLASS_GVISOR,
-			ConfigName:   "gvisor-default",
+		// Substrate requires per-actor resource limits on every ActorTemplate.
+		Resources: &ateapipb.ResourceRequirements{
+			Limits: &ateapipb.Resources{
+				CpuMillicores: actorCPUMillicores,
+				MemoryBytes:   actorMemoryBytes,
+			},
+		},
+	}
+}
+
+// Per-actor resource limits declared on the ActorTemplate.
+const (
+	actorCPUMillicores = 1000    // 1 CPU
+	actorMemoryBytes   = 1 << 30 // 1 GiB
+)
+
+// EnvironmentKeyCredentialURI returns the Substrate credential URI of the
+// ANTHROPIC_ENVIRONMENT_KEY entry in the ate-ant-creds Secret, resolved by the
+// bundled Kubernetes Secrets credential provider (provider class k8s.io).
+func EnvironmentKeyCredentialURI(namespace string) string {
+	if namespace == "" {
+		namespace = DefaultNamespace
+	}
+	return fmt.Sprintf("ate-secret://k8s.io/default/%s/%s/ANTHROPIC_ENVIRONMENT_KEY", namespace, defaultSecretName)
+}
+
+// credentialProviderPolicy mirrors the namespace policy file of Substrate's
+// Kubernetes Secrets credential provider.
+type credentialProviderPolicy struct {
+	Policies []credentialProviderGrant `json:"policies"`
+}
+
+type credentialProviderGrant struct {
+	Atespace          string   `json:"atespace"`
+	AllowedNamespaces []string `json:"allowedNamespaces"`
+	SecretSelector    struct {
+		MatchLabels map[string]string `json:"matchLabels"`
+	} `json:"secretSelector"`
+}
+
+// BuildCredentialProviderPolicy constructs the ConfigMap holding the
+// atespace→namespace policy of Substrate's Kubernetes Secrets credential
+// provider. It grants the deployment's atespace only the Secrets in its
+// namespace labeled EgressCredentialLabel (that is, ate-ant-creds), which the
+// egress gateway resolves to inject the Anthropic environment key.
+//
+// The ConfigMap is cluster-wide: applying it replaces grants for every other
+// atespace. The provider reads it only at startup.
+func BuildCredentialProviderPolicy(cfg Config) *corev1.ConfigMap {
+	cfg.Defaults()
+
+	grant := credentialProviderGrant{
+		Atespace:          cfg.Namespace,
+		AllowedNamespaces: []string{cfg.Namespace},
+	}
+	grant.SecretSelector.MatchLabels = map[string]string{EgressCredentialLabel: "true"}
+	// Marshaling plain strings, slices, and maps cannot fail.
+	data, _ := yaml.Marshal(credentialProviderPolicy{Policies: []credentialProviderGrant{grant}})
+
+	return &corev1.ConfigMap{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "ConfigMap"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      CredentialProviderPolicyConfigMap,
+			Namespace: CredentialProviderNamespace,
+		},
+		Data: map[string]string{
+			CredentialProviderPolicyKey: string(data),
 		},
 	}
 }
@@ -417,6 +560,7 @@ func BuildControllerDeployment(cfg Config) *appsv1.Deployment {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
+					ServiceAccountName: RouterClientServiceAccount,
 					Containers: []corev1.Container{{
 						Name:  defaultControllerDeploymentName,
 						Image: cfg.WorkerImage,
@@ -431,26 +575,73 @@ func BuildControllerDeployment(cfg Config) *appsv1.Deployment {
 								},
 							},
 						}},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "ateapi-token",
-							MountPath: "/var/run/secrets/tokens",
-							ReadOnly:  true,
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "ateapi-token",
-						VolumeSource: corev1.VolumeSource{
-							Projected: &corev1.ProjectedVolumeSource{
-								Sources: []corev1.VolumeProjection{{
-									ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
-										Audience:          "api.ate-system.svc",
-										ExpirationSeconds: &expirationSeconds,
-										Path:              "ateapi-token",
-									},
-								}},
+						VolumeMounts: []corev1.VolumeMount{
+							{
+								Name:      "ateapi-token",
+								MountPath: "/var/run/secrets/tokens",
+								ReadOnly:  true,
+							},
+							{
+								Name:      podIdentityVolume,
+								MountPath: "/run/podidentity.podcert.ate.dev",
+								ReadOnly:  true,
+							},
+							{
+								Name:      serviceDNSCAVolume,
+								MountPath: "/run/servicedns-ca",
+								ReadOnly:  true,
 							},
 						},
 					}},
+					Volumes: []corev1.Volume{
+						{
+							Name: "ateapi-token",
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{{
+										ServiceAccountToken: &corev1.ServiceAccountTokenProjection{
+											Audience:          "api.ate-system.svc",
+											ExpirationSeconds: &expirationSeconds,
+											Path:              "ateapi-token",
+										},
+									}},
+								},
+							},
+						},
+						{
+							// Client certificate for atenet-router mTLS; its SPIFFE ID is
+							// spiffe://cluster.local/ns/<namespace>/sa/router-client.
+							Name: podIdentityVolume,
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{{
+										PodCertificate: &corev1.PodCertificateProjection{
+											SignerName:           podIdentitySigner,
+											KeyType:              "ECDSAP256",
+											CredentialBundlePath: "credential-bundle.pem",
+										},
+									}},
+								},
+							},
+						},
+						{
+							// Trust bundle that issued atenet-router's serving certificate.
+							Name: serviceDNSCAVolume,
+							VolumeSource: corev1.VolumeSource{
+								Projected: &corev1.ProjectedVolumeSource{
+									Sources: []corev1.VolumeProjection{{
+										ClusterTrustBundle: &corev1.ClusterTrustBundleProjection{
+											SignerName: new(serviceDNSSigner),
+											LabelSelector: &metav1.LabelSelector{
+												MatchLabels: map[string]string{"podcert.ate.dev/canarying": "live"},
+											},
+											Path: "trust-bundle.pem",
+										},
+									}},
+								},
+							},
+						},
+					},
 				},
 			},
 		},

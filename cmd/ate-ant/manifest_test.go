@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
 )
 
 func TestManifestCommand(t *testing.T) {
@@ -45,6 +47,10 @@ func TestManifestCommand(t *testing.T) {
 		"name: test-ns",
 		"kind: Secret",
 		"name: ate-ant-creds",
+		"ate-ant.dev/egress-credential: \"true\"",
+		"kind: ConfigMap",
+		"name: k8s-credential-provider-namespace-policy",
+		"atespace: test-ns",
 		"ANTHROPIC_ENVIRONMENT_ID: env_test_abc",
 		"ANTHROPIC_BASE_URL: http://managed-agents.example.svc.cluster.local:8400",
 		"kind: Service",
@@ -104,14 +110,25 @@ func TestManifestTemplateCommand(t *testing.T) {
 		"port: 80",
 		"ANTHROPIC_ENVIRONMENT_ID",
 		"env_test_abc",
-		"ANTHROPIC_ENVIRONMENT_KEY",
-		"key_test_xyz",
 		"ANTHROPIC_BASE_URL",
 		"http://managed-agents.example.svc.cluster.local:8400",
 	} {
 		if !strings.Contains(out, expected) {
 			t.Errorf("manifest template output missing %q:\n%s", expected, out)
 		}
+	}
+	for _, expected := range []string{
+		"name: ANTHROPIC_ENVIRONMENT_KEY",
+		"value: " + manifest.EnvironmentKeyPlaceholder,
+		"value: " + manifest.TrustBundleFile,
+		"egress-mitm.ate.dev",
+	} {
+		if !strings.Contains(out, expected) {
+			t.Errorf("manifest template output missing %q:\n%s", expected, out)
+		}
+	}
+	if strings.Contains(out, "key_test_xyz") {
+		t.Errorf("manifest template output should not contain the real environment key:\n%s", out)
 	}
 	if strings.Contains(out, "status:") {
 		t.Errorf("manifest template output should not contain status fields:\n%s", out)
@@ -129,4 +146,3 @@ func TestManifestTemplateCommandMissingRequiredFlags(t *testing.T) {
 		t.Error("expected error when required flags are missing, got nil")
 	}
 }
-

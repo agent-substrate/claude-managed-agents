@@ -39,6 +39,10 @@ func newControllerCommand() *cobra.Command {
 		gcInterval       time.Duration
 		gcIdleThreshold  time.Duration
 		pcfg             poller.Config
+		credentialURI    string
+		routerClientCert string
+		routerServerName string
+		caFile           string
 	)
 
 	cmd := &cobra.Command{
@@ -51,14 +55,24 @@ func newControllerCommand() *cobra.Command {
 			ctx := cmd.Context()
 			logger := slog.Default()
 
-			ateClient, conn, err := actor.DialATE(ateapiAddr, insecure)
+			ateClient, conn, err := actor.DialATE(ateapiAddr, insecure, caFile)
 			if err != nil {
 				return fmt.Errorf("dialing ateapi at %s: %w", ateapiAddr, err)
 			}
 			defer conn.Close()
 
+			pcfg.Defaults()
+			routerTransport, err := actor.RouterTransportFromFiles(routerClientCert, caFile, routerServerName)
+			if err != nil {
+				return fmt.Errorf("configuring atenet-router mTLS: %w", err)
+			}
 			am := actor.NewManager(ateClient, template, namespace).
 				WithRouterAddr(atenetRouterAddr).
+				WithRouterTransport(routerTransport).
+				WithEgress(actor.EgressConfig{
+					AnthropicBaseURL: pcfg.BaseURL,
+					CredentialURI:    credentialURI,
+				}).
 				WithLogger(logger)
 
 			var em *event.Manager
@@ -112,7 +126,6 @@ func newControllerCommand() *cobra.Command {
 			}
 			defer em.Close()
 
-			pcfg.Defaults()
 			p, err := poller.New(pcfg)
 			if err != nil {
 				return fmt.Errorf("creating poller: %w", err)
@@ -143,11 +156,19 @@ func newControllerCommand() *cobra.Command {
 	cmd.Flags().StringVar(&template, "template", manifest.DefaultTemplate, "Substrate ActorTemplate name")
 	cmd.Flags().StringVar(&ateapiAddr, "ateapi-addr", manifest.DefaultAteapiAddr, "Substrate ateapi gRPC endpoint")
 	cmd.Flags().StringVar(&atenetRouterAddr, "atenet-router-addr", manifest.DefaultAtenetRouterAddr, "Substrate atenet router endpoint")
+	cmd.Flags().StringVar(&routerClientCert, "router-client-cert", actor.DefaultRouterClientCertFile,
+		"podidentity credential bundle (key + certificate chain) presented to atenet-router for mTLS; empty disables client TLS")
+	cmd.Flags().StringVar(&routerServerName, "router-server-name", actor.DefaultRouterServerName,
+		"DNS name expected in atenet-router's serving certificate")
 	cmd.Flags().BoolVar(&insecure, "insecure", false, "connect to ateapi without TLS")
+	cmd.Flags().StringVar(&caFile, "servicedns-ca-file", actor.DefaultServiceDNSCAFile,
+		"trust bundle that verifies ateapi's and atenet-router's serving certificates")
 	cmd.Flags().DurationVar(&gcInterval, "gc-interval", actor.DefaultIdleCheckInterval, "interval between actor garbage collection sweeps")
 	cmd.Flags().DurationVar(&gcIdleThreshold, "gc-idle-threshold", actor.DefaultIdleThreshold, "idle duration threshold before suspending an actor")
 	cmd.Flags().StringVar(&pcfg.BaseURL, "anthropic-base-url", "",
 		"custom Anthropic API base URL (default $ANTHROPIC_BASE_URL, else the public API)")
+	cmd.Flags().StringVar(&credentialURI, "environment-key-credential-uri", "",
+		"ate-secret:// URI the Substrate egress gateway resolves to inject the Anthropic environment key into actor requests (default: ANTHROPIC_ENVIRONMENT_KEY in the ate-ant-creds Secret of --namespace)")
 	cmd.Flags().Int64Var(&pcfg.HandoffTTLSeconds, "handoff-ttl-seconds", poller.DefaultHandoffTTLSeconds,
 		"lease the poller takes on each work item before queueing it: the time the controller has to start the sandbox before the lease lapses and the item is requeued")
 

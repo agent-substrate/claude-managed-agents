@@ -114,7 +114,7 @@ else
   fi
 fi
 
-# 3. Create the 50-node worker node pool for actor sandboxes (ateom-gvisor runs runsc in-container).
+# 3. Create the 50-node worker node pool for actor sandboxes (ateworker-gvisor runs runsc in-container).
 if ! gcloud container node-pools describe "${WORKER_POOL_NAME}" \
   --cluster="${CLUSTER_NAME}" \
   --zone="${ZONE}" \
