@@ -93,6 +93,13 @@ INSTALL_SUBSTRATE="${INSTALL_SUBSTRATE:-true}"
 SUBSTRATE_MANIFEST="${SUBSTRATE_MANIFEST:-}"
 SUBSTRATE_HELM_CHART="${SUBSTRATE_HELM_CHART:-}"
 SUBSTRATE_NAMESPACE="${SUBSTRATE_NAMESPACE:-ate-system}"
+# SPIFFE IDs the atenet ingress router admits; the controller and in-cluster
+# loadgen both run as the router-client ServiceAccount.
+INGRESS_ALLOWED_SPIFFE_IDS="${INGRESS_ALLOWED_SPIFFE_IDS:-spiffe://cluster.local/ns/${NAMESPACE}/sa/router-client}"
+# Google service account GCS snapshot transfers run as; ate-api-server
+# impersonates it and downscopes its tokens per actor.
+SNAPSHOT_TRANSFER_GSA_NAME="${SNAPSHOT_TRANSFER_GSA_NAME:-ate-snapshot-transfer}"
+SNAPSHOT_TRANSFER_GSA="${SNAPSHOT_TRANSFER_GSA_NAME}@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com"
 
 echo "=================================================================="
 echo "Installing Benchmark Stack"
@@ -140,6 +147,20 @@ for MEMBER in "${ATELET_PRINCIPAL}" "${ATE_API_PRINCIPAL}"; do
     --member="${MEMBER}" --role="roles/storage.bucketViewer" --condition=None --quiet >/dev/null || true
 done
 
+if ! gcloud iam service-accounts describe "${SNAPSHOT_TRANSFER_GSA}" --project="${GOOGLE_CLOUD_PROJECT}" >/dev/null 2>&1; then
+  echo "--> Creating snapshot transfer service account ${SNAPSHOT_TRANSFER_GSA}..."
+  gcloud iam service-accounts create "${SNAPSHOT_TRANSFER_GSA_NAME}" \
+    --project="${GOOGLE_CLOUD_PROJECT}" \
+    --display-name="Substrate snapshot transfers"
+fi
+gcloud iam service-accounts add-iam-policy-binding "${SNAPSHOT_TRANSFER_GSA}" \
+  --project="${GOOGLE_CLOUD_PROJECT}" \
+  --member="${ATE_API_PRINCIPAL}" --role="roles/iam.serviceAccountTokenCreator" --condition=None --quiet >/dev/null
+for ROLE in roles/storage.objectAdmin roles/storage.bucketViewer; do
+  gcloud storage buckets add-iam-policy-binding "${BUCKET_URI}" \
+    --member="serviceAccount:${SNAPSHOT_TRANSFER_GSA}" --role="${ROLE}" --condition=None --quiet >/dev/null
+done
+
 # 2. Ensure the GKE control plane serves certificates.k8s.io/v1beta1 (required by ate-system).
 if ! kubectl api-versions 2>/dev/null | grep -q "certificates.k8s.io/v1beta1"; then
   echo "--> Enabling certificates.k8s.io/v1beta1 APIs on '${CLUSTER_NAME}'..."
@@ -178,6 +199,10 @@ elif [[ "${INSTALL_SUBSTRATE}" == "true" ]]; then
     CLUSTER_LOCATION="${ZONE}" \
     go run ./cmd/ate-setup deploy ate-system \
       --no-dev-env \
+      --credential-provider='{"name":"k8s.io"}' \
+      --ingress-allowed-spiffe-ids="${INGRESS_ALLOWED_SPIFFE_IDS}" \
+      --snapshot-transfer-gsa-name="${SNAPSHOT_TRANSFER_GSA_NAME}" \
+      --preview=PerTemplateSnapshotLocation \
       --image-repo="${ATE_IMAGE_REPO}" \
       --image-tag="${ATE_IMAGE_TAG}" \
       --rollout-timeout="600s"

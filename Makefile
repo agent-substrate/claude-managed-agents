@@ -56,7 +56,8 @@ push: image
 		fi; \
 	elif $(CONTAINER_ENGINE) push $(ATE_ANT_IMAGE):latest; then \
 		rm -f "$$digest_file"; \
-		digest=$$($(CONTAINER_ENGINE) inspect --format '{{.Digest}}' $(ATE_ANT_IMAGE):latest 2>/dev/null); \
+		digest=$$($(CONTAINER_ENGINE) inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' $(ATE_ANT_IMAGE):latest 2>/dev/null | \
+			grep '^$(ATE_ANT_IMAGE)@' | head -n1 | sed 's/.*@//'); \
 		if [ -n "$$digest" ]; then \
 			echo "Image pushed:"; \
 			echo "  $(ATE_ANT_IMAGE)@$$digest"; \
