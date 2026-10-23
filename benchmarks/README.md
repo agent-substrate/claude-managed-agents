@@ -9,7 +9,7 @@ This directory contains the cluster provisioning scripts, deployment installer, 
 | **System Node Pool** (`default-pool`) | `3 x e2-standard-4` | Hosts `ate-system` control plane, `valkey`, `ate-ant-controller` replicas, and the in-cluster load generator pod |
 | **gVisor Worker Pool** (`gvisor-pool`) | `50 x e2-standard-2` | Hosts the pre-warmed Agent Substrate sandbox runners in `us-west1-a` |
 | **`WorkerPool` CRD** (`ate-ant-workerpool`) | `50` warm replicas | Pre-warmed gVisor sandboxes (1 per worker node) multiplexed across 5,000 total actors via GCS snapshot suspend/resume |
-| **Controller Deployment** (`ate-ant-controller`) | `20` replicas | Consumes lifecycle events from `stream:events` in parallel and dispatches `/work` notifications |
+| **Controller Deployment** (`ate-ant-controller`) | `20` replicas | Consumes resume events from `stream:events` and suspend events from `stream:events:suspend` in parallel, and dispatches `/work` notifications |
 | **Total Actor Sessions** | `5,000` actors | Multiplexed over the warm `WorkerPool` via checkpoint/restore to `gs://<project>-ate-ant-snapshots/` |
 
 ---
@@ -68,7 +68,7 @@ if the logs show `429 rate_limit_error`.
 
 The Go load generator ([`benchmarks/loadgen`](loadgen/main.go)) supports four modes:
 
-1. **`valkey`**: Enqueues `resume` (and optional `suspend`) events for 5,000 sessions directly into Valkey `stream:events` and waits for the `ate-ant-controller` consumer group to drain the stream.
+1. **`valkey`**: Enqueues `resume` events for 5,000 sessions into Valkey `stream:events` (and optional `suspend` events into `stream:events:suspend`), and waits for the `ate-ant-controller` consumer group to drain `stream:events`.
 2. **`direct`**: Connects directly to Substrate `ateapi` and `atenet-router` to benchmark cold actor creation (`Turn 1`), `POST /work` notification, actor suspension (`SuspendActor`), and warm snapshot restoration (`Turn 2+`) across 5,000 actors multiplexed over the warm `WorkerPool`.
 3. **`anthropic`**: End-to-end benchmark using the Anthropic SDK (`Beta.Agents.New`, `Beta.Sessions.New`, `Beta.Sessions.Events.Send`) across 5,000 sessions (supports custom `ANTHROPIC_BASE_URL`).
 4. **`both`**: Runs `valkey` queue injection followed by `anthropic` API session load.
