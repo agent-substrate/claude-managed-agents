@@ -28,11 +28,15 @@ import (
 
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
 	"github.com/valkey-io/valkey-go"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
 	defaultPollInterval = 1 * time.Second
 	defaultStreamKey    = "stream:events"
+	// suspendStreamSuffix names the stream that holds suspend events, apart
+	// from the resume events in the main stream.
+	suspendStreamSuffix = ":suspend"
 	defaultGroupName    = "event"
 )
 
@@ -84,6 +88,10 @@ type Manager struct {
 	logger       *slog.Logger
 	pollInterval time.Duration
 	streamKey    string
+	// suspendKey is the stream for suspend events. A resume that can't get
+	// a worker retries in place, and suspends must not wait behind it,
+	// because they free the workers it needs.
+	suspendKey   string
 	groupName    string
 	consumerName string
 
@@ -161,6 +169,7 @@ func New(cfg ManagerConfig) (*Manager, error) {
 		logger:       logger,
 		pollInterval: pollInterval,
 		streamKey:    streamKey,
+		suspendKey:   streamKey + suspendStreamSuffix,
 		groupName:    groupName,
 		consumerName: consumerName,
 		onSuspend:    cfg.OnSuspend,
@@ -176,12 +185,12 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-// ensureGroup creates the consumer group on the stream if it does not already exist.
-func (m *Manager) ensureGroup(ctx context.Context) error {
-	cmd := m.vkClient.B().XgroupCreate().Key(m.streamKey).Group(m.groupName).Id("0").Mkstream().Build()
+// ensureGroup creates the consumer group on stream if it does not already exist.
+func (m *Manager) ensureGroup(ctx context.Context, stream string) error {
+	cmd := m.vkClient.B().XgroupCreate().Key(stream).Group(m.groupName).Id("0").Mkstream().Build()
 	err := m.vkClient.Do(ctx, cmd).Error()
 	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
-		return fmt.Errorf("event: creating consumer group %s on %s: %w", m.groupName, m.streamKey, err)
+		return fmt.Errorf("event: creating consumer group %s on %s: %w", m.groupName, stream, err)
 	}
 	return nil
 }
@@ -212,7 +221,7 @@ func (m *Manager) QueueResume(ctx context.Context, sessionID, workID, lastHeartb
 	return event, nil
 }
 
-// QueueSuspend pushes a "suspend" event to the stream.
+// QueueSuspend pushes a "suspend" event to the suspend stream.
 func (m *Manager) QueueSuspend(ctx context.Context, sessionID string) (*Event, error) {
 	if sessionID == "" {
 		return nil, errors.New("event: session_id is required")
@@ -226,10 +235,10 @@ func (m *Manager) QueueSuspend(ctx context.Context, sessionID string) (*Event, e
 	if err != nil {
 		return nil, fmt.Errorf("event: marshaling suspend event: %w", err)
 	}
-	cmd := m.vkClient.B().Xadd().Key(m.streamKey).Id("*").FieldValue().FieldValue("data", string(data)).Build()
+	cmd := m.vkClient.B().Xadd().Key(m.suspendKey).Id("*").FieldValue().FieldValue("data", string(data)).Build()
 	id, err := m.vkClient.Do(ctx, cmd).ToString()
 	if err != nil {
-		return nil, fmt.Errorf("event: pushing suspend event to stream %s: %w", m.streamKey, err)
+		return nil, fmt.Errorf("event: pushing suspend event to stream %s: %w", m.suspendKey, err)
 	}
 	event.ID = id
 	return event, nil
@@ -261,27 +270,27 @@ func (m *Manager) parseEntry(entry valkey.XRangeEntry) (*Event, error) {
 	return &event, nil
 }
 
-// pop reads the next event from the stream for this consumer.
+// pop reads the next event from stream for this consumer.
 // It first checks for any unacknowledged pending events for this consumer,
 // and if none exist, reads the next new event from the stream.
 // Returns nil if the stream has no pending or new events.
-func (m *Manager) pop(ctx context.Context) (*Event, error) {
-	if err := m.ensureGroup(ctx); err != nil {
+func (m *Manager) pop(ctx context.Context, stream string) (*Event, error) {
+	if err := m.ensureGroup(ctx, stream); err != nil {
 		return nil, err
 	}
 
 	// 1. Check pending messages for this consumer (ID: "0")
-	pendingCmd := m.vkClient.B().Xreadgroup().Group(m.groupName, m.consumerName).Count(1).Streams().Key(m.streamKey).Id("0").Build()
+	pendingCmd := m.vkClient.B().Xreadgroup().Group(m.groupName, m.consumerName).Count(1).Streams().Key(stream).Id("0").Build()
 	res, err := m.vkClient.Do(ctx, pendingCmd).AsXRead()
-	if err == nil && len(res[m.streamKey]) > 0 {
-		return m.parseEntry(res[m.streamKey][0])
+	if err == nil && len(res[stream]) > 0 {
+		return m.parseEntry(res[stream][0])
 	}
 	if err != nil && !valkey.IsValkeyNil(err) {
 		return nil, fmt.Errorf("event: reading pending stream entries: %w", err)
 	}
 
 	// 2. Claim orphaned pending messages from crashed consumers idle for > 30s
-	claimCmd := m.vkClient.B().Xautoclaim().Key(m.streamKey).Group(m.groupName).Consumer(m.consumerName).MinIdleTime("30000").Start("0-0").Count(1).Build()
+	claimCmd := m.vkClient.B().Xautoclaim().Key(stream).Group(m.groupName).Consumer(m.consumerName).MinIdleTime("30000").Start("0-0").Count(1).Build()
 	if arr, err := m.vkClient.Do(ctx, claimCmd).ToArray(); err == nil && len(arr) >= 2 {
 		if entries, err := arr[1].AsXRange(); err == nil && len(entries) > 0 {
 			return m.parseEntry(entries[0])
@@ -289,7 +298,7 @@ func (m *Manager) pop(ctx context.Context) (*Event, error) {
 	}
 
 	// 3. Read new messages for this consumer group (ID: ">")
-	newCmd := m.vkClient.B().Xreadgroup().Group(m.groupName, m.consumerName).Count(1).Streams().Key(m.streamKey).Id(">").Build()
+	newCmd := m.vkClient.B().Xreadgroup().Group(m.groupName, m.consumerName).Count(1).Streams().Key(stream).Id(">").Build()
 	res, err = m.vkClient.Do(ctx, newCmd).AsXRead()
 	if err != nil {
 		if valkey.IsValkeyNil(err) {
@@ -297,7 +306,7 @@ func (m *Manager) pop(ctx context.Context) (*Event, error) {
 		}
 		return nil, fmt.Errorf("event: reading new stream entries: %w", err)
 	}
-	entries := res[m.streamKey]
+	entries := res[stream]
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -305,33 +314,44 @@ func (m *Manager) pop(ctx context.Context) (*Event, error) {
 }
 
 // ack acknowledges an event in the stream so it is removed from the pending entries list (PEL).
-func (m *Manager) ack(ctx context.Context, event *Event) error {
+func (m *Manager) ack(ctx context.Context, stream string, event *Event) error {
 	if event == nil || event.ID == "" {
 		return nil
 	}
-	return m.ackID(ctx, event.ID)
+	return m.ackID(ctx, stream, event.ID)
 }
 
 // ackID acknowledges an event by its stream entry ID.
-func (m *Manager) ackID(ctx context.Context, id string) error {
+func (m *Manager) ackID(ctx context.Context, stream, id string) error {
 	if id == "" {
 		return nil
 	}
-	cmd := m.vkClient.B().Xack().Key(m.streamKey).Group(m.groupName).Id(id).Build()
+	cmd := m.vkClient.B().Xack().Key(stream).Group(m.groupName).Id(id).Build()
 	return m.vkClient.Do(ctx, cmd).Error()
 }
 
-// Reconcile continuously pops events from the stream, dispatches them to OnResume/OnSuspend,
-// and enforces that each event is acknowledged before moving on to the next.
+// Reconcile consumes the resume stream and the suspend stream concurrently,
+// dispatching events to OnResume/OnSuspend. Within each stream, an event is
+// acknowledged before the consumer moves on to the next.
 func (m *Manager) Reconcile(ctx context.Context) error {
+	g, gctx := errgroup.WithContext(ctx)
+	for _, stream := range []string{m.streamKey, m.suspendKey} {
+		g.Go(func() error { return m.consume(gctx, stream) })
+	}
+	return g.Wait()
+}
+
+// consume pops events from stream until ctx is done. A failed event stays
+// pending and is retried before newer events on the same stream.
+func (m *Manager) consume(ctx context.Context, stream string) error {
 	m.logger.Info("Starting session lifecycle manager stream consumer",
 		slog.Duration("poll_interval", m.pollInterval),
-		slog.String("stream_key", m.streamKey),
+		slog.String("stream_key", stream),
 		slog.String("group", m.groupName),
 		slog.String("consumer", m.consumerName),
 	)
 
-	if err := m.ensureGroup(ctx); err != nil {
+	if err := m.ensureGroup(ctx, stream); err != nil {
 		return fmt.Errorf("event: ensuring consumer group: %w", err)
 	}
 
@@ -342,7 +362,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		default:
 		}
 
-		event, err := m.pop(ctx)
+		event, err := m.pop(ctx, stream)
 		if err != nil {
 			m.logger.Error("Failed to pop event from stream", slog.Any("error", err))
 			select {
@@ -397,7 +417,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 
 		// Acknowledge the event after successful processing before proceeding to the next
-		if err := m.ack(ctx, event); err != nil {
+		if err := m.ack(ctx, stream, event); err != nil {
 			m.logger.Error("Failed to acknowledge event in stream",
 				slog.String("id", event.ID),
 				slog.String("session_id", event.SessionID),

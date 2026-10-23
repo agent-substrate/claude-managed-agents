@@ -99,9 +99,9 @@ An in-cluster Valkey/Redis instance acts as the durable buffer between the polle
 │                 Stream: `stream:events`                 │
 ├───────────────────┬───────────────────┬─────────────────┤
 │ ID: 1723901000-0  │ ID: 1723901005-0  │ ID: 1723901010-0│
-│ action: "resume"  │ action: "resume"  │ action:"suspend"│
-│ session: sesn_1   │ session: sesn_2   │ session: sesn_1 │
-│ work: work_101    │ work: work_102    │                 │
+│ action: "resume"  │ action: "resume"  │ action: "resume"│
+│ session: sesn_1   │ session: sesn_2   │ session: sesn_3 │
+│ work: work_101    │ work: work_102    │ work: work_103  │
 └─────────┬─────────┴─────────┬─────────┴────────┬────────┘
           │                   │                  │
        [ACKed]           [In-Flight]         [Queued]
@@ -109,6 +109,8 @@ An in-cluster Valkey/Redis instance acts as the durable buffer between the polle
         XACK                 PEL                Next
      (Completed)       (Crash Recovery)      (In Line)
 ```
+
+Suspend events go on a second stream, `stream:events:suspend`, and each controller consumes it in its own loop. A resume that can't get a worker stays pending and is retried in place. Suspends free workers, so they must not wait behind it.
 
 The event queue provides:
 

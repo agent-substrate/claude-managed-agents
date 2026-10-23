@@ -57,7 +57,7 @@ func TestManagerUnacknowledgedEventReplayed(t *testing.T) {
 	}
 
 	// Pop first event
-	pop1, err := mgr.pop(ctx)
+	pop1, err := mgr.pop(ctx, mgr.streamKey)
 	if err != nil {
 		t.Fatalf("Pop: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestManagerUnacknowledgedEventReplayed(t *testing.T) {
 	}
 
 	// Do NOT acknowledge pop1 -> Pop must replay pop1 from PEL before moving to ev2
-	popReplayed, err := mgr.pop(ctx)
+	popReplayed, err := mgr.pop(ctx, mgr.streamKey)
 	if err != nil {
 		t.Fatalf("Pop replayed: %v", err)
 	}
@@ -75,12 +75,12 @@ func TestManagerUnacknowledgedEventReplayed(t *testing.T) {
 	}
 
 	// Acknowledge pop1
-	if err := mgr.ack(ctx, pop1); err != nil {
+	if err := mgr.ack(ctx, mgr.streamKey, pop1); err != nil {
 		t.Fatalf("Ack pop1: %v", err)
 	}
 
 	// Now Pop moves on to ev2
-	pop2, err := mgr.pop(ctx)
+	pop2, err := mgr.pop(ctx, mgr.streamKey)
 	if err != nil {
 		t.Fatalf("Pop 2: %v", err)
 	}
@@ -89,12 +89,12 @@ func TestManagerUnacknowledgedEventReplayed(t *testing.T) {
 	}
 
 	// Acknowledge pop2
-	if err := mgr.ack(ctx, pop2); err != nil {
+	if err := mgr.ack(ctx, mgr.streamKey, pop2); err != nil {
 		t.Fatalf("Ack pop2: %v", err)
 	}
 
 	// Stream should now be empty of pending/new messages
-	popEmpty, err := mgr.pop(ctx)
+	popEmpty, err := mgr.pop(ctx, mgr.streamKey)
 	if err != nil {
 		t.Fatalf("Pop empty: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestManagerQueueAndPop(t *testing.T) {
 	}
 
 	// Pop first event (ev1)
-	pop1, err := mgr.pop(ctx)
+	pop1, err := mgr.pop(ctx, mgr.streamKey)
 	if err != nil {
 		t.Fatalf("Pop 1: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestManagerQueueAndPop(t *testing.T) {
 	}
 
 	// Calling Pop before ACK should return the pending unACKed event (ev1)
-	pop1Pending, err := mgr.pop(ctx)
+	pop1Pending, err := mgr.pop(ctx, mgr.streamKey)
 	if err != nil {
 		t.Fatalf("Pop pending: %v", err)
 	}
@@ -165,12 +165,12 @@ func TestManagerQueueAndPop(t *testing.T) {
 	}
 
 	// Acknowledge ev1
-	if err := mgr.ack(ctx, pop1); err != nil {
+	if err := mgr.ack(ctx, mgr.streamKey, pop1); err != nil {
 		t.Fatalf("Ack ev1: %v", err)
 	}
 
-	// Pop second event (ev2)
-	pop2, err := mgr.pop(ctx)
+	// Pop the suspend event (ev2) from the suspend stream
+	pop2, err := mgr.pop(ctx, mgr.suspendKey)
 	if err != nil {
 		t.Fatalf("Pop 2: %v", err)
 	}
@@ -179,17 +179,19 @@ func TestManagerQueueAndPop(t *testing.T) {
 	}
 
 	// Acknowledge ev2
-	if err := mgr.ack(ctx, pop2); err != nil {
+	if err := mgr.ack(ctx, mgr.suspendKey, pop2); err != nil {
 		t.Fatalf("Ack ev2: %v", err)
 	}
 
-	// Pop when all entries are acknowledged returns nil
-	pop3, err := mgr.pop(ctx)
-	if err != nil {
-		t.Fatalf("Pop 3: %v", err)
-	}
-	if pop3 != nil {
-		t.Fatalf("expected nil pop on empty stream, got %+v", pop3)
+	// Pop when all entries are acknowledged returns nil on both streams
+	for _, stream := range []string{mgr.streamKey, mgr.suspendKey} {
+		pop3, err := mgr.pop(ctx, stream)
+		if err != nil {
+			t.Fatalf("Pop 3 on %s: %v", stream, err)
+		}
+		if pop3 != nil {
+			t.Fatalf("expected nil pop on empty stream %s, got %+v", stream, pop3)
+		}
 	}
 }
 
@@ -346,4 +348,49 @@ func TestManagerReconcile_MultipleConsumersDeduplication(t *testing.T) {
 	}
 }
 
+// A resume that keeps failing, as when no worker has room, must not hold up
+// suspend events, since those free the workers the resume needs.
+func TestManagerReconcile_SuspendNotBlockedByFailingResume(t *testing.T) {
+	mini, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	t.Cleanup(mini.Close)
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	suspended := make(chan string, 1)
+	mgr, err := New(ManagerConfig{
+		Valkey:       ValkeyConfig{Addr: mini.Addr(), DisableCache: true},
+		PollInterval: 10 * time.Millisecond,
+		OnResume: func(ctx context.Context, event *Event) error {
+			return errors.New("no worker has room for the actor")
+		},
+		OnSuspend: func(ctx context.Context, event *Event) error {
+			suspended <- event.SessionID
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer mgr.Close()
+
+	if _, err := mgr.QueueResume(ctx, "session-blocked", "work-1", ""); err != nil {
+		t.Fatalf("QueueResume: %v", err)
+	}
+	if _, err := mgr.QueueSuspend(ctx, "session-running"); err != nil {
+		t.Fatalf("QueueSuspend: %v", err)
+	}
+	go func() { _ = mgr.Reconcile(ctx) }()
+
+	select {
+	case got := <-suspended:
+		if got != "session-running" {
+			t.Fatalf("suspended %q, want session-running", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("suspend event was not processed while a resume kept failing")
+	}
+}
