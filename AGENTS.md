@@ -78,7 +78,8 @@ kubectl logs -n ate-ant -l app=ate-ant-controller --all-containers --tail=50
 ## 6. Explore Valkey
 
 ```bash
-kubectl exec -n ate-ant valkey-0 -- valkey-cli xinfo groups stream:events
+kubectl exec -n ate-ant valkey-0 -- valkey-cli xinfo groups stream:events          # resume events
+kubectl exec -n ate-ant valkey-0 -- valkey-cli xinfo groups stream:events:suspend  # suspend events
 ```
 
 ## Manifest Reference
