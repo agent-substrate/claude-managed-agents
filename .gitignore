@@ -17,7 +17,6 @@ coverage.txt
 .env
 .env.*
 !.env.example
-tmp/
 
 # Generated manifests
 deployment.yaml
