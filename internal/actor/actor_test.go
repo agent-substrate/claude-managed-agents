@@ -273,6 +273,24 @@ func TestManagerLifecycle(t *testing.T) {
 	fakeClient.mu.Unlock()
 }
 
+func TestManagerResumeReturnsResumeActorError(t *testing.T) {
+	fakeClient := newFakeControlClient()
+	mgr := NewManager(fakeClient, "test-template", "test-ns")
+	sessionID := "session-resume-error"
+	if err := mgr.Resume(context.Background(), sessionID); err != nil {
+		t.Fatalf("Resume (create): %v", err)
+	}
+
+	fakeClient.mu.Lock()
+	fakeClient.resumeErr = status.Error(codes.ResourceExhausted, "no worker has room for the actor")
+	fakeClient.mu.Unlock()
+
+	err := mgr.Resume(context.Background(), sessionID)
+	if status.Code(err) != codes.ResourceExhausted {
+		t.Fatalf("Resume error = %v, want code ResourceExhausted", err)
+	}
+}
+
 func TestManagerSuspendIdleActors(t *testing.T) {
 	fakeClient := newFakeControlClient()
 	actorName1 := "session-idle-test-01"
