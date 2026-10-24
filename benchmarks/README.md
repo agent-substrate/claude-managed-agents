@@ -43,7 +43,7 @@ export GOOGLE_CLOUD_PROJECT="kubecon-na-26-keynote-demo"
 BUILD_SUBSTRATE_IMAGES=false ./benchmarks/build-images.sh
 ```
 
-Then run [`install.sh`](install.sh) to install Agent Substrate, deploy `valkey`, `ate-ant-workerpool` (`50` warm pods), and `ate-ant-controller` (`20` replicas), and register the `ActorTemplate`:
+Then run [`install.sh`](install.sh) to install Agent Substrate, deploy `valkey`, `ate-ant-workerpool` (`50` warm pods), and `ate-ant-controller` (`50` replicas), register the `ActorTemplate` (`ate-ant-actor-template-oct23`), and restart `k8s-credential-provider` and the controller so they load the credentials:
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="kubecon-na-26-keynote-demo"
@@ -52,7 +52,15 @@ export ANTHROPIC_ENVIRONMENT_KEY="ek_..."
 export ANTHROPIC_API_KEY="sk-ant-..."
 
 ./benchmarks/install.sh
+
+# Or take the credentials from an existing Secret in the namespace:
+CREDS_SECRET=ate-ant-creds-next-week ./benchmarks/install.sh
 ```
+
+The script fails if any credential is missing and prints the environment ID
+plus short hashes of the keys, so you can confirm what is being deployed.
+Each controller replica polls the Anthropic API; lower `CONTROLLER_REPLICAS`
+if the logs show `429 rate_limit_error`.
 
 ---
 

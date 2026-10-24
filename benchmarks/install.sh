@@ -28,12 +28,56 @@ ZONE="${ZONE:-us-west1-a}"
 CLUSTER_VERSION="${CLUSTER_VERSION:-1.37.0-gke.3503000}"
 
 NAMESPACE="${NAMESPACE:-ate-ant}"
-TEMPLATE="${TEMPLATE:-ate-ant-actor-template}"
+# Versioned so a credential/environment rotation registers a new template
+# instead of mutating the one live actors were created from. The controller is
+# pointed at this name by the patch in step 5.
+TEMPLATE="${TEMPLATE:-ate-ant-actor-template-oct23}"
 
-# Default warm WorkerPool size (50 warm runners multiplexed across 5k sessions)
-# and controller replicas for high-throughput event reconciliation.
+# Warm WorkerPool size (50 warm runners multiplexed across 5k sessions) and
+# controller replicas. Every controller replica polls the Anthropic API, so
+# CONTROLLER_REPLICAS counts against the org's request-per-minute limit.
 WORKERPOOL_REPLICAS="${WORKERPOOL_REPLICAS:-50}"
-CONTROLLER_REPLICAS="${CONTROLLER_REPLICAS:-20}"
+CONTROLLER_REPLICAS="${CONTROLLER_REPLICAS:-50}"
+
+# Anthropic credentials. Either export ANTHROPIC_API_KEY,
+# ANTHROPIC_ENVIRONMENT_ID and ANTHROPIC_ENVIRONMENT_KEY, or set CREDS_SECRET
+# to an existing Secret in ${NAMESPACE} holding those keys
+# (e.g. CREDS_SECRET=ate-ant-creds-next-week). CREDS_SECRET wins.
+CREDS_SECRET="${CREDS_SECRET:-}"
+if [[ -n "${CREDS_SECRET}" ]]; then
+  for key in ANTHROPIC_API_KEY ANTHROPIC_ENVIRONMENT_ID ANTHROPIC_ENVIRONMENT_KEY; do
+    value="$(kubectl get secret "${CREDS_SECRET}" -n "${NAMESPACE}" -o "jsonpath={.data.${key}}" | base64 -d)"
+    if [[ -z "${value}" ]]; then
+      echo "ERROR: Secret ${NAMESPACE}/${CREDS_SECRET} has no ${key}" >&2
+      exit 1
+    fi
+    export "${key}=${value}"
+  done
+  unset value
+fi
+for key in ANTHROPIC_API_KEY ANTHROPIC_ENVIRONMENT_ID ANTHROPIC_ENVIRONMENT_KEY; do
+  if [[ -z "${!key:-}" ]]; then
+    echo "ERROR: ${key} is not set (export it, or set CREDS_SECRET)" >&2
+    exit 1
+  fi
+done
+# Non-secret fingerprints so the operator can confirm which credentials ship.
+fingerprint() { printf '%s' "$1" | shasum -a 256 | cut -c1-10; }
+CREDS_SUMMARY="env ${ANTHROPIC_ENVIRONMENT_ID} (key sha256:$(fingerprint "${ANTHROPIC_ENVIRONMENT_KEY}"), api key sha256:$(fingerprint "${ANTHROPIC_API_KEY}"))"
+
+# verify_creds_secret fails unless the live ate-ant-creds Secret holds exactly
+# the credentials this run is deploying. Prints fingerprints only.
+verify_creds_secret() {
+  local key live ok=true
+  for key in ANTHROPIC_API_KEY ANTHROPIC_ENVIRONMENT_ID ANTHROPIC_ENVIRONMENT_KEY; do
+    live="$(kubectl get secret ate-ant-creds -n "${NAMESPACE}" -o "jsonpath={.data.${key}}" | base64 -d)"
+    if [[ "${live}" != "${!key}" ]]; then
+      echo "ERROR: ate-ant-creds ${key} is sha256:$(fingerprint "${live}"), want sha256:$(fingerprint "${!key}")" >&2
+      ok=false
+    fi
+  done
+  [[ "${ok}" == "true" ]]
+}
 
 # Container images and snapshot storage.
 BUILD_IMAGE="${BUILD_IMAGE:-false}"
@@ -54,6 +98,8 @@ echo "=================================================================="
 echo "Installing Benchmark Stack"
 echo "  Project:             ${GOOGLE_CLOUD_PROJECT}"
 echo "  Namespace:           ${NAMESPACE}"
+echo "  ActorTemplate:       ${TEMPLATE}"
+echo "  Credentials:         ${CREDS_SUMMARY}${CREDS_SECRET:+ from Secret ${CREDS_SECRET}}"
 echo "  WorkerPool Replicas: ${WORKERPOOL_REPLICAS} (warm runners for 5k actors)"
 echo "  Controller Replicas: ${CONTROLLER_REPLICAS}"
 echo "  Substrate Repo:      ${ATE_IMAGE_REPO}:${ATE_IMAGE_TAG}"
@@ -164,6 +210,36 @@ go run ./cmd/ate-ant manifest \
   --replicas="${WORKERPOOL_REPLICAS}" \
   --controller-replicas="${CONTROLLER_REPLICAS}" | kubectl apply -f -
 
+echo "--> Verifying ate-ant-creds holds ${CREDS_SUMMARY}..."
+if ! verify_creds_secret; then
+  echo "ERROR: ate-ant-creds was not updated; not restarting anything." >&2
+  exit 1
+fi
+
+# The credential provider caches the ate-ant-creds Secret and its namespace
+# policy, and the controller reads ate-ant-creds via envFrom only at startup;
+# neither picks up an applied change on its own.
+echo "--> Restarting k8s-credential-provider to load credentials and namespace policy..."
+kubectl rollout restart deployment/k8s-credential-provider -n "${SUBSTRATE_NAMESPACE}"
+kubectl rollout status deployment/k8s-credential-provider -n "${SUBSTRATE_NAMESPACE}" --timeout=300s
+
+# `ate-ant manifest` does not pass --namespace/--template to the controller, so
+# it would fall back to the default template. Set them here, and bump the
+# restartedAt annotation in the same patch so the controller rolls exactly once
+# and reloads ate-ant-creds. `kubectl apply` leaves these args alone on later
+# runs because they are not part of its last-applied configuration.
+echo "--> Pointing ate-ant-controller at ActorTemplate '${TEMPLATE}' and restarting it..."
+kubectl patch deployment/ate-ant-controller -n "${NAMESPACE}" --type strategic --patch "$(cat <<EOF
+{"spec": {"template": {
+  "metadata": {"annotations": {"kubectl.kubernetes.io/restartedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}},
+  "spec": {"containers": [{
+    "name": "ate-ant-controller",
+    "args": ["--namespace=${NAMESPACE}", "--template=${TEMPLATE}"]
+  }]}
+}}}
+EOF
+)"
+
 # 6. Wait for Valkey and Controller pods to become Ready.
 echo "--> Waiting for Valkey StatefulSet to be ready..."
 kubectl rollout status statefulset/valkey -n "${NAMESPACE}" --timeout=300s
@@ -185,10 +261,22 @@ if [[ -x "${KUBECTL_ATE_BIN}" ]]; then
     --worker-image="${WORKER_IMAGE}" \
     --snapshots-bucket="${SNAPSHOTS_BUCKET}" | "${KUBECTL_ATE_BIN}" create actor-template --preview -f - || \
     "${KUBECTL_ATE_BIN}" get actor-template "${TEMPLATE}" --atespace="${NAMESPACE}"
+
+  # The create above falls back to an existing template, which may carry an
+  # older environment ID. Actors get ANTHROPIC_ENVIRONMENT_ID from the
+  # template (the key is injected at egress from ate-ant-creds), so check it.
+  template_env_id="$("${KUBECTL_ATE_BIN}" get actor-template "${TEMPLATE}" --atespace="${NAMESPACE}" -o json 2>/dev/null |
+    jq -r 'first(.. | objects | select(.name? == "ANTHROPIC_ENVIRONMENT_ID") | .value) // ""')"
+  if [[ "${template_env_id}" != "${ANTHROPIC_ENVIRONMENT_ID}" ]]; then
+    echo "ERROR: ActorTemplate '${TEMPLATE}' has ANTHROPIC_ENVIRONMENT_ID='${template_env_id}', want '${ANTHROPIC_ENVIRONMENT_ID}'." >&2
+    echo "       Delete it or set TEMPLATE to a new name, then re-run." >&2
+    exit 1
+  fi
+  echo "--> ActorTemplate '${TEMPLATE}' uses environment ${ANTHROPIC_ENVIRONMENT_ID}."
 else
   echo "WARNING: 'kubectl-ate' binary not found. To register the ActorTemplate manually, run:"
   echo "  kubectl-ate create atespace ${NAMESPACE}"
-  echo "  go run ./cmd/ate-ant manifest template --worker-image=\"${WORKER_IMAGE}\" --snapshots-bucket=\"${SNAPSHOTS_BUCKET}\" | kubectl-ate create actor-template --preview -f -"
+  echo "  go run ./cmd/ate-ant manifest template --namespace=\"${NAMESPACE}\" --template=\"${TEMPLATE}\" --worker-image=\"${WORKER_IMAGE}\" --snapshots-bucket=\"${SNAPSHOTS_BUCKET}\" | kubectl-ate create actor-template --preview -f -"
 fi
 
 echo "--> Deployment summary in namespace '${NAMESPACE}':"
