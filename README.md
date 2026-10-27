@@ -28,7 +28,19 @@ See [DESIGN.md](DESIGN.md) for the detailed architecture, event queuing, and act
 
 ### Prerequisites
 
-1. An [Agent Substrate](https://github.com/agent-substrate/substrate) cluster.
+1. An [Agent Substrate](https://github.com/agent-substrate/substrate) cluster installed with the Kubernetes Secrets credential provider and with the controller's `router-client` ServiceAccount allowed through the ingress router:
+
+   ```bash
+   ate-setup deploy ate-system \
+     --credential-provider='{"name":"k8s.io"}' \
+     --ingress-allowed-spiffe-ids=spiffe://cluster.local/ns/ate-ant/sa/router-client \
+     --snapshot-transfer-gsa-name=ate-snapshot-transfer \
+     --preview=PerTemplateSnapshotLocation
+   ```
+
+   The `PerTemplateSnapshotLocation` preview gate lets the ActorTemplate carry its own snapshot bucket (step 5).
+
+   On GKE, the snapshot transfer service account must exist with access to the snapshot bucket (`tools/setup-gcp create iam` in the Substrate repository, or [`benchmarks/install.sh`](benchmarks/install.sh), creates it).
 2. Anthropic credentials: `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and `ANTHROPIC_ENVIRONMENT_KEY` (see [Creating a Self-Hosted Environment](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes#create-an-environment)). To use a custom Anthropic API URL, also set `ANTHROPIC_BASE_URL` (or pass `--anthropic-base-url`).
 3. A Google Cloud project (`GOOGLE_CLOUD_PROJECT`) and a GCS bucket for snapshots (`gs://$GOOGLE_CLOUD_PROJECT/ate-ant/`).
 4. Podman (or Docker) to build the container image.

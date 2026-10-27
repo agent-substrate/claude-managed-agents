@@ -83,6 +83,10 @@ const (
 	// credential provider may resolve for this deployment's actors.
 	EgressCredentialLabel = "ate-ant.dev/egress-credential"
 
+	// APIAccessLabel admits the namespace's non-worker pods (the controller,
+	// loadgen, dashboard) through ate-system's NetworkPolicies to ateapi.
+	APIAccessLabel = "ate.dev/api-access"
+
 	// CredentialProviderNamespace, CredentialProviderPolicyConfigMap, and
 	// CredentialProviderPolicyKey locate the atespace→namespace policy of
 	// Substrate's bundled Kubernetes Secrets credential provider.
@@ -188,8 +192,11 @@ func BuildRouterClientServiceAccount(cfg Config) *corev1.ServiceAccount {
 // BuildNamespace constructs the corev1.Namespace manifest.
 func BuildNamespace(cfg Config) *corev1.Namespace {
 	return &corev1.Namespace{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
-		ObjectMeta: metav1.ObjectMeta{Name: cfg.Namespace},
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   cfg.Namespace,
+			Labels: map[string]string{APIAccessLabel: "true"},
+		},
 	}
 }
 

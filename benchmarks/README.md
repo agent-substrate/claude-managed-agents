@@ -123,7 +123,66 @@ The dashboard polls the cluster in real time and displays:
 
 ---
 
-## 5. Teardown
+## 5. Upgrade Agent Substrate
+
+To move an installed cluster to a new Substrate release, pause the bridge, clear
+the worker records, and rerun `install.sh` against a checkout of the new
+version. No agent work runs while the bridge is paused. Most of that time goes
+to the `atelet` DaemonSet rolling over every node.
+
+1. Build the new images: `build-images.sh` for `ate-ant` and the worker image,
+   and `ate-setup publish release-images` (run from the Substrate checkout) for
+   the control plane. Tag them with the release, not `latest`, so the old images
+   stay available for rollback.
+
+2. Stop the controller and suspend any running actors. A running actor loses its
+   in-memory state when its worker restarts.
+
+   ```bash
+   kubectl scale deploy/ate-ant-controller -n ate-ant --replicas=0
+   kubectl-ate get actors -a ate-ant | awk 'NR>1 && $4=="ACTOR_STATE_RUNNING" {print $2}' |
+     xargs -r -n1 kubectl-ate suspend actor -a ate-ant
+   ```
+
+3. Scale the WorkerPool to 0 and wait until `kubectl-ate get workers` is empty.
+   ate-controller deletes each worker's record once its pod is gone, and workers
+   register again when they start. Skipping this can leave the new ateapi
+   crash-looping on records it can't parse, as when upgrading to v0.6.0 from a
+   release before it.
+
+   ```bash
+   kubectl scale workerpool ate-ant-workerpool -n ate-ant --replicas=0
+   kubectl-ate get workers   # use the kubectl-ate that matches the old release
+   ```
+
+4. Rerun `install.sh` with the new Substrate checkout and images. It upgrades
+   `ate-system`, scales the WorkerPool back up on the new worker image, restarts
+   the credential provider, re-registers the `ActorTemplate`, and restarts the
+   controller.
+
+   ```bash
+   INSTALL_SUBSTRATE=true SUBSTRATE_DIR=~/substrate-vX.Y.Z \
+   ATE_IMAGE_TAG=vX.Y.Z \
+   WORKER_IMAGE=gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:... \
+   ATEOM_IMAGE=gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateworker-gvisor@sha256:... \
+   CREDS_SECRET=ate-ant-creds \
+   ./benchmarks/install.sh
+   ```
+
+5. Check that every worker is `ACTIVE` with `kubectl-ate get workers` (built at
+   the new release), that the template has a golden tag, and that a small
+   `valkey` run drains:
+
+   ```bash
+   MODE=valkey SESSIONS=20 CONCURRENCY=20 WAIT_DRAIN=true ./benchmarks/run-loadgen.sh
+   ```
+
+To roll back, repeat steps 2 to 4 with the previous release's checkout and
+images.
+
+---
+
+## 6. Teardown
 
 To delete the 50-node GKE cluster (and optionally purge the GCS snapshot bucket):
 

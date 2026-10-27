@@ -110,6 +110,9 @@ func TestBuildManifests(t *testing.T) {
 	if ns.Name != "ate-ant" {
 		t.Errorf("namespace = %q, want ate-ant", ns.Name)
 	}
+	if ns.Labels[APIAccessLabel] != "true" {
+		t.Errorf("namespace labels = %v, want %s=true", ns.Labels, APIAccessLabel)
+	}
 
 	secret := find[*corev1.Secret](t, objs, defaultSecretName)
 	if secret.StringData["ANTHROPIC_ENVIRONMENT_ID"] != "env_test_123" {
