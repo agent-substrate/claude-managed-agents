@@ -235,6 +235,54 @@ func (m *Manager) QueueSuspend(ctx context.Context, sessionID string) (*Event, e
 	return event, nil
 }
 
+// sessionLockRetry is how often LockSession retries a held lock.
+const sessionLockRetry = 100 * time.Millisecond
+
+// unlockScript deletes the lock only if this holder still owns it.
+const unlockScript = `if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end`
+
+// TryLockSession takes the lock for sessionID if it is free. Controller
+// replicas hold it while resuming or suspending a session, so the two can't
+// interleave. The lock expires after ttl if its holder dies. ok is false if
+// another holder has it.
+func (m *Manager) TryLockSession(ctx context.Context, sessionID string, ttl time.Duration) (unlock func(), ok bool, err error) {
+	var buf [8]byte
+	_, _ = rand.Read(buf[:])
+	key, token := "lock:session:"+sessionID, hex.EncodeToString(buf[:])
+
+	cmd := m.vkClient.B().Set().Key(key).Value(token).Nx().PxMilliseconds(ttl.Milliseconds()).Build()
+	if err := m.vkClient.Do(ctx, cmd).Error(); err != nil {
+		if valkey.IsValkeyNil(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("event: locking session %s: %w", sessionID, err)
+	}
+	unlock = func() {
+		// ctx may be done by now. Unlock anyway so the next holder doesn't
+		// wait out the ttl.
+		cmd := m.vkClient.B().Eval().Script(unlockScript).Numkeys(1).Key(key).Arg(token).Build()
+		if err := m.vkClient.Do(context.Background(), cmd).Error(); err != nil {
+			m.logger.Warn("Failed to unlock session", slog.String("session_id", sessionID), slog.Any("error", err))
+		}
+	}
+	return unlock, true, nil
+}
+
+// LockSession is TryLockSession that waits until the lock is free.
+func (m *Manager) LockSession(ctx context.Context, sessionID string, ttl time.Duration) (unlock func(), err error) {
+	for {
+		unlock, ok, err := m.TryLockSession(ctx, sessionID, ttl)
+		if err != nil || ok {
+			return unlock, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(sessionLockRetry):
+		}
+	}
+}
+
 func (m *Manager) parseEntry(entry valkey.XRangeEntry) (*Event, error) {
 	dataStr, ok := entry.FieldValues["data"]
 	if !ok {
