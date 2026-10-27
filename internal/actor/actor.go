@@ -234,8 +234,12 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) error {
 	}
 
 	if actor != nil {
+		// ResumeActor succeeds for an actor that is already running, so any
+		// error means the actor is not running yet. Some clear on retry, such
+		// as Aborted while another operation holds the actor's lease, and some
+		// last, such as ResourceExhausted while no worker has room.
 		if _, err := m.client.ResumeActor(ctx, &ateapipb.ResumeActorRequest{Actor: actorRef}); err != nil {
-			m.logger.Debug("ResumeActor result", slog.String("actor", actorRef.Name), slog.Any("error", err))
+			return fmt.Errorf("resuming actor %s: %w", actorRef.Name, err)
 		}
 		m.recordResume(actorRef.Name)
 	}
