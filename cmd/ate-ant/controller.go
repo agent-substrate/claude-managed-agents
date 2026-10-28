@@ -105,8 +105,18 @@ func newControllerCommand() *cobra.Command {
 						}
 						return nil
 					}); err != nil {
-						return err
+						// Give the work back instead of retrying this event
+						// ahead of every other one, which can block the
+						// suspends that would free a worker. CMA requeues the
+						// item when its hand-off lease lapses.
+						logger.Warn("Giving up on resume, work is requeued when its lease lapses",
+							slog.String("session_id", ev.SessionID),
+							slog.String("work_id", ev.WorkID),
+							slog.Any("error", err),
+						)
 					}
+					// Queued even after a failure, in case Resume succeeded
+					// and only Notify failed.
 					if _, err := em.QueueSuspend(ctx, ev.SessionID); err != nil {
 						return fmt.Errorf("queueing suspend for session %s: %w", ev.SessionID, err)
 					}
