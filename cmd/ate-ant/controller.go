@@ -31,7 +31,7 @@ import (
 
 // sessionLockTTL bounds how long a dead replica can hold a session's lock.
 // It covers a cold resume and its retries.
-const sessionLockTTL = 2 * time.Minute
+const sessionLockTTL = time.Minute
 
 func newControllerCommand() *cobra.Command {
 	var (

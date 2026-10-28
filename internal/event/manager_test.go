@@ -409,3 +409,51 @@ func TestManagerSessionLock(t *testing.T) {
 		t.Fatalf("LockSession: %v", err)
 	}
 }
+
+// An event that keeps failing is dropped after maxEventAttempts, so the
+// events behind it still run.
+func TestManagerReconcile_DropsEventAfterMaxAttempts(t *testing.T) {
+	mini, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	t.Cleanup(mini.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var badAttempts atomic.Int32
+	good := make(chan struct{}, 1)
+	mgr, err := New(ManagerConfig{
+		Valkey:       ValkeyConfig{Addr: mini.Addr(), DisableCache: true},
+		PollInterval: 10 * time.Millisecond,
+		OnSuspend: func(ctx context.Context, event *Event) error {
+			if event.SessionID == "session-bad" {
+				badAttempts.Add(1)
+				return errors.New("always fails")
+			}
+			good <- struct{}{}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer mgr.Close()
+
+	for _, s := range []string{"session-bad", "session-good"} {
+		if _, err := mgr.QueueSuspend(ctx, s); err != nil {
+			t.Fatalf("QueueSuspend(%s): %v", s, err)
+		}
+	}
+	go func() { _ = mgr.Reconcile(ctx) }()
+
+	select {
+	case <-good:
+	case <-time.After(5 * time.Second):
+		t.Fatal("event behind a failing one was not processed")
+	}
+	if got := badAttempts.Load(); got != maxEventAttempts {
+		t.Errorf("failing event handled %d times, want %d", got, maxEventAttempts)
+	}
+}

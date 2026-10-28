@@ -34,6 +34,9 @@ const (
 	defaultPollInterval = 1 * time.Second
 	defaultStreamKey    = "stream:events"
 	defaultGroupName    = "event"
+	// maxEventAttempts is how many times Reconcile handles a failing event
+	// before it drops it.
+	maxEventAttempts = 3
 )
 
 // Action represents the lifecycle action to take for a session.
@@ -383,6 +386,9 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("event: ensuring consumer group: %w", err)
 	}
 
+	// failures counts failed attempts per pending event ID. It is per
+	// consumer, so a restart or a claim by another consumer starts over.
+	failures := map[string]int{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -435,14 +441,26 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 				slog.String("session_id", event.SessionID),
 				slog.Any("error", handleErr),
 			)
-			// Do not ACK on failure so the event remains in PEL. Wait before retrying.
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(m.pollInterval):
+			// Leave a failed event pending so it is retried before newer
+			// ones, but drop it after maxEventAttempts so it can't block the
+			// stream.
+			failures[event.ID]++
+			if failures[event.ID] < maxEventAttempts {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(m.pollInterval):
+				}
+				continue
 			}
-			continue
+			m.logger.Warn("Dropping lifecycle event after repeated failures",
+				slog.String("id", event.ID),
+				slog.String("action", string(event.Action)),
+				slog.String("session_id", event.SessionID),
+				slog.Int("attempts", failures[event.ID]),
+			)
 		}
+		delete(failures, event.ID)
 
 		// Acknowledge the event after successful processing before proceeding to the next
 		if err := m.ack(ctx, event); err != nil {
