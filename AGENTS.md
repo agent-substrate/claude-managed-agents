@@ -28,7 +28,7 @@ export GOOGLE_CLOUD_PROJECT="your-gcp-project"
 ```
 
 It ends by printing `WORKER_IMAGE` and `ATEOM_IMAGE`; export them before the
-next step. `make push-images` builds and pushes both images without touching
+next step. `make images` builds and pushes both images without touching
 `install.sh`, and prints the `export` commands. To rebuild only `ate-ant`, run
 `make push-worker-image` (or `BUILD_SUBSTRATE_IMAGES=false ./benchmarks/build-images.sh`).
 

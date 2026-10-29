@@ -20,7 +20,7 @@ ATE_IMAGES_REPO ?= gcr.io/$(GOOGLE_CLOUD_PROJECT)/ate-images
 SUBSTRATE_REPO ?= $(HOME)/substrate
 SUBSTRATE_DIR ?=
 
-.PHONY: build install test vet clean image push push-images push-worker-image push-ateom-image verify-boilerplate
+.PHONY: build install test vet clean image push images push-worker-image push-ateom-image verify-boilerplate
 
 build:
 	go build ./...
@@ -44,7 +44,7 @@ image:
 
 # Build and push the ate-ant and ateworker-gvisor images, then print export
 # commands for their digest-pinned references.
-push-images: push-worker-image push-ateom-image
+images: push-worker-image push-ateom-image
 	@echo
 	@echo "Images pushed:"
 	@echo "export WORKER_IMAGE=$$(cat bin/worker-image)"

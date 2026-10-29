@@ -52,10 +52,10 @@ See [DESIGN.md](DESIGN.md) for the detailed architecture, event queuing, and act
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="your-gcp-project"
-make push-images
+make images
 ```
 
-`make push-images` builds the `ate-ant` image and the Agent Substrate gVisor worker image, pushes them to `gcr.io/$GOOGLE_CLOUD_PROJECT`, and ends by printing `export` commands for `WORKER_IMAGE` and `ATEOM_IMAGE`. Run them before continuing.
+`make images` builds the `ate-ant` image and the Agent Substrate gVisor worker image, pushes them to `gcr.io/$GOOGLE_CLOUD_PROJECT`, and ends by printing `export` commands for `WORKER_IMAGE` and `ATEOM_IMAGE`. Run them before continuing.
 
 ### 2. Apply the Kubernetes Manifests
 
