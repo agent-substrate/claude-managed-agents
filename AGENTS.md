@@ -20,31 +20,26 @@ delete it with `kubectl-ate delete actor-template ate-ant-actor-template --atesp
 Build the `ate-ant` image and the Agent Substrate gVisor worker image
 (`ateworker-gvisor`, built with `ko` from the `go.ate.dev/substrate` version
 pinned in `go.mod`), push them to Google Container Registry (GCR), and update
-the digests in `benchmarks/install.sh` and `README.md`:
+the digests in `benchmarks/install.sh`:
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="your-gcp-project"
 ./benchmarks/build-images.sh
 ```
 
-To rebuild only `ate-ant`, run `make push` (or
-`BUILD_SUBSTRATE_IMAGES=false ./benchmarks/build-images.sh`) and note the
-digest it emits (e.g. `gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:...`).
+It ends by printing `WORKER_IMAGE` and `ATEOM_IMAGE`; export them before the
+next step. `make push-images` builds and pushes both images without touching
+`install.sh`, and prints the `export` commands. To rebuild only `ate-ant`, run
+`make push-worker-image` (or `BUILD_SUBSTRATE_IMAGES=false ./benchmarks/build-images.sh`).
 
-## 3. Update README
-
-`build-images.sh` updates the `--worker-image` and `--ateom-image` flags in
-[`README.md`](file:///Users/jbd/claude-managed-agents/README.md); if you used
-`make push`, update `--worker-image` with the new digest-pinned image by hand.
-
-## 4. Generate and Apply Manifests
+## 3. Generate and Apply Manifests
 
 Generate the Kubernetes manifests using `ate-ant manifest` and apply them to the cluster:
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:... \
-  --ateom-image  gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateworker-gvisor@sha256:... | kubectl apply -f -
+  --worker-image "$WORKER_IMAGE" \
+  --ateom-image  "$ATEOM_IMAGE" | kubectl apply -f -
 ```
 
 Register the `ActorTemplate` in Substrate control plane using `ate-ant manifest template`.
@@ -54,14 +49,14 @@ required while the `PerTemplateSnapshotLocation` preview gate is enabled:
 
 ```bash
 go run ./cmd/ate-ant manifest template \
-  --worker-image     gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:... \
+  --worker-image     "$WORKER_IMAGE" \
   --snapshots-bucket gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ | kubectl-ate create actor-template --preview -f -
 ```
 
 For the benchmark cluster, `INSTALL_SUBSTRATE=false ./benchmarks/install.sh`
-performs steps 4 and 5 using the digests pinned in the script.
+performs steps 3 and 4 using the digests pinned in the script.
 
-## 5. Verify Pods
+## 4. Verify Pods
 
 Check that all worker pool and controller pods are running:
 
@@ -75,7 +70,7 @@ See the logs for more:
 kubectl logs -n ate-ant -l app=ate-ant-controller --all-containers --tail=50
 ```
 
-## 6. Explore Valkey
+## 5. Explore Valkey
 
 ```bash
 kubectl exec -n ate-ant valkey-0 -- valkey-cli xinfo groups stream:events

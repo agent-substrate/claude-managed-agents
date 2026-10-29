@@ -25,11 +25,6 @@ Run [Claude Managed Agents self-hosted sandbox](https://platform.claude.com/docs
               heartbeats
 ```
 
-- **Controller** (`ate-ant controller`): horizontally scalable. Each replica polls the Anthropic API for work and enqueues it in Valkey, then consumes lifecycle events from the queue (shared across replicas through a consumer group), creates, resumes, and suspends Substrate actors, and delivers work to actors through `atenet-router`.
-- **Queue**: an in-cluster Valkey instance that buffers session lifecycle events, decoupling ingestion from execution.
-- **Actors** (`ate-ant run`): one isolated sandbox per agent session. Each runs the Anthropic SDK's environment worker in-process to execute tools, and keeps session state across turns through snapshots.
-- **Environment key injection**: actors never hold the Anthropic environment key. They send a placeholder bearer token, and the Substrate egress gateway replaces it with `ANTHROPIC_ENVIRONMENT_KEY` from the `ate-ant-creds` Secret on requests to the Anthropic API.
-
 See [DESIGN.md](DESIGN.md) for the detailed architecture, event queuing, and actor lifecycle.
 
 ## Quickstart
@@ -51,25 +46,25 @@ See [DESIGN.md](DESIGN.md) for the detailed architecture, event queuing, and act
    On GKE, the snapshot transfer service account must exist with access to the snapshot bucket (`tools/setup-gcp create iam` in the Substrate repository, or [`benchmarks/install.sh`](benchmarks/install.sh), creates it).
 2. Anthropic credentials: `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, and `ANTHROPIC_ENVIRONMENT_KEY` (see [Creating a Self-Hosted Environment](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes#create-an-environment)). To use a custom Anthropic API URL, also set `ANTHROPIC_BASE_URL` (or pass `--anthropic-base-url`).
 3. A Google Cloud project (`GOOGLE_CLOUD_PROJECT`) and a GCS bucket for snapshots (`gs://$GOOGLE_CLOUD_PROJECT/ate-ant/`).
-4. Podman (or Docker) to build the container image.
+4. Podman (or Docker) to build the `ate-ant` image, and a clone of [Agent Substrate](https://github.com/agent-substrate/substrate) at `~/substrate` (or set `SUBSTRATE_REPO`) to build the gVisor worker image.
 
-### 1. Build and Push the Image
+### 1. Build and Push the Images
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="your-gcp-project"
-make push
+make push-images
 ```
 
-`make push` prints the digest-pinned image. Use it as `--worker-image` in the steps below in place of the pinned digest.
+`make push-images` builds the `ate-ant` image and the Agent Substrate gVisor worker image, pushes them to `gcr.io/$GOOGLE_CLOUD_PROJECT`, and ends by printing `export` commands for `WORKER_IMAGE` and `ATEOM_IMAGE`. Run them before continuing.
 
 ### 2. Apply the Kubernetes Manifests
 
-`--worker-image` is the `ate-ant` image from step 1, used by the controller and the actors. `--ateom-image` is the Agent Substrate gVisor worker that the WorkerPool runs.
+`--worker-image` is the `ate-ant` image, used by the controller and the actors. `--ateom-image` is the Agent Substrate gVisor worker that the WorkerPool runs.
 
 ```bash
 go run ./cmd/ate-ant manifest \
-  --worker-image gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:2f5b931584f80ccbd72851058a597af39e706eeaa20dfd86a7bc2fcd7410b416 \
-  --ateom-image  gcr.io/$GOOGLE_CLOUD_PROJECT/ate-images/ateworker-gvisor@sha256:c97cf56ec19ef37895a0e7cc5c6dada677cb3824c5e93fcf7f142053cfe19a85 | kubectl apply -f -
+  --worker-image "$WORKER_IMAGE" \
+  --ateom-image  "$ATEOM_IMAGE" | kubectl apply -f -
 ```
 
 ### 3. Restart the Credential Provider
@@ -100,7 +95,7 @@ ActorTemplates live in the Substrate control plane, not in Kubernetes:
 
 ```bash
 go run ./cmd/ate-ant manifest template \
-  --worker-image     gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant@sha256:2f5b931584f80ccbd72851058a597af39e706eeaa20dfd86a7bc2fcd7410b416 \
+  --worker-image     "$WORKER_IMAGE" \
   --snapshots-bucket gs://$GOOGLE_CLOUD_PROJECT/ate-ant/ | kubectl-ate create actor-template --preview -f -
 ```
 
@@ -119,17 +114,3 @@ export ANTHROPIC_ENVIRONMENT_ID="env_..."
 
 go run ./examples/agent --prompt "Run 'uname -a' in bash and show the output."
 ```
-
-## Running Locally
-
-To shell into the container locally with your Anthropic environment variables:
-
-```bash
-podman run -it --rm \
-  --entrypoint bash \
-  -e ANTHROPIC_ENVIRONMENT_ID="$ANTHROPIC_ENVIRONMENT_ID" \
-  -e ANTHROPIC_ENVIRONMENT_KEY="$ANTHROPIC_ENVIRONMENT_KEY" \
-  gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant:latest
-```
-
-Inside the container, run a worker manually with `ant beta:worker run --work-id "<work-id>" --session-id "<session-id>"`.

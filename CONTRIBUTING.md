@@ -40,6 +40,20 @@ make vet
 make verify-boilerplate
 ```
 
+## Running locally
+
+To shell into the container locally with your Anthropic environment variables:
+
+```bash
+podman run -it --rm \
+  --entrypoint bash \
+  -e ANTHROPIC_ENVIRONMENT_ID="$ANTHROPIC_ENVIRONMENT_ID" \
+  -e ANTHROPIC_ENVIRONMENT_KEY="$ANTHROPIC_ENVIRONMENT_KEY" \
+  gcr.io/$GOOGLE_CLOUD_PROJECT/ate-ant:latest
+```
+
+Inside the container, run a worker manually with `ant beta:worker run --work-id "<work-id>" --session-id "<session-id>"`.
+
 ## Copyright Headers
 
 Every file containing source code must include copyright and license
