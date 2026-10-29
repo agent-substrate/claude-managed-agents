@@ -2,19 +2,27 @@
 
 Run [Claude Managed Agents self-hosted sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes) work (tool calls such as bash, file operations, and skills) inside isolated [Agent Substrate](https://github.com/agent-substrate/substrate) gVisor/microVM actors.
 
+> [!WARNING]
+> We are actively hardening this integration. Expect improvements and some changes.
+
 ## Overview
 
 ```
-┌───────────────────────┐    poll & ack     ┌──────────────────────┐ enqueue/consume  ┌──────────────┐
-│ Claude Managed Agents │ ◄──────────────── │ Controller           │ ◄──────────────► │ Valkey queue │
-└───────────────────────┘                   │ (ate-ant controller) │                  └──────────────┘
-            ▲                               └──────────┬───────────┘
-            │                                          │ resume, POST /work,
-            │                                          │ suspend when idle
-            │   tool results, heartbeats               ▼
-            │                               ┌──────────────────────┐
-            └────────────────────────────── │ Actor (ate-ant run)  │
-                                            └──────────────────────┘
+┌───────────────────────┐  poll & ack  ┌──────────────────────┐
+│ Claude Managed Agents │ ◄─────────── │ Controller           │
+└───────────────────────┘              │ (ate-ant controller) │
+            ▲                          └───┬────────────────▲─┘
+            │                              │                │
+            │          resume, POST /work, │                │ enqueue/consume
+            │            suspend when idle │                ▼
+            │                              │         ┌──────────────┐
+            │                              │         │ Valkey queue │
+            │                              │         └──────────────┘
+            │                              ▼
+            │                   ┌─────────────────────┐
+            └────────────────── │ Actor (ate-ant run) │
+              tool results,     └─────────────────────┘
+              heartbeats
 ```
 
 - **Controller** (`ate-ant controller`): horizontally scalable. Each replica polls the Anthropic API for work and enqueues it in Valkey, then consumes lifecycle events from the queue (shared across replicas through a consumer group), creates, resumes, and suspends Substrate actors, and delivers work to actors through `atenet-router`.
