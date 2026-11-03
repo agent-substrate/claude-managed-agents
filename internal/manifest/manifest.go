@@ -49,6 +49,12 @@ const (
 	DefaultValkeyImage         = "valkey/valkey:8"
 	DefaultValkeyAddr          = "valkey.ate-ant.svc.cluster.local:6379"
 
+	// DefaultActorCPUMillicores and DefaultActorMemoryBytes are the per-actor
+	// limits declared on the ActorTemplate. The scheduler books them against
+	// each worker's limits, so a worker on a bigger node holds more actors.
+	DefaultActorCPUMillicores = 1000    // 1 CPU
+	DefaultActorMemoryBytes   = 1 << 30 // 1 GiB
+
 	defaultWorkerPool               = "ate-ant-workerpool"
 	defaultDeploymentName           = "ate-ant"
 	defaultControllerDeploymentName = "ate-ant-controller"
@@ -112,6 +118,22 @@ type Config struct {
 	AtenetRouterAddr   string `json:"atenet_router_addr"`
 	ValkeyAddr         string `json:"valkey_addr"`
 	ValkeyImage        string `json:"valkey_image"`
+	ActorCPUMillicores int64  `json:"actor_cpu_millicores"`
+	ActorMemoryBytes   int64  `json:"actor_memory_bytes"`
+	// WorkerPools sizes one WorkerPool per group of worker nodes. Empty means
+	// a single unsized pool of Replicas workers.
+	WorkerPools []WorkerPoolConfig `json:"worker_pools"`
+}
+
+// WorkerPoolConfig places one WorkerPool on a group of identical worker nodes.
+// Setting CPUMillicores and MemoryBytes to what a node has left after its
+// DaemonSets keeps one worker per node, and makes them the worker's capacity.
+type WorkerPoolConfig struct {
+	Name          string            `json:"name"`
+	Replicas      int32             `json:"replicas"`
+	NodeSelector  map[string]string `json:"node_selector"`
+	CPUMillicores int64             `json:"cpu_millicores"`
+	MemoryBytes   int64             `json:"memory_bytes"`
 }
 
 // Defaults fills in default values for unset fields.
@@ -136,6 +158,12 @@ func (c *Config) Defaults() {
 	}
 	if c.ValkeyImage == "" {
 		c.ValkeyImage = DefaultValkeyImage
+	}
+	if c.ActorCPUMillicores == 0 {
+		c.ActorCPUMillicores = DefaultActorCPUMillicores
+	}
+	if c.ActorMemoryBytes == 0 {
+		c.ActorMemoryBytes = DefaultActorMemoryBytes
 	}
 	if c.ValkeyAddr == "" {
 		if c.Namespace == DefaultNamespace {
@@ -162,7 +190,7 @@ func (c *Config) Validate() error {
 func BuildManifests(cfg Config) []any {
 	cfg.Defaults()
 
-	return []any{
+	objs := []any{
 		BuildNamespace(cfg),
 		BuildSecret(cfg),
 		BuildCredentialProviderPolicy(cfg),
@@ -170,10 +198,11 @@ func BuildManifests(cfg Config) []any {
 		BuildSecretsReaderRoleBinding(cfg),
 		BuildValkeyService(cfg),
 		BuildValkeyStatefulSet(cfg),
-		BuildWorkerPool(cfg),
-		BuildRouterClientServiceAccount(cfg),
-		BuildControllerDeployment(cfg),
 	}
+	for _, wp := range BuildWorkerPools(cfg) {
+		objs = append(objs, wp)
+	}
+	return append(objs, BuildRouterClientServiceAccount(cfg), BuildControllerDeployment(cfg))
 }
 
 // BuildRouterClientServiceAccount constructs the ServiceAccount the controller
@@ -342,23 +371,43 @@ func BuildValkeyStatefulSet(cfg Config) *appsv1.StatefulSet {
 	}
 }
 
-// BuildWorkerPool constructs the Substrate WorkerPool CRD.
-func BuildWorkerPool(cfg Config) *atev1.WorkerPool {
+// BuildWorkerPools constructs one Substrate WorkerPool per entry in
+// cfg.WorkerPools, or a single unsized pool when there are none.
+func BuildWorkerPools(cfg Config) []*atev1.WorkerPool {
+	if len(cfg.WorkerPools) == 0 {
+		return []*atev1.WorkerPool{buildWorkerPool(cfg, defaultWorkerPool, cfg.Replicas, nil)}
+	}
+	var pools []*atev1.WorkerPool
+	for _, p := range cfg.WorkerPools {
+		size := corev1.ResourceList{
+			corev1.ResourceCPU:    *resource.NewMilliQuantity(p.CPUMillicores, resource.DecimalSI),
+			corev1.ResourceMemory: *resource.NewQuantity(p.MemoryBytes, resource.BinarySI),
+		}
+		pools = append(pools, buildWorkerPool(cfg, p.Name, p.Replicas, &atev1.WorkerPoolPodTemplate{
+			NodeSelector: p.NodeSelector,
+			Resources:    &corev1.ResourceRequirements{Requests: size, Limits: size},
+		}))
+	}
+	return pools
+}
+
+func buildWorkerPool(cfg Config, name string, replicas int32, tmpl *atev1.WorkerPoolPodTemplate) *atev1.WorkerPool {
 	return &atev1.WorkerPool{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: atev1.GroupVersion.String(),
 			Kind:       "WorkerPool",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      defaultWorkerPool,
+			Name:      name,
 			Namespace: cfg.Namespace,
 			Labels: map[string]string{
 				"workload": cfg.Template,
 			},
 		},
 		Spec: atev1.WorkerPoolSpec{
-			Replicas:    cfg.Replicas,
+			Replicas:    replicas,
 			WorkerImage: cfg.AteomImage,
+			Template:    tmpl,
 			SandboxClasses: []atev1.WorkerPoolSandboxClass{{
 				Name: atev1.SandboxClassGvisor,
 			}},
@@ -441,18 +490,12 @@ func BuildActorTemplate(cfg Config) *ateapipb.ActorTemplate {
 		// Substrate requires per-actor resource limits on every ActorTemplate.
 		Resources: &ateapipb.ResourceRequirements{
 			Limits: &ateapipb.Resources{
-				CpuMillicores: actorCPUMillicores,
-				MemoryBytes:   actorMemoryBytes,
+				CpuMillicores: cfg.ActorCPUMillicores,
+				MemoryBytes:   cfg.ActorMemoryBytes,
 			},
 		},
 	}
 }
-
-// Per-actor resource limits declared on the ActorTemplate.
-const (
-	actorCPUMillicores = 1000    // 1 CPU
-	actorMemoryBytes   = 1 << 30 // 1 GiB
-)
 
 // EnvironmentKeyCredentialURI returns the Substrate credential URI of the
 // ANTHROPIC_ENVIRONMENT_KEY entry in the ate-ant-creds Secret, resolved by the

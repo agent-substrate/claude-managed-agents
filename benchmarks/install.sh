@@ -39,6 +39,18 @@ TEMPLATE="${TEMPLATE:-ate-ant-actor-template-oct23}"
 WORKERPOOL_REPLICAS="${WORKERPOOL_REPLICAS:-50}"
 CONTROLLER_REPLICAS="${CONTROLLER_REPLICAS:-50}"
 
+# Set WORKER_NODE_SELECTOR (e.g. ate.dev/pool=workers) to run one worker per
+# matching node, in one WorkerPool per instance type sized to the node (see
+# worker-pools.sh). WORKERPOOL_REPLICAS is then ignored. The worker nodes
+# should carry the ate.dev/sandboxClass=gvisor:NoSchedule taint so nothing else
+# lands on them.
+WORKER_NODE_SELECTOR="${WORKER_NODE_SELECTOR:-}"
+
+# Per-actor limits on the ActorTemplate. Each worker holds as many actors as
+# its limits allow.
+ACTOR_CPU_MILLICORES="${ACTOR_CPU_MILLICORES:-1000}"
+ACTOR_MEMORY_BYTES="${ACTOR_MEMORY_BYTES:-1073741824}"
+
 # Anthropic credentials. Either export ANTHROPIC_API_KEY,
 # ANTHROPIC_ENVIRONMENT_ID and ANTHROPIC_ENVIRONMENT_KEY, or set CREDS_SECRET
 # to an existing Secret in ${NAMESPACE} holding those keys
@@ -226,6 +238,12 @@ if [[ "${BUILD_IMAGE}" == "true" ]]; then
 fi
 
 # 5. Generate and apply Kubernetes manifests (Namespace, Secret, RBAC, Valkey, WorkerPool, Controller).
+WORKER_POOLS=""
+if [[ -n "${WORKER_NODE_SELECTOR}" ]]; then
+  echo "--> Sizing WorkerPools for nodes matching ${WORKER_NODE_SELECTOR}..."
+  WORKER_POOLS="$(WORKER_NODE_SELECTOR="${WORKER_NODE_SELECTOR}" ./benchmarks/worker-pools.sh)"
+  echo "${WORKER_POOLS}"
+fi
 echo "--> Applying ate-ant Kubernetes manifests..."
 go run ./cmd/ate-ant manifest \
   --namespace="${NAMESPACE}" \
@@ -233,6 +251,7 @@ go run ./cmd/ate-ant manifest \
   --worker-image="${WORKER_IMAGE}" \
   --ateom-image="${ATEOM_IMAGE}" \
   --replicas="${WORKERPOOL_REPLICAS}" \
+  --worker-pools="${WORKER_POOLS}" \
   --controller-replicas="${CONTROLLER_REPLICAS}" | kubectl apply -f -
 
 echo "--> Verifying ate-ant-creds holds ${CREDS_SUMMARY}..."
@@ -284,7 +303,9 @@ if [[ -x "${KUBECTL_ATE_BIN}" ]]; then
     --namespace="${NAMESPACE}" \
     --template="${TEMPLATE}" \
     --worker-image="${WORKER_IMAGE}" \
-    --snapshots-bucket="${SNAPSHOTS_BUCKET}" | "${KUBECTL_ATE_BIN}" create actor-template --preview -f - || \
+    --snapshots-bucket="${SNAPSHOTS_BUCKET}" \
+    --actor-cpu-millicores="${ACTOR_CPU_MILLICORES}" \
+    --actor-memory-bytes="${ACTOR_MEMORY_BYTES}" | "${KUBECTL_ATE_BIN}" create actor-template --preview -f - || \
     "${KUBECTL_ATE_BIN}" get actor-template "${TEMPLATE}" --atespace="${NAMESPACE}"
 
   # The create above falls back to an existing template, which may carry an

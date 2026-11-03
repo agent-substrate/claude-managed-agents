@@ -62,6 +62,20 @@ plus short hashes of the keys, so you can confirm what is being deployed.
 Each controller replica polls the Anthropic API; lower `CONTROLLER_REPLICAS`
 if the logs show `429 rate_limit_error`.
 
+By default `install.sh` creates one `ate-ant-workerpool` of
+`WORKERPOOL_REPLICAS` workers with no resources, so each worker claims its whole
+node. To run one worker per node with many actors on each, label the worker
+nodes, taint them `ate.dev/sandboxClass=gvisor:NoSchedule`, and set
+`WORKER_NODE_SELECTOR`. [`worker-pools.sh`](worker-pools.sh) then creates one
+WorkerPool per instance type, sized to what each node has left after its
+DaemonSets. `ACTOR_CPU_MILLICORES` and `ACTOR_MEMORY_BYTES` set the per-actor
+limits, and each worker holds as many actors as fit.
+
+```bash
+WORKER_NODE_SELECTOR=ate.dev/pool=workers ACTOR_CPU_MILLICORES=250 \
+ACTOR_MEMORY_BYTES=536870912 ./benchmarks/install.sh
+```
+
 ---
 
 ## 3. Run the Load Generator
