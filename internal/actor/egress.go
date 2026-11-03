@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	"go.ate.dev/substrate/pkg/proto/ateapipb"
+	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 )
 
 const (

@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"io"
 
-	atev1alpha1 "go.ate.dev/substrate/pkg/api/v1alpha1"
-	"go.ate.dev/substrate/pkg/proto/ateapipb"
+	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
+	atev1 "go.ate.dev/substrate/api/infra/k8s/ate/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	appsv1 "k8s.io/api/apps/v1"
@@ -343,10 +343,10 @@ func BuildValkeyStatefulSet(cfg Config) *appsv1.StatefulSet {
 }
 
 // BuildWorkerPool constructs the Substrate WorkerPool CRD.
-func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
-	return &atev1alpha1.WorkerPool{
+func BuildWorkerPool(cfg Config) *atev1.WorkerPool {
+	return &atev1.WorkerPool{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: atev1alpha1.GroupVersion.String(),
+			APIVersion: atev1.GroupVersion.String(),
 			Kind:       "WorkerPool",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -356,11 +356,11 @@ func BuildWorkerPool(cfg Config) *atev1alpha1.WorkerPool {
 				"workload": cfg.Template,
 			},
 		},
-		Spec: atev1alpha1.WorkerPoolSpec{
+		Spec: atev1.WorkerPoolSpec{
 			Replicas:    cfg.Replicas,
 			WorkerImage: cfg.AteomImage,
-			SandboxClasses: []atev1alpha1.WorkerPoolSandboxClass{{
-				Name: atev1alpha1.SandboxClassGvisor,
+			SandboxClasses: []atev1.WorkerPoolSandboxClass{{
+				Name: atev1.SandboxClassGvisor,
 			}},
 		},
 	}

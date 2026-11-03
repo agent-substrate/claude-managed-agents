@@ -37,7 +37,7 @@ import (
 	"github.com/agent-substrate/claude-managed-agents/internal/actor"
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
 	"github.com/valkey-io/valkey-go"
-	"go.ate.dev/substrate/pkg/proto/ateapipb"
+	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 	appsv1 "k8s.io/api/apps/v1"
 )
 

@@ -19,7 +19,7 @@ import (
 	"testing"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
-	"go.ate.dev/substrate/pkg/proto/ateapipb"
+	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 )
 
 const testCredURI = "ate-secret://k8s.io/default/ate-ant/ate-ant-creds/ANTHROPIC_ENVIRONMENT_KEY"
