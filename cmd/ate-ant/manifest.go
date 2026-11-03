@@ -15,7 +15,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
@@ -24,6 +26,7 @@ import (
 
 func newManifestCommand() *cobra.Command {
 	cfg := manifest.Config{}
+	var workerPools string
 
 	cmd := &cobra.Command{
 		Use:     "manifest",
@@ -52,6 +55,11 @@ the "template" subcommand: ate-ant manifest template`,
 			if cfg.BaseURL == "" {
 				cfg.BaseURL = os.Getenv("ANTHROPIC_BASE_URL")
 			}
+			if workerPools != "" {
+				if err := json.Unmarshal([]byte(workerPools), &cfg.WorkerPools); err != nil {
+					return fmt.Errorf("parsing --worker-pools: %w", err)
+				}
+			}
 			if err := cfg.Validate(); err != nil {
 				return err
 			}
@@ -73,6 +81,7 @@ the "template" subcommand: ate-ant manifest template`,
 	cmd.Flags().StringVar(&cfg.AtenetRouterAddr, "atenet-router-addr", manifest.DefaultAtenetRouterAddr, "Substrate atenet HTTP router endpoint")
 	cmd.Flags().StringVar(&cfg.ValkeyAddr, "valkey-addr", manifest.DefaultValkeyAddr, "Valkey service endpoint")
 	cmd.Flags().StringVar(&cfg.ValkeyImage, "valkey-image", manifest.DefaultValkeyImage, "Valkey container image")
+	cmd.Flags().StringVar(&workerPools, "worker-pools", "", `JSON list of sized WorkerPools, one per group of identical worker nodes: [{"name":..., "replicas":..., "node_selector":{...}, "cpu_millicores":..., "memory_bytes":...}]. Overrides --replicas`)
 
 	_ = cmd.MarkFlagRequired("worker-image")
 	_ = cmd.MarkFlagRequired("ateom-image")
@@ -119,6 +128,8 @@ It prints YAML to stdout without touching the cluster.`,
 	cmd.Flags().StringVar(&cfg.EnvironmentID, "anthropic-env-id", "", "Anthropic environment ID (e.g. env_...)")
 	cmd.Flags().StringVar(&cfg.EnvironmentKey, "anthropic-env-key", "", "Anthropic environment key")
 	cmd.Flags().StringVar(&cfg.BaseURL, "anthropic-base-url", "", "custom Anthropic API base URL (default $ANTHROPIC_BASE_URL, else the public API)")
+	cmd.Flags().Int64Var(&cfg.ActorCPUMillicores, "actor-cpu-millicores", manifest.DefaultActorCPUMillicores, "per-actor CPU limit")
+	cmd.Flags().Int64Var(&cfg.ActorMemoryBytes, "actor-memory-bytes", manifest.DefaultActorMemoryBytes, "per-actor memory limit")
 
 	_ = cmd.MarkFlagRequired("worker-image")
 	_ = cmd.MarkFlagRequired("snapshots-bucket")

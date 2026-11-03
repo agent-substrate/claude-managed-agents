@@ -337,3 +337,57 @@ func TestBuildCredentialProviderPolicy(t *testing.T) {
 		t.Errorf("secret selector = %+v, want %s=true", p.SecretSelector.MatchLabels, EgressCredentialLabel)
 	}
 }
+
+func TestBuildActorTemplateResources(t *testing.T) {
+	tests := []struct {
+		name             string
+		cpu, mem         int64
+		wantCPU, wantMem int64
+	}{
+		{name: "defaults", wantCPU: DefaultActorCPUMillicores, wantMem: DefaultActorMemoryBytes},
+		{name: "set", cpu: 250, mem: 512 << 20, wantCPU: 250, wantMem: 512 << 20},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.ActorCPUMillicores, cfg.ActorMemoryBytes = tc.cpu, tc.mem
+			limits := BuildActorTemplate(cfg).GetResources().GetLimits()
+			if limits.GetCpuMillicores() != tc.wantCPU || limits.GetMemoryBytes() != tc.wantMem {
+				t.Errorf("limits = %d millicores, %d bytes, want %d, %d", limits.GetCpuMillicores(), limits.GetMemoryBytes(), tc.wantCPU, tc.wantMem)
+			}
+		})
+	}
+}
+
+func TestBuildWorkerPoolsSized(t *testing.T) {
+	cfg := testConfig()
+	cfg.WorkerPools = []WorkerPoolConfig{
+		{Name: "pool-small", Replicas: 50, NodeSelector: map[string]string{"node.kubernetes.io/instance-type": "e2-standard-2"}, CPUMillicores: 1500, MemoryBytes: 5 << 30},
+		{Name: "pool-big", Replicas: 20, NodeSelector: map[string]string{"node.kubernetes.io/instance-type": "e2-standard-8"}, CPUMillicores: 7500, MemoryBytes: 28 << 30},
+	}
+	objs := BuildManifests(cfg)
+	if got := len(BuildWorkerPools(cfg)); got != 2 {
+		t.Fatalf("got %d WorkerPools, want 2", got)
+	}
+	for _, want := range cfg.WorkerPools {
+		pool := find[*atev1.WorkerPool](t, objs, want.Name)
+		if pool.Spec.Replicas != want.Replicas {
+			t.Errorf("%s replicas = %d, want %d", want.Name, pool.Spec.Replicas, want.Replicas)
+		}
+		if pool.Labels["workload"] != cfg.Template {
+			t.Errorf("%s workload label = %q, want %q", want.Name, pool.Labels["workload"], cfg.Template)
+		}
+		tmpl := pool.Spec.Template
+		if tmpl == nil || tmpl.NodeSelector["node.kubernetes.io/instance-type"] != want.NodeSelector["node.kubernetes.io/instance-type"] {
+			t.Fatalf("%s template = %+v, want node selector %v", want.Name, tmpl, want.NodeSelector)
+		}
+		for name, list := range map[string]corev1.ResourceList{"requests": tmpl.Resources.Requests, "limits": tmpl.Resources.Limits} {
+			if cpu := list.Cpu().MilliValue(); cpu != want.CPUMillicores {
+				t.Errorf("%s %s cpu = %dm, want %dm", want.Name, name, cpu, want.CPUMillicores)
+			}
+			if mem := list.Memory().Value(); mem != want.MemoryBytes {
+				t.Errorf("%s %s memory = %d, want %d", want.Name, name, mem, want.MemoryBytes)
+			}
+		}
+	}
+}
