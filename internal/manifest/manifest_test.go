@@ -21,8 +21,8 @@ import (
 
 	"sigs.k8s.io/yaml"
 
-	atev1alpha1 "go.ate.dev/substrate/pkg/api/v1alpha1"
-	"go.ate.dev/substrate/pkg/proto/ateapipb"
+	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
+	atev1 "go.ate.dev/substrate/api/infra/k8s/ate/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -135,7 +135,7 @@ func TestBuildManifests(t *testing.T) {
 		t.Errorf("valkey statefulset volume claim templates count = %d, want 1", len(valkeySts.Spec.VolumeClaimTemplates))
 	}
 
-	pool := find[*atev1alpha1.WorkerPool](t, objs, defaultWorkerPool)
+	pool := find[*atev1.WorkerPool](t, objs, defaultWorkerPool)
 	if pool.Spec.Replicas != 3 {
 		t.Errorf("workerpool = %+v", pool)
 	}
