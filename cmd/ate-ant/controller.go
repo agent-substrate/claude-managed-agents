@@ -29,6 +29,10 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// sessionLockTTL bounds how long a dead replica can hold a session's lock.
+// It covers a cold resume and its retries.
+const sessionLockTTL = time.Minute
+
 func newControllerCommand() *cobra.Command {
 	var (
 		template         string
@@ -82,6 +86,11 @@ func newControllerCommand() *cobra.Command {
 					if ev.WorkID == "" {
 						return nil
 					}
+					unlock, err := em.LockSession(ctx, ev.SessionID, sessionLockTTL)
+					if err != nil {
+						return err
+					}
+					defer unlock()
 					if err := retry(ctx, func() error {
 						if err := am.Resume(ctx, ev.SessionID); err != nil {
 							return fmt.Errorf("resuming session %s: %w", ev.SessionID, err)
@@ -96,17 +105,37 @@ func newControllerCommand() *cobra.Command {
 						}
 						return nil
 					}); err != nil {
-						return err
+						// Give the work back instead of retrying this event
+						// ahead of every other one, which can block the
+						// suspends that would free a worker. CMA requeues the
+						// item when its hand-off lease lapses.
+						logger.Warn("Giving up on resume, work is requeued when its lease lapses",
+							slog.String("session_id", ev.SessionID),
+							slog.String("work_id", ev.WorkID),
+							slog.Any("error", err),
+						)
 					}
+					// Queued even after a failure, in case Resume succeeded
+					// and only Notify failed.
 					if _, err := em.QueueSuspend(ctx, ev.SessionID); err != nil {
 						return fmt.Errorf("queueing suspend for session %s: %w", ev.SessionID, err)
 					}
 					return nil
 				},
 				OnSuspend: func(ctx context.Context, ev *event.Event) error {
-					suspended, err := am.SuspendIfIdle(ctx, ev.SessionID, gcIdleThreshold)
+					// A held lock means a resume is in flight, so the session
+					// isn't idle.
+					unlock, locked, err := em.TryLockSession(ctx, ev.SessionID, sessionLockTTL)
 					if err != nil {
-						return fmt.Errorf("checking/suspending session %s: %w", ev.SessionID, err)
+						return err
+					}
+					suspended := false
+					if locked {
+						suspended, err = am.SuspendIfIdle(ctx, ev.SessionID, gcIdleThreshold)
+						unlock()
+						if err != nil {
+							return fmt.Errorf("checking/suspending session %s: %w", ev.SessionID, err)
+						}
 					}
 					if !suspended {
 						select {

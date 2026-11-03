@@ -34,6 +34,9 @@ const (
 	defaultPollInterval = 1 * time.Second
 	defaultStreamKey    = "stream:events"
 	defaultGroupName    = "event"
+	// maxEventAttempts is how many times Reconcile handles a failing event
+	// before it drops it.
+	maxEventAttempts = 3
 )
 
 // Action represents the lifecycle action to take for a session.
@@ -235,6 +238,54 @@ func (m *Manager) QueueSuspend(ctx context.Context, sessionID string) (*Event, e
 	return event, nil
 }
 
+// sessionLockRetry is how often LockSession retries a held lock.
+const sessionLockRetry = 100 * time.Millisecond
+
+// unlockScript deletes the lock only if this holder still owns it.
+const unlockScript = `if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end`
+
+// TryLockSession takes the lock for sessionID if it is free. Controller
+// replicas hold it while resuming or suspending a session, so the two can't
+// interleave. The lock expires after ttl if its holder dies. ok is false if
+// another holder has it.
+func (m *Manager) TryLockSession(ctx context.Context, sessionID string, ttl time.Duration) (unlock func(), ok bool, err error) {
+	var buf [8]byte
+	_, _ = rand.Read(buf[:])
+	key, token := "lock:session:"+sessionID, hex.EncodeToString(buf[:])
+
+	cmd := m.vkClient.B().Set().Key(key).Value(token).Nx().PxMilliseconds(ttl.Milliseconds()).Build()
+	if err := m.vkClient.Do(ctx, cmd).Error(); err != nil {
+		if valkey.IsValkeyNil(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("event: locking session %s: %w", sessionID, err)
+	}
+	unlock = func() {
+		// ctx may be done by now. Unlock anyway so the next holder doesn't
+		// wait out the ttl.
+		cmd := m.vkClient.B().Eval().Script(unlockScript).Numkeys(1).Key(key).Arg(token).Build()
+		if err := m.vkClient.Do(context.Background(), cmd).Error(); err != nil {
+			m.logger.Warn("Failed to unlock session", slog.String("session_id", sessionID), slog.Any("error", err))
+		}
+	}
+	return unlock, true, nil
+}
+
+// LockSession is TryLockSession that waits until the lock is free.
+func (m *Manager) LockSession(ctx context.Context, sessionID string, ttl time.Duration) (unlock func(), err error) {
+	for {
+		unlock, ok, err := m.TryLockSession(ctx, sessionID, ttl)
+		if err != nil || ok {
+			return unlock, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(sessionLockRetry):
+		}
+	}
+}
+
 func (m *Manager) parseEntry(entry valkey.XRangeEntry) (*Event, error) {
 	dataStr, ok := entry.FieldValues["data"]
 	if !ok {
@@ -335,6 +386,9 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("event: ensuring consumer group: %w", err)
 	}
 
+	// failures counts failed attempts per pending event ID. It is per
+	// consumer, so a restart or a claim by another consumer starts over.
+	failures := map[string]int{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -387,14 +441,26 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 				slog.String("session_id", event.SessionID),
 				slog.Any("error", handleErr),
 			)
-			// Do not ACK on failure so the event remains in PEL. Wait before retrying.
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(m.pollInterval):
+			// Leave a failed event pending so it is retried before newer
+			// ones, but drop it after maxEventAttempts so it can't block the
+			// stream.
+			failures[event.ID]++
+			if failures[event.ID] < maxEventAttempts {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(m.pollInterval):
+				}
+				continue
 			}
-			continue
+			m.logger.Warn("Dropping lifecycle event after repeated failures",
+				slog.String("id", event.ID),
+				slog.String("action", string(event.Action)),
+				slog.String("session_id", event.SessionID),
+				slog.Int("attempts", failures[event.ID]),
+			)
 		}
+		delete(failures, event.ID)
 
 		// Acknowledge the event after successful processing before proceeding to the next
 		if err := m.ack(ctx, event); err != nil {

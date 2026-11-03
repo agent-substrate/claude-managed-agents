@@ -347,3 +347,113 @@ func TestManagerReconcile_MultipleConsumersDeduplication(t *testing.T) {
 }
 
 
+
+func TestManagerSessionLock(t *testing.T) {
+	mini, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	t.Cleanup(mini.Close)
+
+	mgr, err := New(ManagerConfig{Valkey: ValkeyConfig{Addr: mini.Addr(), DisableCache: true}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer mgr.Close()
+	ctx := context.Background()
+
+	unlock, ok, err := mgr.TryLockSession(ctx, "session-1", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("first TryLockSession = %v, %v, want true, nil", ok, err)
+	}
+	if _, ok, err := mgr.TryLockSession(ctx, "session-1", time.Minute); err != nil || ok {
+		t.Fatalf("TryLockSession while held = %v, %v, want false, nil", ok, err)
+	}
+	if _, ok, err := mgr.TryLockSession(ctx, "session-2", time.Minute); err != nil || !ok {
+		t.Fatalf("TryLockSession on another session = %v, %v, want true, nil", ok, err)
+	}
+	unlock()
+	if _, ok, err := mgr.TryLockSession(ctx, "session-1", time.Minute); err != nil || !ok {
+		t.Fatalf("TryLockSession after unlock = %v, %v, want true, nil", ok, err)
+	}
+
+	// After the lock expires, a late unlock from the old holder must not
+	// release the new holder's lock.
+	stale, _, _ := mgr.TryLockSession(ctx, "session-3", time.Second)
+	mini.FastForward(2 * time.Second)
+	if _, ok, err := mgr.TryLockSession(ctx, "session-3", time.Minute); err != nil || !ok {
+		t.Fatalf("TryLockSession after expiry = %v, %v, want true, nil", ok, err)
+	}
+	stale()
+	if _, ok, err := mgr.TryLockSession(ctx, "session-3", time.Minute); err != nil || ok {
+		t.Fatalf("TryLockSession after stale unlock = %v, %v, want false, nil", ok, err)
+	}
+
+	// LockSession waits for the holder to unlock.
+	held, _, _ := mgr.TryLockSession(ctx, "session-4", time.Minute)
+	got := make(chan error, 1)
+	go func() {
+		unlock, err := mgr.LockSession(ctx, "session-4", time.Minute)
+		if err == nil {
+			unlock()
+		}
+		got <- err
+	}()
+	select {
+	case err := <-got:
+		t.Fatalf("LockSession returned %v while the lock was held", err)
+	case <-time.After(2 * sessionLockRetry):
+	}
+	held()
+	if err := <-got; err != nil {
+		t.Fatalf("LockSession: %v", err)
+	}
+}
+
+// An event that keeps failing is dropped after maxEventAttempts, so the
+// events behind it still run.
+func TestManagerReconcile_DropsEventAfterMaxAttempts(t *testing.T) {
+	mini, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	t.Cleanup(mini.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var badAttempts atomic.Int32
+	good := make(chan struct{}, 1)
+	mgr, err := New(ManagerConfig{
+		Valkey:       ValkeyConfig{Addr: mini.Addr(), DisableCache: true},
+		PollInterval: 10 * time.Millisecond,
+		OnSuspend: func(ctx context.Context, event *Event) error {
+			if event.SessionID == "session-bad" {
+				badAttempts.Add(1)
+				return errors.New("always fails")
+			}
+			good <- struct{}{}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer mgr.Close()
+
+	for _, s := range []string{"session-bad", "session-good"} {
+		if _, err := mgr.QueueSuspend(ctx, s); err != nil {
+			t.Fatalf("QueueSuspend(%s): %v", s, err)
+		}
+	}
+	go func() { _ = mgr.Reconcile(ctx) }()
+
+	select {
+	case <-good:
+	case <-time.After(5 * time.Second):
+		t.Fatal("event behind a failing one was not processed")
+	}
+	if got := badAttempts.Load(); got != maxEventAttempts {
+		t.Errorf("failing event handled %d times, want %d", got, maxEventAttempts)
+	}
+}
