@@ -626,6 +626,8 @@ func (t tokenAuth) RequireTransportSecurity() bool {
 	return false
 }
 
+const roundRobinServiceConfig = `{"loadBalancingConfig": [{"round_robin":{}}]}`
+
 // DialATE dials the Substrate ateapi gRPC service. Unless insecureConn is set,
 // it verifies ate-api's serving certificate against the trust bundle at caFile
 // before sending the ServiceAccount bearer token.
@@ -645,7 +647,10 @@ func DialATE(endpoint string, insecureConn bool, caFile string) (ateapipb.Contro
 		// dialed address (api.ate-system.svc.cluster.local or a port-forward).
 		dialOpts = append(dialOpts, grpc.WithAuthority(ateapiServerName))
 	}
-	dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))
+	dialOpts = append(dialOpts,
+		grpc.WithTransportCredentials(creds),
+		grpc.WithDefaultServiceConfig(roundRobinServiceConfig),
+	)
 
 	if _, err := os.Stat(defaultTokenPath); err == nil {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(tokenAuth{tokenFile: defaultTokenPath}))
