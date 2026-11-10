@@ -25,6 +25,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
@@ -64,6 +65,9 @@ type Manager struct {
 
 	mu          sync.Mutex
 	lastResumed map[string]time.Time
+
+	// atespaceKnown lets EnsureAtespace skip the lookup once it has succeeded.
+	atespaceKnown atomic.Bool
 }
 
 // NewManager creates a new actor lifecycle Manager.
@@ -161,10 +165,14 @@ func (m *Manager) recordResume(actorName string) {
 // requires global owner, so look the atespace up first: an atespace-scoped
 // controller can then run against an atespace provisioned by an operator.
 func (m *Manager) EnsureAtespace(ctx context.Context) error {
+	if m.atespaceKnown.Load() {
+		return nil
+	}
 	_, err := m.client.GetAtespace(ctx, &ateapipb.GetAtespaceRequest{
 		Atespace: &ateapipb.ObjectRef{Name: m.atespace},
 	})
 	if err == nil {
+		m.atespaceKnown.Store(true)
 		return nil
 	}
 	_, err = m.client.CreateAtespace(ctx, &ateapipb.CreateAtespaceRequest{
@@ -177,6 +185,7 @@ func (m *Manager) EnsureAtespace(ctx context.Context) error {
 	if err != nil && status.Code(err) != codes.AlreadyExists {
 		return err
 	}
+	m.atespaceKnown.Store(true)
 	return nil
 }
 
@@ -208,6 +217,9 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) error {
 				},
 			},
 		})
+		if status.Code(err) == codes.FailedPrecondition {
+			m.atespaceKnown.Store(false)
+		}
 		if err != nil && status.Code(err) != codes.AlreadyExists {
 			return fmt.Errorf("creating actor %s: %w", actorRef.Name, err)
 		}
