@@ -109,12 +109,11 @@ func newControllerCommand() *cobra.Command {
 						return fmt.Errorf("checking/suspending session %s: %w", ev.SessionID, err)
 					}
 					if !suspended {
-						select {
-						case <-ctx.Done():
-							return ctx.Err()
-						case <-time.After(gcInterval):
-						}
-						if _, err := em.QueueSuspend(ctx, ev.SessionID); err != nil {
+						// Re-queue with a not-before time instead of
+						// sleeping here: this loop handles one event at a
+						// time, and blocking would keep idle actors waiting
+						// behind busy ones for the whole interval.
+						if _, err := em.QueueSuspendAt(ctx, ev.SessionID, time.Now().Add(gcInterval)); err != nil {
 							return fmt.Errorf("re-queueing suspend for session %s: %w", ev.SessionID, err)
 						}
 					}
