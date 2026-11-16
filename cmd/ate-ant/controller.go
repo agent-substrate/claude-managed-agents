@@ -79,29 +79,7 @@ func newControllerCommand() *cobra.Command {
 			em, err = event.New(event.ManagerConfig{
 				Logger: logger,
 				OnResume: func(ctx context.Context, ev *event.Event) error {
-					if ev.WorkID == "" {
-						return nil
-					}
-					if err := retry(ctx, func() error {
-						if err := am.Resume(ctx, ev.SessionID); err != nil {
-							return fmt.Errorf("resuming session %s: %w", ev.SessionID, err)
-						}
-						payload := runner.WorkRequest{
-							SessionID:     ev.SessionID,
-							WorkID:        ev.WorkID,
-							LastHeartbeat: ev.LastHeartbeat,
-						}
-						if err := am.Notify(ctx, ev.SessionID, payload); err != nil {
-							return fmt.Errorf("notifying session %s: %w", ev.SessionID, err)
-						}
-						return nil
-					}); err != nil {
-						return err
-					}
-					if _, err := em.QueueSuspend(ctx, ev.SessionID); err != nil {
-						return fmt.Errorf("queueing suspend for session %s: %w", ev.SessionID, err)
-					}
-					return nil
+					return handleResume(ctx, am, em, ev)
 				},
 				OnSuspend: func(ctx context.Context, ev *event.Event) error {
 					suspended, err := am.SuspendIfIdle(ctx, ev.SessionID, gcIdleThreshold)
@@ -173,6 +151,77 @@ func newControllerCommand() *cobra.Command {
 		"lease the poller takes on each work item before queueing it: the time the controller has to start the sandbox before the lease lapses and the item is requeued")
 
 	return cmd
+}
+
+// sessionResumer is the subset of actor.Manager that resume handling needs.
+type sessionResumer interface {
+	Resume(ctx context.Context, sessionID string) error
+	Notify(ctx context.Context, sessionID string, payload any) error
+}
+
+const (
+	resumeRetryBaseDelay = 5 * time.Second
+	resumeRetryMaxDelay  = 60 * time.Second
+)
+
+// resumeRetryDelay returns the backoff for a resume re-queued after the
+// given number of capacity failures: 5s, 10s, 20s, 40s, then capped at 60s.
+func resumeRetryDelay(attempts int) time.Duration {
+	delay := resumeRetryBaseDelay
+	for i := 1; i < attempts && delay < resumeRetryMaxDelay; i++ {
+		delay *= 2
+	}
+	if delay > resumeRetryMaxDelay {
+		return resumeRetryMaxDelay
+	}
+	return delay
+}
+
+// handleResume resumes the actor for ev, notifies it of the work, and queues
+// the follow-up suspend. A resume that fails because no worker has capacity
+// is re-queued at the back of the stream with an exponential backoff instead
+// of being retried in place: the reconcile loop handles one event at a time,
+// and retrying in place would hold up every event behind it, including work
+// for actors that are already running.
+func handleResume(ctx context.Context, am sessionResumer, em *event.Manager, ev *event.Event) error {
+	if ev.WorkID == "" {
+		return nil
+	}
+	err := retry(ctx, func() error {
+		if err := am.Resume(ctx, ev.SessionID); err != nil {
+			return fmt.Errorf("resuming session %s: %w", ev.SessionID, err)
+		}
+		payload := runner.WorkRequest{
+			SessionID:     ev.SessionID,
+			WorkID:        ev.WorkID,
+			LastHeartbeat: ev.LastHeartbeat,
+		}
+		if err := am.Notify(ctx, ev.SessionID, payload); err != nil {
+			return fmt.Errorf("notifying session %s: %w", ev.SessionID, err)
+		}
+		return nil
+	})
+	if err != nil {
+		if !actor.IsResourceExhausted(err) {
+			return err
+		}
+		attempts := ev.Attempts + 1
+		delay := resumeRetryDelay(attempts)
+		if _, qErr := em.QueueResumeRetry(ctx, ev, time.Now().Add(delay)); qErr != nil {
+			return fmt.Errorf("re-queueing resume for session %s: %w", ev.SessionID, qErr)
+		}
+		slog.Info("No worker capacity for resume, re-queued with backoff",
+			slog.String("session_id", ev.SessionID),
+			slog.String("work_id", ev.WorkID),
+			slog.Int("attempts", attempts),
+			slog.Duration("retry_in", delay),
+		)
+		return nil
+	}
+	if _, err := em.QueueSuspend(ctx, ev.SessionID); err != nil {
+		return fmt.Errorf("queueing suspend for session %s: %w", ev.SessionID, err)
+	}
+	return nil
 }
 
 func retry(ctx context.Context, fn func() error) error {

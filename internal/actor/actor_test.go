@@ -17,6 +17,8 @@ package actor
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -655,5 +657,32 @@ func TestEnsureAtespaceExistingWithoutCreatePermission(t *testing.T) {
 	}
 	if err := mgr.Resume(context.Background(), "session-authz-01"); err != nil {
 		t.Fatalf("Resume: %v", err)
+	}
+}
+
+func TestIsResourceExhausted(t *testing.T) {
+	exhausted := status.Error(codes.ResourceExhausted, "no worker has room")
+	wrapped := fmt.Errorf("resuming actor actor-1: %w", exhausted)
+	doubleWrapped := fmt.Errorf("resuming session s-1: %w", wrapped)
+
+	if !IsResourceExhausted(exhausted) {
+		t.Error("IsResourceExhausted(bare ResourceExhausted) = false, want true")
+	}
+	if !IsResourceExhausted(wrapped) {
+		t.Error("IsResourceExhausted(wrapped ResourceExhausted) = false, want true")
+	}
+	if !IsResourceExhausted(doubleWrapped) {
+		t.Error("IsResourceExhausted(double-wrapped ResourceExhausted) = false, want true")
+	}
+
+	aborted := fmt.Errorf("resuming actor actor-1: %w", status.Error(codes.Aborted, "lease held"))
+	if IsResourceExhausted(aborted) {
+		t.Error("IsResourceExhausted(Aborted) = true, want false")
+	}
+	if IsResourceExhausted(errors.New("boom")) {
+		t.Error("IsResourceExhausted(plain error) = true, want false")
+	}
+	if IsResourceExhausted(nil) {
+		t.Error("IsResourceExhausted(nil) = true, want false")
 	}
 }

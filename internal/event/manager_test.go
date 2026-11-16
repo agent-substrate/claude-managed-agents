@@ -346,4 +346,150 @@ func TestManagerReconcile_MultipleConsumersDeduplication(t *testing.T) {
 	}
 }
 
+func TestManagerQueueResumeAtDefersUntilNotBefore(t *testing.T) {
+	mini, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	t.Cleanup(mini.Close)
 
+	mgr, err := New(ManagerConfig{
+		Valkey: ValkeyConfig{
+			Addr:         mini.Addr(),
+			DisableCache: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer mgr.Close()
+
+	ctx := context.Background()
+
+	notBefore := time.Now().Add(300 * time.Millisecond)
+	deferred, err := mgr.QueueResumeAt(ctx, "session-deferred", "work-1", "hb-1", notBefore)
+	if err != nil {
+		t.Fatalf("QueueResumeAt: %v", err)
+	}
+	if deferred.NotBefore.IsZero() {
+		t.Errorf("queued event should carry NotBefore, got %+v", deferred)
+	}
+	immediate, err := mgr.QueueSuspend(ctx, "session-immediate")
+	if err != nil {
+		t.Fatalf("QueueSuspend: %v", err)
+	}
+
+	// The event queued after the deferred one must not wait behind it.
+	ev, err := mgr.pop(ctx)
+	if err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+	if ev == nil || ev.ID != immediate.ID {
+		t.Fatalf("expected immediate event %s, got %+v", immediate.ID, ev)
+	}
+	if err := mgr.ack(ctx, ev); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+
+	// The deferred event is not due yet: pop must return nil, not block on it.
+	ev, err = mgr.pop(ctx)
+	if err != nil {
+		t.Fatalf("pop deferred: %v", err)
+	}
+	if ev != nil {
+		t.Fatalf("expected nil before NotBefore, got %+v", ev)
+	}
+
+	// Once NotBefore passes, pop returns the deferred event.
+	time.Sleep(time.Until(notBefore) + 50*time.Millisecond)
+	ev, err = mgr.pop(ctx)
+	if err != nil {
+		t.Fatalf("pop after NotBefore: %v", err)
+	}
+	if ev == nil || ev.ID != deferred.ID {
+		t.Fatalf("expected deferred event %s after NotBefore, got %+v", deferred.ID, ev)
+	}
+	if ev.WorkID != "work-1" || ev.LastHeartbeat != "hb-1" {
+		t.Errorf("deferred event lost fields: %+v", ev)
+	}
+	if err := mgr.ack(ctx, ev); err != nil {
+		t.Fatalf("ack deferred: %v", err)
+	}
+}
+
+func TestManagerQueueResumeRetryCarriesAttempts(t *testing.T) {
+	mini, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("starting miniredis: %v", err)
+	}
+	t.Cleanup(mini.Close)
+
+	mgr, err := New(ManagerConfig{
+		Valkey: ValkeyConfig{
+			Addr:         mini.Addr(),
+			DisableCache: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer mgr.Close()
+
+	ctx := context.Background()
+
+	orig, err := mgr.QueueResume(ctx, "session-1", "work-1", "hb-1")
+	if err != nil {
+		t.Fatalf("QueueResume: %v", err)
+	}
+
+	notBefore := time.Now().Add(50 * time.Millisecond)
+	retry1, err := mgr.QueueResumeRetry(ctx, orig, notBefore)
+	if err != nil {
+		t.Fatalf("QueueResumeRetry: %v", err)
+	}
+	if retry1.Attempts != 1 {
+		t.Errorf("retry1.Attempts = %d, want 1", retry1.Attempts)
+	}
+	if retry1.SessionID != "session-1" || retry1.WorkID != "work-1" || retry1.LastHeartbeat != "hb-1" || retry1.Action != ActionResume {
+		t.Errorf("retry1 lost fields: %+v", retry1)
+	}
+	if retry1.NotBefore.IsZero() {
+		t.Errorf("retry1 should carry NotBefore: %+v", retry1)
+	}
+
+	// A retry of a retry keeps counting up.
+	retry2, err := mgr.QueueResumeRetry(ctx, retry1, notBefore)
+	if err != nil {
+		t.Fatalf("QueueResumeRetry 2: %v", err)
+	}
+	if retry2.Attempts != 2 {
+		t.Errorf("retry2.Attempts = %d, want 2", retry2.Attempts)
+	}
+
+	// Attempts survives the round trip through the stream.
+	time.Sleep(100 * time.Millisecond)
+	var popped *Event
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && popped == nil {
+		ev, err := mgr.pop(ctx)
+		if err != nil {
+			t.Fatalf("pop: %v", err)
+		}
+		if ev != nil && ev.ID == retry2.ID {
+			popped = ev
+			break
+		}
+		if ev != nil {
+			if err := mgr.ack(ctx, ev); err != nil {
+				t.Fatalf("ack: %v", err)
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if popped == nil {
+		t.Fatal("never popped the re-queued retry event")
+	}
+	if popped.Attempts != 2 {
+		t.Errorf("popped.Attempts = %d, want 2", popped.Attempts)
+	}
+}
