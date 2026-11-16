@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agent-substrate/claude-managed-agents/internal/manifest"
@@ -53,8 +54,13 @@ type Event struct {
 	// LastHeartbeat is the lease token from the poller's first heartbeat on
 	// WorkID; the worker that services the item must quote it as its first
 	// expected_last_heartbeat.
-	LastHeartbeat string    `json:"last_heartbeat,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
+	LastHeartbeat string `json:"last_heartbeat,omitempty"`
+	// NotBefore, when non-zero, is the earliest time a consumer may
+	// process the event. Until then the event stays unacknowledged in the
+	// PEL and is set aside in memory, so it never blocks other events and
+	// survives a consumer crash.
+	NotBefore time.Time `json:"not_before,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // ValkeyConfig configures the Valkey client connection.
@@ -89,6 +95,12 @@ type Manager struct {
 
 	onSuspend func(ctx context.Context, event *Event) error
 	onResume  func(ctx context.Context, event *Event) error
+
+	// deferred holds popped events whose NotBefore is in the future, keyed
+	// by stream entry ID. The entries remain unacknowledged in the PEL, so
+	// they are not lost if this process crashes.
+	deferredMu sync.Mutex
+	deferred   map[string]*Event
 }
 
 func defaultConsumerName() string {
@@ -165,6 +177,7 @@ func New(cfg ManagerConfig) (*Manager, error) {
 		consumerName: consumerName,
 		onSuspend:    cfg.OnSuspend,
 		onResume:     cfg.OnResume,
+		deferred:     make(map[string]*Event),
 	}, nil
 }
 
@@ -214,12 +227,21 @@ func (m *Manager) QueueResume(ctx context.Context, sessionID, workID, lastHeartb
 
 // QueueSuspend pushes a "suspend" event to the stream.
 func (m *Manager) QueueSuspend(ctx context.Context, sessionID string) (*Event, error) {
+	return m.QueueSuspendAt(ctx, sessionID, time.Time{})
+}
+
+// QueueSuspendAt pushes a "suspend" event that consumers must not process
+// before notBefore. The zero time makes the event immediately eligible.
+// Use it to re-queue a suspend for a still-busy actor without blocking the
+// consumer loop for the retry interval.
+func (m *Manager) QueueSuspendAt(ctx context.Context, sessionID string, notBefore time.Time) (*Event, error) {
 	if sessionID == "" {
 		return nil, errors.New("event: session_id is required")
 	}
 	event := &Event{
 		Action:    ActionSuspend,
 		SessionID: sessionID,
+		NotBefore: notBefore,
 		CreatedAt: time.Now().UTC(),
 	}
 	data, err := json.Marshal(event)
@@ -261,47 +283,119 @@ func (m *Manager) parseEntry(entry valkey.XRangeEntry) (*Event, error) {
 	return &event, nil
 }
 
+// isDeferred reports whether the entry is already set aside in memory
+// waiting for its NotBefore time.
+func (m *Manager) isDeferred(id string) bool {
+	m.deferredMu.Lock()
+	defer m.deferredMu.Unlock()
+	_, ok := m.deferred[id]
+	return ok
+}
+
+// admit checks whether ev may be processed now. Events with a future
+// NotBefore are set aside in memory (their entries stay unacknowledged in
+// the PEL, so they are not lost on a crash) and admitted reports false.
+func (m *Manager) admit(ev *Event) bool {
+	if ev.NotBefore.IsZero() || !time.Now().Before(ev.NotBefore) {
+		return true
+	}
+	m.deferredMu.Lock()
+	m.deferred[ev.ID] = ev
+	m.deferredMu.Unlock()
+	return false
+}
+
+// takeDueDeferred removes and returns any set-aside event whose NotBefore
+// time has arrived, or nil if none is due.
+func (m *Manager) takeDueDeferred() *Event {
+	now := time.Now()
+	m.deferredMu.Lock()
+	defer m.deferredMu.Unlock()
+	for id, ev := range m.deferred {
+		if !now.Before(ev.NotBefore) {
+			delete(m.deferred, id)
+			return ev
+		}
+	}
+	return nil
+}
+
+// maxDeferredSkips bounds how many consecutive not-yet-due entries pop will
+// set aside in a single call before yielding back to the reconcile loop.
+const maxDeferredSkips = 16
+
 // pop reads the next event from the stream for this consumer.
 // It first checks for any unacknowledged pending events for this consumer,
-// and if none exist, reads the next new event from the stream.
-// Returns nil if the stream has no pending or new events.
+// and if none exist, reads the next new event from the stream. Events whose
+// NotBefore time has not arrived are set aside instead of blocking the loop.
+// Returns nil if the stream has no pending or new events that are due.
 func (m *Manager) pop(ctx context.Context) (*Event, error) {
 	if err := m.ensureGroup(ctx); err != nil {
 		return nil, err
 	}
 
-	// 1. Check pending messages for this consumer (ID: "0")
-	pendingCmd := m.vkClient.B().Xreadgroup().Group(m.groupName, m.consumerName).Count(1).Streams().Key(m.streamKey).Id("0").Build()
-	res, err := m.vkClient.Do(ctx, pendingCmd).AsXRead()
-	if err == nil && len(res[m.streamKey]) > 0 {
-		return m.parseEntry(res[m.streamKey][0])
+	// 0. Hand back any set-aside event that is now due before touching the
+	// stream; its entry is still pending for this consumer.
+	if ev := m.takeDueDeferred(); ev != nil {
+		return ev, nil
 	}
+
+	// 1. Check pending messages for this consumer (ID: "0"), skipping
+	// entries that are not due yet.
+	pendingCmd := m.vkClient.B().Xreadgroup().Group(m.groupName, m.consumerName).Count(maxDeferredSkips).Streams().Key(m.streamKey).Id("0").Build()
+	res, err := m.vkClient.Do(ctx, pendingCmd).AsXRead()
 	if err != nil && !valkey.IsValkeyNil(err) {
 		return nil, fmt.Errorf("event: reading pending stream entries: %w", err)
+	}
+	for _, entry := range res[m.streamKey] {
+		ev, err := m.parseEntry(entry)
+		if err != nil {
+			return nil, err
+		}
+		if !m.isDeferred(ev.ID) && m.admit(ev) {
+			return ev, nil
+		}
 	}
 
 	// 2. Claim orphaned pending messages from crashed consumers idle for > 30s
 	claimCmd := m.vkClient.B().Xautoclaim().Key(m.streamKey).Group(m.groupName).Consumer(m.consumerName).MinIdleTime("30000").Start("0-0").Count(1).Build()
 	if arr, err := m.vkClient.Do(ctx, claimCmd).ToArray(); err == nil && len(arr) >= 2 {
 		if entries, err := arr[1].AsXRange(); err == nil && len(entries) > 0 {
-			return m.parseEntry(entries[0])
+			ev, err := m.parseEntry(entries[0])
+			if err != nil {
+				return nil, err
+			}
+			if !m.isDeferred(ev.ID) && m.admit(ev) {
+				return ev, nil
+			}
 		}
 	}
 
-	// 3. Read new messages for this consumer group (ID: ">")
-	newCmd := m.vkClient.B().Xreadgroup().Group(m.groupName, m.consumerName).Count(1).Streams().Key(m.streamKey).Id(">").Build()
-	res, err = m.vkClient.Do(ctx, newCmd).AsXRead()
-	if err != nil {
-		if valkey.IsValkeyNil(err) {
+	// 3. Read new messages for this consumer group (ID: ">"). Entries that
+	// are not due yet are set aside and the read continues so they cannot
+	// starve the events behind them.
+	for i := 0; i < maxDeferredSkips; i++ {
+		newCmd := m.vkClient.B().Xreadgroup().Group(m.groupName, m.consumerName).Count(1).Streams().Key(m.streamKey).Id(">").Build()
+		res, err = m.vkClient.Do(ctx, newCmd).AsXRead()
+		if err != nil {
+			if valkey.IsValkeyNil(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("event: reading new stream entries: %w", err)
+		}
+		entries := res[m.streamKey]
+		if len(entries) == 0 {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("event: reading new stream entries: %w", err)
+		ev, err := m.parseEntry(entries[0])
+		if err != nil {
+			return nil, err
+		}
+		if m.admit(ev) {
+			return ev, nil
+		}
 	}
-	entries := res[m.streamKey]
-	if len(entries) == 0 {
-		return nil, nil
-	}
-	return m.parseEntry(entries[0])
+	return nil, nil
 }
 
 // ack acknowledges an event in the stream so it is removed from the pending entries list (PEL).
@@ -312,13 +406,23 @@ func (m *Manager) ack(ctx context.Context, event *Event) error {
 	return m.ackID(ctx, event.ID)
 }
 
-// ackID acknowledges an event by its stream entry ID.
+// ackID acknowledges an event by its stream entry ID and deletes the entry
+// from the stream. There is a single consumer group per stream, so an
+// acknowledged entry is never read again; without the delete the stream
+// would grow without bound.
 func (m *Manager) ackID(ctx context.Context, id string) error {
 	if id == "" {
 		return nil
 	}
 	cmd := m.vkClient.B().Xack().Key(m.streamKey).Group(m.groupName).Id(id).Build()
-	return m.vkClient.Do(ctx, cmd).Error()
+	if err := m.vkClient.Do(ctx, cmd).Error(); err != nil {
+		return err
+	}
+	delCmd := m.vkClient.B().Xdel().Key(m.streamKey).Id(id).Build()
+	if err := m.vkClient.Do(ctx, delCmd).Error(); err != nil {
+		return fmt.Errorf("event: deleting acknowledged stream entry %s: %w", id, err)
+	}
+	return nil
 }
 
 // Reconcile continuously pops events from the stream, dispatches them to OnResume/OnSuspend,
