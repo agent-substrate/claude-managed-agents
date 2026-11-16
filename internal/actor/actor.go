@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -178,6 +179,19 @@ func (m *Manager) EnsureAtespace(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// IsResourceExhausted reports whether err (possibly wrapped) carries the
+// gRPC code ResourceExhausted. ResumeActor returns it while no worker has
+// room for the actor; unlike transient codes such as Aborted, it persists
+// until capacity frees up, so callers should back off rather than retry in
+// place.
+func IsResourceExhausted(err error) bool {
+	var se interface{ GRPCStatus() *status.Status }
+	if errors.As(err, &se) {
+		return se.GRPCStatus().Code() == codes.ResourceExhausted
+	}
+	return false
 }
 
 // Resume ensures the actor for sessionID exists (creating it if needed) and resumes it if suspended.
