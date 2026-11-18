@@ -167,7 +167,13 @@ func (w *EnvironmentWorker) HandleItem(ctx context.Context, opts HandleItemOptio
 		MaxFileBytes: w.opts.MaxFileBytes,
 	}
 
-	if err := env.SetupSkills(sessCtx, w.client, sessionID, hbStopOpts...); err != nil {
+	// Fetch the session once and share the snapshot with skill setup — the
+	// deprecated SetupSkills(sessionID) form refetches it internally. Skill
+	// setup failure must not abort the work item.
+	session, err := w.client.Beta.Sessions.Get(sessCtx, sessionID, anthropic.BetaSessionGetParams{}, hbStopOpts...)
+	if err != nil {
+		log.Warn("session fetch for skill setup failed", slog.Any("error", err))
+	} else if err := env.SetupSkillsFromSession(sessCtx, w.client, session, hbStopOpts...); err != nil {
 		log.Warn("skill setup failed", slog.Any("error", err))
 	}
 	defer func() {

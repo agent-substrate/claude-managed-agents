@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
@@ -178,5 +179,60 @@ func TestBearerReqOptsValidation(t *testing.T) {
 	}
 	if len(opts) != 2 {
 		t.Errorf("expected 2 options, got %d", len(opts))
+	}
+}
+
+func TestHandleItemFetchesSessionOnceForSkillSetup(t *testing.T) {
+	var mu sync.Mutex
+	sessionGets := 0
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		switch req.URL.Path {
+		case "/v1/environments/env_123/work/work_1/heartbeat":
+			_ = json.NewEncoder(rw).Encode(map[string]any{
+				"type":           "work_heartbeat",
+				"last_heartbeat": "2026-08-16T22:00:03Z",
+				"lease_extended": true,
+				"state":          "stopped",
+				"ttl_seconds":    120,
+			})
+		case "/v1/environments/env_123/work/work_1/stop":
+			rw.WriteHeader(http.StatusNoContent)
+		case "/v1/sessions/sesn_1":
+			mu.Lock()
+			sessionGets++
+			mu.Unlock()
+			_ = json.NewEncoder(rw).Encode(map[string]any{
+				"id":    "sesn_1",
+				"type":  "session",
+				"agent": map[string]any{"id": "agent_1", "type": "agent", "skills": []any{}},
+			})
+		default:
+			rw.WriteHeader(http.StatusNotFound)
+			_, _ = rw.Write([]byte(`{"type":"error","error":{"type":"not_found_error","message":"no"}}`))
+		}
+	}))
+	defer server.Close()
+
+	client := anthropic.NewClient(
+		option.WithBaseURL(server.URL),
+		option.WithAPIKey("test-api-key"),
+		option.WithMaxRetries(0),
+	)
+	worker := NewEnvironmentWorker(client, EnvironmentWorkerOptions{
+		Tools:   []anthropic.BetaTool{},
+		Workdir: t.TempDir(),
+	})
+	_ = worker.HandleItem(context.Background(), HandleItemOptions{
+		WorkID:         "work_1",
+		EnvironmentID:  "env_123",
+		SessionID:      "sesn_1",
+		EnvironmentKey: "test-env-key",
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if sessionGets != 1 {
+		t.Errorf("session fetches = %d, want exactly 1", sessionGets)
 	}
 }
