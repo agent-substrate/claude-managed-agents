@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -89,6 +90,8 @@ type Config struct {
 	AgentID       string
 	Model         string
 	Prompt        string
+	SystemPrompt  string
+	Skills        []string // raw "[type:]skill_id" specs
 }
 
 // Defaults populates default values for unset fields.
@@ -631,10 +634,14 @@ func runAnthropicMode(ctx context.Context, cfg Config, rec *Recorder, logger *sl
 	}
 	client := anthropic.NewClient(opts...)
 
+	skills, err := parseSkillSpecs(cfg.Skills)
+	if err != nil {
+		return err
+	}
+
 	agentID := cfg.AgentID
 	if agentID == "" {
-		start := time.Now()
-		agent, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+		newParams := anthropic.BetaAgentNewParams{
 			Name: "Agent Substrate 10k Benchmark Agent",
 			Model: anthropic.BetaManagedAgentsModelConfigParams{
 				ID: anthropic.BetaManagedAgentsModel(cfg.Model),
@@ -653,7 +660,15 @@ func runAnthropicMode(ctx context.Context, cfg Config, rec *Recorder, logger *sl
 					},
 				},
 			},
-		})
+		}
+		if cfg.SystemPrompt != "" {
+			newParams.System = param.NewOpt(cfg.SystemPrompt)
+		}
+		if len(skills) > 0 {
+			newParams.Skills = skills
+		}
+		start := time.Now()
+		agent, err := client.Beta.Agents.New(ctx, newParams)
 		rec.Record("anthropic_create_agent", time.Since(start), err)
 		if err != nil {
 			return fmt.Errorf("creating benchmark agent: %w", err)
@@ -671,7 +686,7 @@ func runAnthropicMode(ctx context.Context, cfg Config, rec *Recorder, logger *sl
 		slog.String("agent_id", agentID),
 	)
 
-	err := runWorkerPool(ctx, cfg.Sessions, cfg.Concurrency, cfg.RateLimitPerSec, func(ctx context.Context, i int) error {
+	err = runWorkerPool(ctx, cfg.Sessions, cfg.Concurrency, cfg.RateLimitPerSec, func(ctx context.Context, i int) error {
 		params := anthropic.BetaSessionNewParams{
 			Agent: anthropic.BetaSessionNewParamsAgentUnion{
 				OfString: param.NewOpt(agentID),
@@ -861,6 +876,8 @@ func newRootCommand() *cobra.Command {
 	cmd.Flags().StringVar(&cfg.AgentID, "agent-id", "", "existing Anthropic agent ID to reuse")
 	cmd.Flags().StringVar(&cfg.Model, "model", "", "Anthropic model for the benchmark agent")
 	cmd.Flags().StringVar(&cfg.Prompt, "prompt", "Run `uname -a` in bash and show the output.", "prompt to execute in each session")
+	cmd.Flags().StringVar(&cfg.SystemPrompt, "system", "", "system prompt for the benchmark agent (optional)")
+	cmd.Flags().StringArrayVar(&cfg.Skills, "skill", nil, "skill to attach, as [anthropic|custom:]skill_id (optional, repeatable)")
 
 	return cmd
 }
@@ -870,4 +887,28 @@ func main() {
 		fmt.Fprintf(os.Stderr, "loadgen: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// parseSkillSpecs converts "[anthropic|custom:]skill_id" specs into SDK skill
+// params; a bare ID defaults to type "anthropic".
+func parseSkillSpecs(specs []string) ([]anthropic.BetaManagedAgentsSkillParamsUnion, error) {
+	out := make([]anthropic.BetaManagedAgentsSkillParamsUnion, 0, len(specs))
+	for _, spec := range specs {
+		typ, id := "anthropic", spec
+		if i := strings.Index(spec, ":"); i >= 0 {
+			typ, id = spec[:i], spec[i+1:]
+		}
+		if id == "" {
+			return nil, fmt.Errorf("invalid -skill %q: skill ID is empty", spec)
+		}
+		switch typ {
+		case "anthropic":
+			out = append(out, anthropic.BetaManagedAgentsSkillParamsOfAnthropic(id))
+		case "custom":
+			out = append(out, anthropic.BetaManagedAgentsSkillParamsOfCustom(id))
+		default:
+			return nil, fmt.Errorf("invalid -skill %q: type must be anthropic or custom", spec)
+		}
+	}
+	return out, nil
 }
